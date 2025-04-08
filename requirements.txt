@@ -1,6 +1,6 @@
-torch>=2.0.0
-transformers>=4.35.0
-accelerate>=0.20.0
+torch
+transformers
+accelerate
 datasets
 numpy
 tqdm
@@ -8,4 +8,5 @@ matplotlib
 sentencepiece
 protobuf
 colorama
-seaborn 
+seaborn
+scikit-learn

@@ -28,6 +28,10 @@ def parse_args():
                         help="Directory to save results")
     parser.add_argument("--coherence-threshold", type=float, default=0.3,
                         help="Threshold for pruning tokens based on coherence")
+    parser.add_argument("--diversity-clusters", type=int, default=3,
+                        help="Number of clusters for diversity-optimized pruning")
+    parser.add_argument("--pruning-strategy", type=str, default="coherence", choices=["coherence", "diversity"],
+                        help="Pruning strategy to use: coherence or diversity")
     parser.add_argument("--threshold-sweep", action="store_true",
                         help="Run experiments with various threshold values")
     parser.add_argument("--thresholds", type=str, default="0.01,0.05,0.1,0.2,0.3",
@@ -84,11 +88,18 @@ def run_experiment(args):
     # Initialize pruner if needed
     pruner = None
     if args.use_pruning:
-        print(f"Initializing pruner with coherence threshold: {args.coherence_threshold}")
+        print(f"Initializing pruner with strategy: {args.pruning_strategy}")
+        if args.pruning_strategy == "coherence":
+            print(f"Coherence threshold: {args.coherence_threshold}")
+        else:
+            print(f"Diversity clusters: {args.diversity_clusters}")
+            
         pruner = RetroactivePruner(
             model=model,
             tokenizer=tokenizer,
             coherence_threshold=args.coherence_threshold,
+            diversity_clusters=args.diversity_clusters,
+            pruning_strategy=args.pruning_strategy,
             device="mps" if not args.cpu and torch.backends.mps.is_available() else "cpu"
         )
     
@@ -127,19 +138,29 @@ def run_experiment(args):
         print(f"Average tokens per step: {np.mean(token_counts):.2f}")
         print(f"Max tokens in a step: {max(token_counts)}")
         
+        if args.use_pruning and "pruned_sets" in results:
+            pruned_sets = results["pruned_sets"]
+            pruned_counts = [len(s) for s in pruned_sets]
+            
+            print(f"\nPruning Statistics ({args.pruning_strategy} strategy):")
+            print(f"Average tokens after pruning: {np.mean(pruned_counts):.2f}")
+            print(f"Max tokens after pruning: {max(pruned_counts)}")
+            print(f"Average reduction: {(1 - np.mean(pruned_counts) / np.mean(token_counts)) * 100:.1f}%")
     
     # Save results
-    output_file = output_dir / f"results_thresh{args.threshold}.json"
+    output_file = output_dir / f"results_{args.pruning_strategy}_thresh{args.threshold}.json"
     with open(output_file, "w") as f:
-        # Convert any non-serializable objects to strings
-        serializable_results = {
-            k: (str(v) if not isinstance(v, (dict, list, str, int, float, bool, type(None))) else v)
-            for k, v in results.items()
-        }
-        json.dump(serializable_results, f, indent=2)
+        # Convert any numpy values to Python scalars for JSON serialization
+        json_serializable_results = {}
+        for k, v in results.items():
+            if isinstance(v, (np.float32, np.float64, np.int32, np.int64)):
+                json_serializable_results[k] = v.item()
+            else:
+                json_serializable_results[k] = v
+                
+        json.dump(json_serializable_results, f, indent=2)
     
-    # Visualize token sets
-    visualize_token_sets(results, output_dir / f"parallel_tokens_thresh{args.threshold}.png")
+    print(f"Results saved to {output_file}")
     
     return results
 
