@@ -32,7 +32,28 @@ All tokens within a simultaneously generated set at step N receive the exact sam
 The attention mask is modified to maintain causality between steps while allowing full attention within each step's token set.
 
 ### Retroactive Pruning
-The implementation includes an optional retroactive pruning mechanism that uses attention patterns to identify which tokens in a parallel set are most likely to contribute to coherent continuations.
+The implementation includes optional retroactive pruning mechanisms that can filter parallel token sets using different strategies:
+
+#### Coherence-Optimized Pruning
+The original pruning strategy that uses attention patterns to identify which tokens in a parallel set are most likely to contribute to coherent continuations. This strategy maximizes the accuracy of the generation by selecting tokens that have the most focused attention patterns.
+
+#### Diversity-Optimized Pruning
+A complementary pruning strategy that intentionally preserves representational richness by:
+1. **Semantic Clustering** - Groups parallel tokens by semantic similarity using KMeans clustering
+2. **Representation Space Sampling** - Selects representatives from different regions of the probability space
+3. **Information-Theoretic Selection** - Chooses tokens that maximize information gain across different potential narrative branches
+
+This strategy is particularly useful for exploring alternative narrative paths and understanding model uncertainty.
+
+### A/C/I Trade-offs
+The two pruning strategies directly connect to the Accuracy/Compression/Invariance trade-off:
+- **Accuracy**: Coherence pruning maximizes accuracy at the cost of compression
+- **Compression**: Diversity pruning preserves multiple distinct pathways (less compression)
+- **Invariance**: Different pruning strategies reveal which representations remain invariant across approaches
+
+<img src="images/pruning_comparison.png" alt="Comparison of coherence vs diversity pruning strategies" width="800"/>
+
+The visualization above compares the effects of coherence-based pruning (left) and diversity-optimized pruning (right) on the same set of parallel tokens. Notice how coherence pruning selects for similar, focused tokens while diversity pruning maintains representational variety.
 
 ### Output Format
 Tokens that share the same position are displayed with colored formatting for clear visualization:
@@ -56,8 +77,11 @@ pip install -r requirements.txt
 # Run the generator
 python src/generate.py --prompt "Your prompt here" --threshold 0.1
 
-# Run with retroactive pruning
-python src/generate.py --prompt "Your prompt here" --threshold 0.1 --use-pruning --coherence-threshold 0.7
+# Run with coherence-based pruning (maximizes coherence)
+python src/generate.py --prompt "Your prompt here" --threshold 0.1 --use-pruning --pruning-strategy coherence --coherence-threshold 0.7
+
+# Run with diversity-optimized pruning (preserves alternative paths)
+python src/generate.py --prompt "Your prompt here" --threshold 0.1 --use-pruning --pruning-strategy diversity --diversity-clusters 3
 
 # Run threshold sweep experiments
 python src/generate.py --prompt "Your prompt here" --threshold-sweep --thresholds "0.05,0.1,0.2,0.3"
@@ -65,6 +89,28 @@ python src/generate.py --prompt "Your prompt here" --threshold-sweep --threshold
 # Basic model testing (no parallel generation)
 python src/test_model.py
 ```
+
+## Comparing Pruning Strategies
+
+To compare the effect of different pruning strategies on the same prompt:
+
+```bash
+# Generate with coherence pruning
+python src/generate.py --prompt "Your prompt here" --threshold 0.1 --use-pruning --pruning-strategy coherence --output-dir results/coherence
+
+# Generate with diversity pruning
+python src/generate.py --prompt "Your prompt here" --threshold 0.1 --use-pruning --pruning-strategy diversity --output-dir results/diversity
+
+# Visualize and compare
+python src/visualize_parallel.py --results-file results/coherence/results_coherence_thresh0.1.json --output-dir visualizations/coherence
+python src/visualize_parallel.py --results-file results/diversity/results_diversity_thresh0.1.json --output-dir visualizations/diversity
+```
+
+This allows for examining how different pruning strategies affect the model's representational dynamics.
+
+<img src="images/diversity_clusters.png" alt="Semantic clustering in diversity-optimized pruning" width="700"/>
+
+The visualization above shows how diversity-optimized pruning creates semantic clusters from a set of parallel tokens and selects representatives from each cluster, maintaining broader coverage of the probability space.
 
 ## Visualization
 
@@ -83,6 +129,12 @@ The visualizations include:
 - Probability distribution analysis
 - Parallel token sets visualization
 - Pruning effectiveness (when pruning is enabled)
+
+## Example Output
+
+Below is a screenshot showing TEMPO in action:
+
+<img src="images/hotdog-sandwich.png" alt="TEMPO project screenshot" width="800"/>
 
 ## Project Structure
 
