@@ -65,7 +65,6 @@ checkpoints/
 *.ckpt
 
 # Figures and visualizations
-*.png
 *.jpg
 *.jpeg
 *.svg
