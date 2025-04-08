@@ -1,6 +1,6 @@
 import torch
 import torch.nn.functional as F
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Optional, Any
 import numpy as np
 from sklearn.cluster import KMeans
 from sklearn.metrics.pairwise import cosine_similarity
@@ -21,7 +21,11 @@ class RetroactivePruner:
         coherence_threshold: float = 0.3,
         diversity_clusters: int = 3,
         pruning_strategy: str = "coherence",
-        device: str = "mps"
+        device: str = "mps",
+        use_dynamic_threshold: bool = False,
+        max_steps: Optional[int] = None,
+        bezier_points: Optional[List[float]] = None,
+        final_threshold: float = 1.0
     ):
         """
         Initialize the pruner.
@@ -33,6 +37,10 @@ class RetroactivePruner:
             diversity_clusters: Number of clusters to use for diversity-optimized pruning
             pruning_strategy: Strategy to use, either "coherence" or "diversity"
             device: Device to use for computation
+            use_dynamic_threshold: Whether to use dynamic thresholds that increase over steps
+            max_steps: Maximum number of steps (for calculating dynamic threshold)
+            bezier_points: Control points for Bezier curve [p1, p2] between 0-1 (default creates exponential curve)
+            final_threshold: Final threshold value for dynamic threshold (default 1.0)
         """
         self.model = model
         self.tokenizer = tokenizer
@@ -40,6 +48,114 @@ class RetroactivePruner:
         self.diversity_clusters = diversity_clusters
         self.pruning_strategy = pruning_strategy
         self.device = device
+        self.use_dynamic_threshold = use_dynamic_threshold
+        self.max_steps = max_steps
+        self.current_step = 0
+        self.final_threshold = final_threshold
+        
+        # Default Bezier control points for exponential-like curve that starts slow and accelerates
+        self.bezier_points = bezier_points if bezier_points is not None else [0.2, 0.8]
+        
+        # For comprehensive dynamic threshold approach
+        # Store all original token sets and their coherence scores
+        self.all_token_sets = []  # List of token sets [(token_id, prob), ...]
+        self.all_token_scores = []  # List of normalized coherence scores for each token in each set
+        self.all_input_ids = []  # Input context for each step
+    
+    def _cubic_bezier(self, t: float, p0: float, p1: float, p2: float, p3: float) -> float:
+        """
+        Calculate a point on a cubic Bezier curve.
+        
+        Args:
+            t: Parameter between 0 and 1
+            p0, p1, p2, p3: Control points
+            
+        Returns:
+            float: Value at point t on the Bezier curve
+        """
+        return (1-t)**3 * p0 + 3*(1-t)**2*t * p1 + 3*(1-t)*t**2 * p2 + t**3 * p3
+    
+    def _get_current_threshold(self) -> float:
+        """
+        Get the current coherence threshold based on step number when using dynamic thresholds.
+        Threshold follows a Bezier curve from the initial value to final_threshold at the final step.
+        
+        Returns:
+            float: Current coherence threshold
+        """
+        if not self.use_dynamic_threshold or self.max_steps is None:
+            return self.coherence_threshold
+            
+        # Calculate progress as a value between 0 and 1
+        progress = min(1.0, self.current_step / max(1, self.max_steps - 1))
+        
+        # Use Bezier curve for smoother threshold progression
+        # p0 is initial threshold, p3 is final threshold
+        # p1 and p2 are control points from self.bezier_points
+        p0 = self.coherence_threshold
+        p1 = self.bezier_points[0]  # First control point
+        p2 = self.bezier_points[1]  # Second control point
+        p3 = self.final_threshold
+        
+        # Calculate threshold using cubic Bezier curve
+        # We're actually using a combination of linear interpolation and Bezier shape
+        # This ensures we start exactly at coherence_threshold and end at exactly final_threshold
+        bezier_shape = self._cubic_bezier(progress, 0.0, p1, p2, 1.0)
+        dynamic_threshold = p0 + (p3 - p0) * bezier_shape
+        
+        return dynamic_threshold
+    
+    def reapply_dynamic_threshold_to_all_sets(self) -> List[List[Tuple[int, float]]]:
+        """
+        Reapply the current dynamic threshold to all previously processed token sets.
+        This ensures that as the threshold increases, earlier parallel sets also collapse.
+        
+        Returns:
+            List[List[Tuple[int, float]]]: Updated list of pruned token sets
+        """
+        if not self.use_dynamic_threshold or not self.all_token_sets:
+            return []
+            
+        current_threshold = self._get_current_threshold()
+        updated_pruned_sets = []
+        
+        for i, (token_set, score_set) in enumerate(zip(self.all_token_sets, self.all_token_scores)):
+            # Apply current threshold to this set's scores
+            if i == len(self.all_token_sets) - 1 and self.current_step >= self.max_steps:
+                # For the last set at the final step, ensure a single token remains only if final_threshold is 1.0
+                if self.final_threshold >= 0.999:  # Using 0.999 to account for floating point precision
+                    # Force collapse to a single token
+                    if token_set:
+                        max_score_idx = max(range(len(score_set)), key=lambda j: score_set[j][1])
+                        pruned_set = [token_set[max_score_idx]]
+                    else:
+                        pruned_set = []
+                else:
+                    # Apply threshold normally without forcing collapse
+                    pruned_set = [
+                        token_set[j] for j, (_, score) in enumerate(score_set) 
+                        if score >= current_threshold
+                    ]
+                    
+                    # If all tokens were pruned, keep the one with highest score
+                    if not pruned_set and token_set:
+                        max_score_idx = max(range(len(score_set)), key=lambda j: score_set[j][1])
+                        pruned_set = [token_set[max_score_idx]]
+            else:
+                # For other sets, apply the current threshold without forcing single token
+                pruned_set = [
+                    token_set[j] for j, (_, score) in enumerate(score_set) 
+                    if score >= current_threshold
+                ]
+                
+                # If all tokens were pruned, keep the one with highest score
+                if not pruned_set and token_set:
+                    max_score_idx = max(range(len(score_set)), key=lambda j: score_set[j][1])
+                    pruned_set = [token_set[max_score_idx]]
+            
+            updated_pruned_sets.append(pruned_set)
+            
+        return updated_pruned_sets
     
     def _get_attention_scores(
         self, 
@@ -217,7 +333,7 @@ class RetroactivePruner:
         self, 
         input_ids: torch.Tensor, 
         parallel_tokens: List[Tuple[int, float]]
-    ) -> List[Tuple[int, float]]:
+    ) -> Tuple[List[Tuple[int, float]], List[Tuple[int, float]]]:
         """
         Prune parallel tokens based on attention coherence.
         
@@ -229,10 +345,16 @@ class RetroactivePruner:
             parallel_tokens: List of (token_id, probability) tuples
             
         Returns:
-            List[Tuple[int, float]]: Pruned list of (token_id, probability) tuples
+            Tuple[List[Tuple[int, float]], List[Tuple[int, float]]]:
+                - Pruned list of (token_id, probability) tuples
+                - List of (token_id, normalized_score) tuples for reapplying thresholds
         """
         if len(parallel_tokens) <= 1:
-            return parallel_tokens
+            # For single token sets, still compute scores for dynamic threshold
+            if len(parallel_tokens) == 1:
+                token_id, prob = parallel_tokens[0]
+                return parallel_tokens, [(token_id, 1.0)]  # Single token gets max score
+            return parallel_tokens, []
             
         # Extract token IDs from parallel tokens
         token_ids = [t[0] for t in parallel_tokens]
@@ -256,28 +378,44 @@ class RetroactivePruner:
             for token_id, prob, score in token_info
         ]
         
+        # Save normalized scores for reapplying thresholds later
+        token_scores = [(token_id, norm_score) for token_id, _, norm_score in normalized_token_info]
+        
+        # Get the current coherence threshold (static or dynamic)
+        current_threshold = self._get_current_threshold()
+        
         # Filter based on normalized coherence score
         pruned_tokens = [
             (token_id, prob)
             for token_id, prob, norm_score in normalized_token_info
-            if norm_score >= self.coherence_threshold
+            if norm_score >= current_threshold
         ]
         
         # If all tokens were pruned, keep the one with highest coherence
+        # If multiple tokens have nearly identical coherence, use probability as tie-breaker
         if not pruned_tokens:
-            best_idx = max(range(len(normalized_token_info)), 
-                          key=lambda i: normalized_token_info[i][2])
-            pruned_tokens = [
-                (normalized_token_info[best_idx][0], normalized_token_info[best_idx][1])
+            # First find tokens with highest coherence
+            max_coherence = max(normalized_token_info, key=lambda x: x[2])[2]
+            top_tokens = [
+                (token_id, prob) 
+                for token_id, prob, score in normalized_token_info 
+                if abs(score - max_coherence) < 1e-5
             ]
             
-        return pruned_tokens
+            if len(top_tokens) == 1:
+                pruned_tokens = top_tokens
+            else:
+                # Multiple tokens with similar coherence - break tie using probability
+                best_token = max(top_tokens, key=lambda x: x[1])
+                pruned_tokens = [best_token]
+            
+        return pruned_tokens, token_scores
     
     def prune_parallel_tokens(
         self, 
         input_ids: torch.Tensor, 
         parallel_tokens: List[Tuple[int, float]]
-    ) -> List[Tuple[int, float]]:
+    ) -> Tuple[List[Tuple[int, float]], List[List[Tuple[int, float]]]]:
         """
         Prune parallel tokens based on the selected strategy.
         
@@ -286,9 +424,32 @@ class RetroactivePruner:
             parallel_tokens: List of (token_id, probability) tuples
             
         Returns:
-            List[Tuple[int, float]]: Pruned list of (token_id, probability) tuples
+            Tuple[List[Tuple[int, float]], List[List[Tuple[int, float]]]]:
+                - Pruned list of (token_id, probability) tuples for current step
+                - List of pruned token sets for all steps (comprehensive dynamic threshold)
         """
-        if self.pruning_strategy == "diversity":
-            return self._diversity_optimized_pruning(input_ids, parallel_tokens)
+        # If using dynamic threshold, we need special handling
+        if self.use_dynamic_threshold:
+            # Store the input context for this step
+            self.all_input_ids.append(input_ids.clone())
+            
+            # For coherence pruning with scoring
+            pruned_tokens, token_scores = self._coherence_optimized_pruning(input_ids, parallel_tokens)
+            
+            # Store the original token set and normalized scores
+            self.all_token_sets.append(parallel_tokens.copy())
+            self.all_token_scores.append(token_scores)
+            
+            # Increment step counter after processing
+            self.current_step += 1
+            
+            # Reapply the threshold to all previous sets with updated threshold
+            all_pruned_sets = self.reapply_dynamic_threshold_to_all_sets()
+            
+            return pruned_tokens, all_pruned_sets
+        elif self.pruning_strategy == "diversity":
+            pruned_tokens = self._diversity_optimized_pruning(input_ids, parallel_tokens)
+            return pruned_tokens, [pruned_tokens]
         else:
-            return self._coherence_optimized_pruning(input_ids, parallel_tokens) 
+            pruned_tokens, _ = self._coherence_optimized_pruning(input_ids, parallel_tokens)
+            return pruned_tokens, [pruned_tokens] 

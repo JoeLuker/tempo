@@ -43,6 +43,25 @@ The implementation includes optional retroactive pruning mechanisms that can fil
 #### Coherence-Optimized Pruning
 The original pruning strategy that uses attention patterns to identify which tokens in a parallel set are most likely to contribute to coherent continuations. This strategy maximizes the accuracy of the generation by selecting tokens that have the most focused attention patterns.
 
+##### Dynamic Thresholds
+The system supports two modes of dynamic thresholds:
+
+1. **Step-wise Dynamic Threshold**: The coherence threshold gradually increases throughout the generation process. The threshold starts at the specified value and linearly increases to 1.0 by the final generation step. This causes token sets at later positions to become progressively more selective.
+
+2. **Comprehensive Dynamic Threshold**: In this more powerful mode, the increasing threshold is reapplied to ALL previous token sets as generation progresses. This means that even early token sets will gradually collapse from multiple tokens to a single token as the generation approaches completion. By the end, all positions will contain exactly one token, effectively transforming the output from a branching tree of possibilities to a single coherent path.
+
+For both modes, the threshold progression can be controlled using:
+
+- **Final Threshold Value**: By default, the threshold increases to 1.0, which forces all sets to collapse to a single token by the end. However, you can specify a lower final threshold (e.g., 0.8) to maintain some token diversity even at the end of generation.
+
+- **Bezier Curve**: The threshold progression follows a customizable cubic Bezier curve, allowing for non-linear increases that can be tuned for different effects:
+  - **Slow Start (default)**: Uses Bezier control points [0.2, 0.8], creating a curve that starts slowly and accelerates toward the end
+  - **Fast Start**: Uses points [0.8, 0.2], creating a curve that rises quickly at the beginning and then levels off
+  - **S-Curve**: Uses points [0.2, 0.2], creating an S-shaped curve with gentle transitions at both the beginning and end
+  - **Linear Approximation**: Uses points [0.5, 0.5] to approximate a linear increase
+
+This comprehensive approach reveals how the model's uncertainty evolves and collapses over time, providing insights into the paths not taken while still producing a final coherent output.
+
 #### Diversity-Optimized Pruning
 A complementary pruning strategy that intentionally preserves representational richness by:
 1. **Semantic Clustering** - Groups parallel tokens by semantic similarity using KMeans clustering
@@ -84,6 +103,18 @@ python src/generate.py --prompt "Your prompt here" --threshold 0.1
 # Run with coherence-based pruning (maximizes coherence)
 python src/generate.py --prompt "Your prompt here" --threshold 0.1 --use-pruning --pruning-strategy coherence --coherence-threshold 0.7
 
+# Run with dynamic coherence threshold (gradually increases to 1.0)
+python src/generate.py --prompt "Your prompt here" --threshold 0.1 --use-pruning --pruning-strategy coherence --coherence-threshold 0.3 --dynamic-threshold
+
+# Run with dynamic threshold using a custom final value (won't force collapse)
+python src/generate.py --prompt "Your prompt here" --threshold 0.1 --use-pruning --pruning-strategy coherence --dynamic-threshold --final-threshold 0.8
+
+# Run with dynamic threshold using a fast-start Bezier curve
+python src/generate.py --prompt "Your prompt here" --threshold 0.1 --use-pruning --pruning-strategy coherence --dynamic-threshold --bezier-preset fast-start
+
+# Run with dynamic threshold using custom Bezier control points
+python src/generate.py --prompt "Your prompt here" --threshold 0.1 --use-pruning --pruning-strategy coherence --dynamic-threshold --bezier-points 0.3,0.7
+
 # Run with diversity-optimized pruning (preserves alternative paths)
 python src/generate.py --prompt "Your prompt here" --threshold 0.1 --use-pruning --pruning-strategy diversity --diversity-clusters 3
 
@@ -102,11 +133,19 @@ To compare the effect of different pruning strategies on the same prompt:
 # Generate with coherence pruning
 python src/generate.py --prompt "Your prompt here" --threshold 0.1 --use-pruning --pruning-strategy coherence --output-dir results/coherence
 
+# Generate with dynamic coherence pruning (slow-start Bezier curve)
+python src/generate.py --prompt "Your prompt here" --threshold 0.1 --use-pruning --pruning-strategy coherence --dynamic-threshold --bezier-preset slow-start --output-dir results/dynamic-slow
+
+# Generate with dynamic coherence pruning (fast-start Bezier curve)
+python src/generate.py --prompt "Your prompt here" --threshold 0.1 --use-pruning --pruning-strategy coherence --dynamic-threshold --bezier-preset fast-start --output-dir results/dynamic-fast
+
 # Generate with diversity pruning
 python src/generate.py --prompt "Your prompt here" --threshold 0.1 --use-pruning --pruning-strategy diversity --output-dir results/diversity
 
 # Visualize and compare
 python src/visualize_parallel.py --results-file results/coherence/results_coherence_thresh0.1.json --output-dir visualizations/coherence
+python src/visualize_parallel.py --results-file results/dynamic-slow/results_coherence_thresh0.1.json --output-dir visualizations/dynamic-slow
+python src/visualize_parallel.py --results-file results/dynamic-fast/results_coherence_thresh0.1.json --output-dir visualizations/dynamic-fast
 python src/visualize_parallel.py --results-file results/diversity/results_diversity_thresh0.1.json --output-dir visualizations/diversity
 ```
 

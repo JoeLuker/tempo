@@ -260,6 +260,18 @@ class ParallelThresholdGenerator:
         input_ids = input_data.input_ids.to(self.device)
         attention_mask = input_data.attention_mask.to(self.device)
         
+        # If using dynamic threshold, set the max steps in the pruner
+        if use_pruning and self.pruner is not None and hasattr(self.pruner, 'use_dynamic_threshold') and self.pruner.use_dynamic_threshold:
+            # Set the maximum steps in the pruner
+            # We set it to exactly max_tokens since we want the final step to definitely use threshold 1.0
+            self.pruner.max_steps = max_tokens
+            self.pruner.current_step = 0
+            # Clear any existing token sets
+            if hasattr(self.pruner, 'all_token_sets'):
+                self.pruner.all_token_sets = []
+                self.pruner.all_token_scores = []
+                self.pruner.all_input_ids = []
+        
         # Track sets of parallel tokens for analysis
         parallel_token_sets = []
         pruned_token_sets = []
@@ -314,10 +326,19 @@ class ParallelThresholdGenerator:
                 
                 # Apply retroactive pruning if enabled and available
                 if use_pruning and self.pruner is not None:
-                    pruned_token_set = self.pruner.prune_parallel_tokens(input_ids, token_set)
-                    tokens = [t[0] for t in pruned_token_set]
-                    probs = [t[1] for t in pruned_token_set]
-                    pruned_token_sets.append(pruned_token_set)
+                    # The new interface returns both the current pruned set and all updated pruned sets
+                    if hasattr(self.pruner, 'use_dynamic_threshold') and self.pruner.use_dynamic_threshold:
+                        current_pruned_set, all_pruned_sets = self.pruner.prune_parallel_tokens(input_ids, token_set)
+                        # Use the most recent pruned sets for all positions
+                        pruned_token_sets = all_pruned_sets
+                        tokens = [t[0] for t in current_pruned_set]
+                        probs = [t[1] for t in current_pruned_set]
+                    else:
+                        # Old interface for non-dynamic threshold
+                        pruned_token_set = self.pruner.prune_parallel_tokens(input_ids, token_set)
+                        tokens = [t[0] for t in pruned_token_set]
+                        probs = [t[1] for t in pruned_token_set]
+                        pruned_token_sets.append(pruned_token_set)
                 else:
                     pruned_token_sets.append(token_set)
                 
@@ -333,6 +354,19 @@ class ParallelThresholdGenerator:
                 # Check if any token is EOS
                 if self.tokenizer.eos_token_id in tokens:
                     break
+        
+        # If using dynamic threshold, we need to update position_to_tokens with final pruned states
+        if use_pruning and self.pruner is not None and hasattr(self.pruner, 'use_dynamic_threshold') and self.pruner.use_dynamic_threshold:
+            # First, get the final pruned sets with the highest threshold
+            if hasattr(self.pruner, 'reapply_dynamic_threshold_to_all_sets'):
+                final_pruned_sets = self.pruner.reapply_dynamic_threshold_to_all_sets()
+                
+                # Update position_to_tokens with the final pruned state
+                for step, pruned_set in enumerate(final_pruned_sets):
+                    position = prompt_length + step
+                    if position in position_to_tokens:
+                        # Update with the final pruned tokens
+                        position_to_tokens[position] = [t[0] for t in pruned_set]
         
         # Format output text
         prompt_text = self.tokenizer.decode(input_data.input_ids[0], skip_special_tokens=True)

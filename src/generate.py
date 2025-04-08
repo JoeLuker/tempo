@@ -36,6 +36,14 @@ def parse_args():
                         help="Run experiments with various threshold values")
     parser.add_argument("--thresholds", type=str, default="0.01,0.05,0.1,0.2,0.3",
                         help="Comma-separated list of thresholds to try")
+    parser.add_argument("--dynamic-threshold", action="store_true",
+                        help="Use dynamic coherence threshold that increases over steps")
+    parser.add_argument("--final-threshold", type=float, default=1.0,
+                        help="Final value for dynamic threshold (default 1.0, sets collapse if 1.0)")
+    parser.add_argument("--bezier-points", type=str, default="0.2,0.8",
+                        help="Bezier curve control points (comma-separated, values between 0-1)")
+    parser.add_argument("--bezier-preset", type=str, choices=["slow-start", "linear", "fast-start", "s-curve"], 
+                        help="Preset Bezier curves: slow-start [0.2,0.8], linear [0.5,0.5], fast-start [0.8,0.2], s-curve [0.2,0.2]")
     parser.add_argument("--cpu", action="store_true", 
                         help="Force CPU execution (no MPS)")
     
@@ -48,22 +56,31 @@ def visualize_token_sets(results, output_path):
         
     token_sets = results["parallel_sets"]
     pruned_sets = results.get("pruned_sets", None)
+    use_pruning = results.get("use_pruning", False)
+    dynamic_threshold = results.get("dynamic_threshold", False)
+    bezier_points = results.get("bezier_points", [0.2, 0.8])
     
     # Count number of tokens per step
     steps = list(range(len(token_sets)))
     token_counts = [len(s) for s in token_sets]
     
-    plt.figure(figsize=(12, 6))
+    if pruned_sets:
+        pruned_counts = [len(s) for s in pruned_sets]
+    
+    plt.figure(figsize=(12, 6 if not dynamic_threshold else 9))
     
     # Plot token counts
-    plt.subplot(1, 2, 1)
-    plt.bar(steps, token_counts)
+    plt.subplot(1 if not dynamic_threshold else 3, 2, 1)
+    plt.bar(steps, token_counts, alpha=0.7, label="Original")
+    if pruned_sets:
+        plt.bar(steps, pruned_counts, alpha=0.5, label="After Pruning")
+        plt.legend()
     plt.xlabel("Generation Step")
     plt.ylabel("Number of Parallel Tokens")
     plt.title(f"Tokens per Step (Threshold={results['threshold']})")
     
     # Plot token probabilities for each step
-    plt.subplot(1, 2, 2)
+    plt.subplot(1 if not dynamic_threshold else 3, 2, 2)
     for i, token_set in enumerate(token_sets[:20]):  # Limit to first 20 steps for clarity
         probs = [t[1] for t in token_set]
         plt.scatter([i] * len(probs), probs, alpha=0.6)
@@ -72,14 +89,81 @@ def visualize_token_sets(results, output_path):
     plt.ylabel("Token Probability")
     plt.title("Token Probabilities by Step")
     
+    # If dynamic threshold is used, plot the threshold progression
+    if dynamic_threshold and pruned_sets:
+        plt.subplot(3, 2, (3, 5))
+        
+        # Create estimated threshold values based on pruned tokens
+        thresholds = []
+        for i, (orig_set, pruned_set) in enumerate(zip(token_sets, pruned_sets)):
+            if len(orig_set) <= 1 or len(pruned_set) <= 0:
+                # Skip steps with no pruning effect
+                continue
+                
+            # Estimate threshold as the lowest probability in pruned set
+            min_prob_kept = min([t[1] for t in pruned_set])
+            thresholds.append((i, min_prob_kept))
+        
+        if thresholds:
+            steps_with_threshold, threshold_values = zip(*thresholds)
+            plt.plot(steps_with_threshold, threshold_values, 'r-', marker='o', alpha=0.7, label="Observed")
+            plt.xlabel("Generation Step")
+            plt.ylabel("Threshold")
+            plt.title("Dynamic Threshold Progression")
+            
+            # Plot the theoretical Bezier curve
+            def cubic_bezier(t, p0, p1, p2, p3):
+                return (1-t)**3 * p0 + 3*(1-t)**2*t * p1 + 3*(1-t)*t**2 * p2 + t**3 * p3
+                
+            # Generate the theoretical curve
+            t_values = np.linspace(0, 1, len(steps))
+            base_threshold = results.get("coherence_threshold", 0.3)
+            
+            # Extract Bezier control points
+            if bezier_points and len(bezier_points) == 2:
+                p1, p2 = bezier_points
+            else:
+                p1, p2 = 0.2, 0.8  # default
+                
+            # Calculate curve shape
+            bezier_shape = [cubic_bezier(t, 0.0, p1, p2, 1.0) for t in t_values]
+            bezier_curve = [base_threshold + (1.0 - base_threshold) * shape for shape in bezier_shape]
+            
+            # Plot the theoretical curve
+            plt.plot(steps, bezier_curve, 'b--', alpha=0.7, label=f"Bezier [{p1:.1f},{p2:.1f}]")
+            plt.legend()
+    
     plt.tight_layout()
     plt.savefig(output_path)
-    
+
 def run_experiment(args):
     """Run a single experiment with the specified parameters."""
     # Create output directory
     output_dir = Path(args.output_dir)
     output_dir.mkdir(exist_ok=True, parents=True)
+    
+    # Parse Bezier control points if using dynamic threshold
+    bezier_points = None
+    if args.dynamic_threshold:
+        bezier_points = [float(p) for p in args.bezier_points.split(",")]
+        if len(bezier_points) != 2:
+            print("Warning: Bezier points should be exactly 2 values. Using default [0.2, 0.8]")
+            bezier_points = [0.2, 0.8]  # Default to exponential-like curve
+            
+        # Apply presets if specified
+        if args.bezier_preset:
+            if args.bezier_preset == "slow-start":
+                bezier_points = [0.2, 0.8]  # Starts slow, accelerates
+                print("Using 'slow-start' Bezier preset: [0.2, 0.8]")
+            elif args.bezier_preset == "linear":
+                bezier_points = [0.5, 0.5]  # Approximates linear growth
+                print("Using 'linear' Bezier preset: [0.5, 0.5]")
+            elif args.bezier_preset == "fast-start":
+                bezier_points = [0.8, 0.2]  # Starts fast, decelerates
+                print("Using 'fast-start' Bezier preset: [0.8, 0.2]")
+            elif args.bezier_preset == "s-curve":
+                bezier_points = [0.2, 0.2]  # S-shaped curve with slow start and end
+                print("Using 's-curve' Bezier preset: [0.2, 0.2]")
     
     # Load model and tokenizer
     print(f"Loading model: {args.model}")
@@ -91,6 +175,16 @@ def run_experiment(args):
         print(f"Initializing pruner with strategy: {args.pruning_strategy}")
         if args.pruning_strategy == "coherence":
             print(f"Coherence threshold: {args.coherence_threshold}")
+            if args.dynamic_threshold:
+                print(f"Using comprehensive dynamic threshold")
+                print(f"  - Starting at {args.coherence_threshold}")
+                print(f"  - Gradually increasing to {args.final_threshold} over {args.max_tokens} steps")
+                print(f"  - Using Bezier curve with control points: {bezier_points}")
+                print(f"  - Reapplying to ALL token sets as threshold increases")
+                if args.final_threshold >= 0.999:
+                    print(f"  - All sets will collapse to single tokens by completion (final threshold ≈ 1.0)")
+                else:
+                    print(f"  - Sets will maintain multiple tokens based on threshold (final threshold < 1.0)")
         else:
             print(f"Diversity clusters: {args.diversity_clusters}")
             
@@ -100,7 +194,10 @@ def run_experiment(args):
             coherence_threshold=args.coherence_threshold,
             diversity_clusters=args.diversity_clusters,
             pruning_strategy=args.pruning_strategy,
-            device="mps" if not args.cpu and torch.backends.mps.is_available() else "cpu"
+            device="mps" if not args.cpu and torch.backends.mps.is_available() else "cpu",
+            use_dynamic_threshold=args.dynamic_threshold,
+            bezier_points=bezier_points,
+            final_threshold=args.final_threshold
         )
     
     # Initialize generator
@@ -121,6 +218,21 @@ def run_experiment(args):
         return_parallel_sets=True,
         use_pruning=args.use_pruning
     )
+    
+    # Add dynamic threshold info to results for visualization
+    if args.use_pruning and args.dynamic_threshold:
+        results["dynamic_threshold"] = True
+        results["bezier_points"] = bezier_points
+        
+        # Check that all sets collapsed to a single token at the end
+        if "pruned_sets" in results and results["pruned_sets"]:
+            last_set = results["pruned_sets"][-1]
+            print(f"\nDynamic threshold final pruning result:")
+            print(f"Number of tokens in final step: {len(last_set)}")
+            if len(last_set) == 1:
+                print(f"SUCCESS: Final token set collapsed to a single token as expected")
+            else:
+                print(f"WARNING: Final token set did not collapse to a single token!")
     
     # Print generated text
     print("\nGenerated Text:")
