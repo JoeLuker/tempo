@@ -39,6 +39,9 @@ class RetroactivePruner:
         """
         Get attention scores for the parallel tokens to analyze their coherence.
         
+        This modified implementation creates test sequences where each parallel token
+        is placed at the same position (matching Option A positional encoding).
+        
         Args:
             input_ids: Current input token IDs
             parallel_token_ids: List of token IDs in the current parallel set
@@ -46,20 +49,24 @@ class RetroactivePruner:
         Returns:
             torch.Tensor: Attention scores for each token
         """
-        # Create a sequence with each parallel token appended to input_ids
-        # We'll analyze how they attend to the context
-        batch_size = len(parallel_token_ids)
-        sequences = []
+        # Batch size should be 1 for generation
+        batch_size, seq_len = input_ids.shape
+        
+        # Create sequences with each parallel token at the same position
+        # We'll analyze how these different tokens behave when placed at the same position
+        test_sequences = []
         
         for token_id in parallel_token_ids:
-            seq = torch.cat([
-                input_ids, 
-                torch.tensor([[token_id]], device=self.device)
-            ], dim=1)
-            sequences.append(seq)
+            # Create a new sequence with the current token at the next position
+            new_seq = torch.zeros((1, seq_len + 1), dtype=input_ids.dtype, device=self.device)
+            new_seq[0, :seq_len] = input_ids[0]  # Copy existing tokens
+            new_seq[0, seq_len] = token_id  # Add test token
+            test_sequences.append(new_seq)
             
         # Stack sequences into a batch
-        batch_input_ids = torch.cat(sequences, dim=0)
+        batch_input_ids = torch.cat(test_sequences, dim=0)
+        
+        # Create appropriate attention mask
         attention_mask = torch.ones_like(batch_input_ids)
         
         # Run model to get attention patterns
@@ -81,7 +88,7 @@ class RetroactivePruner:
         # Average across attention heads
         avg_attention = last_token_attention.mean(dim=1)  # [batch_size, seq_len-1]
         
-        # Calculate an attention coherence score
+        # Calculate coherence scores
         # Higher score means more focused attention (more coherent)
         # Lower score means more dispersed attention (less coherent)
         coherence_scores = avg_attention.max(dim=1)[0]  # Max attention value for each token

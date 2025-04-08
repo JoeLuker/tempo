@@ -40,6 +40,8 @@ models/
 .cache/
 .huggingface/
 
+visualizations/
+
 # Jupyter Notebooks
 .ipynb_checkpoints
 *.ipynb
@@ -68,3 +70,6 @@ checkpoints/
 *.jpeg
 *.svg
 *.pdf
+
+
+new-output.txt

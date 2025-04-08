@@ -68,41 +68,45 @@ class ParallelThresholdGenerator:
         
         return tokens, probabilities
     
-    def _update_attention_mask(
-        self, 
-        input_ids: torch.Tensor, 
-        attention_mask: torch.Tensor, 
-        num_new_tokens: int
-    ) -> torch.Tensor:
+    def _create_parallel_set_input(
+        self,
+        base_input_ids: torch.Tensor,
+        base_attention_mask: torch.Tensor,
+        parallel_tokens: List[int]
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Update attention mask to handle parallel tokens.
-        
-        For tokens generated at the same step, they should have the same position
-        in terms of what they can attend to (all previous tokens), and they can
-        attend to each other.
+        Create input tensors for the next forward pass where all tokens in the
+        parallel set are represented with the same positional encoding.
         
         Args:
-            input_ids: Input token IDs
-            attention_mask: Current attention mask
-            num_new_tokens: Number of new tokens being added in parallel
+            base_input_ids: Current input token IDs
+            base_attention_mask: Current attention mask
+            parallel_tokens: List of token IDs in the parallel set
             
         Returns:
-            torch.Tensor: Updated attention mask
+            tuple: (new_input_ids, new_attention_mask)
         """
-        seq_len = input_ids.size(1)
-        current_mask_len = attention_mask.size(1)
+        batch_size, seq_len = base_input_ids.shape
+        num_parallel_tokens = len(parallel_tokens)
         
-        # Create new attention mask for the expanded sequence
-        new_mask = torch.ones(
-            (1, seq_len), 
-            dtype=attention_mask.dtype, 
-            device=self.device
-        )
+        # Create a new tensor that will hold all parallel tokens at the next position
+        new_seq_len = seq_len + 1  # Only add one position for all parallel tokens
+        new_input_ids = torch.zeros((batch_size, new_seq_len), dtype=base_input_ids.dtype, device=self.device)
         
-        # Copy existing mask values
-        new_mask[0, :current_mask_len] = attention_mask[0]
+        # Copy existing tokens
+        new_input_ids[:, :seq_len] = base_input_ids
         
-        return new_mask
+        # Set the first token of the parallel set at the next position
+        # Other tokens in the set are tracked separately but not added to the input sequence
+        # This implements Option A: all tokens share the exact same position
+        if parallel_tokens:
+            new_input_ids[:, seq_len] = parallel_tokens[0]
+        
+        # Create new attention mask for expanded sequence
+        new_attention_mask = torch.ones((batch_size, new_seq_len), dtype=base_attention_mask.dtype, device=self.device)
+        new_attention_mask[:, :seq_len] = base_attention_mask
+        
+        return new_input_ids, new_attention_mask, parallel_tokens
     
     def generate(
         self, 
@@ -137,8 +141,12 @@ class ParallelThresholdGenerator:
         parallel_token_sets = []
         pruned_token_sets = []
         
+        # For properly tracking token positions
+        position_to_tokens = {}  # Maps position -> list of parallel tokens
+        actual_tokens = []  # All tokens in sequence order
+        
         with torch.no_grad():
-            for _ in range(max_tokens):
+            for step in range(max_tokens):
                 # Forward pass to get logits
                 outputs = self.model(
                     input_ids=input_ids,
@@ -170,22 +178,33 @@ class ParallelThresholdGenerator:
                 else:
                     pruned_token_sets.append(token_set)
                 
-                # Update input_ids with parallel tokens
-                # For positional encoding, these tokens will share the same position
-                # We'll duplicate the last position's embedding for all tokens in the set
-                for token in tokens:
-                    # Append token to input_ids
-                    input_ids = torch.cat([input_ids, torch.tensor([[token]], device=self.device)], dim=1)
-                    
-                    # Update attention mask for each token added
-                    attention_mask = self._update_attention_mask(input_ids, attention_mask, 1)
+                # Store parallel tokens at this position
+                position = input_ids.size(1)
+                position_to_tokens[position] = tokens
+                actual_tokens.extend(tokens)
+                
+                # Create new input representation for next step
+                # This properly implements Option A by treating all tokens at the same position
+                input_ids, attention_mask, _ = self._create_parallel_set_input(
+                    input_ids, attention_mask, tokens
+                )
                 
                 # Check if any token is EOS
                 if self.tokenizer.eos_token_id in tokens:
                     break
         
-        # Decode the generated text
-        generated_text = self.tokenizer.decode(input_ids[0], skip_special_tokens=True)
+        # Create a raw representation of the full token sequence including all parallel tokens
+        # This is for decoding the final output
+        full_token_sequence = []
+        for i in range(len(input_data.input_ids[0])):  # Add prompt tokens
+            full_token_sequence.append(input_ids[0, i].item())
+            
+        # Add generated tokens
+        for pos in sorted(position_to_tokens.keys()):
+            full_token_sequence.extend(position_to_tokens[pos])
+        
+        # Decode the generated text with all parallel tokens
+        generated_text = self.tokenizer.decode(full_token_sequence, skip_special_tokens=True)
         
         # Return results
         results = {
@@ -219,5 +238,11 @@ class ParallelThresholdGenerator:
             results["parallel_sets"] = readable_sets
             if use_pruning and self.pruner is not None:
                 results["pruned_sets"] = readable_pruned_sets
+                
+            # Also add positional information
+            position_info = {}
+            for pos, tokens in position_to_tokens.items():
+                position_info[str(pos)] = [self.tokenizer.decode([t]) for t in tokens]
+            results["position_to_tokens"] = position_info
             
         return results 
