@@ -1,14 +1,22 @@
-# Parallel Threshold Output Generation
+# TEMPO: Threshold-Enabled Multiple Parallel Outputs
 
-This project implements and evaluates a non-autoregressive text generation mechanism called "Parallel Threshold Output" using Mistral-7B on Apple Silicon with MPS.
+This project implements and evaluates a non-autoregressive text generation mechanism called "TEMPO" (Threshold-Enabled Multiple Parallel Outputs) using Mistral-7B on Apple Silicon with MPS.
 
 ## Overview
 
-Standard autoregressive text generation may constrain a model's ability to express potentially concurrent internal states. This experiment tests generating multiple tokens simultaneously based on a probability threshold.
+Standard autoregressive text generation may constrain a model's ability to express potentially concurrent internal states. TEMPO explores how language models process sequential information with concurrent possibilities by:
+
+- Using a **Threshold** mechanism that controls token selection
+- **Enabling** functionality that transforms standard generation
+- Generating **Multiple** tokens simultaneously at each step
+- Implementing a **Parallel** generation process
+- Producing **Outputs** that demonstrate model uncertainty
+
+The experiment tests generating multiple tokens simultaneously based on a probability threshold.
 
 ## Core Mechanism
 
-The Parallel Threshold Output mechanism works as follows:
+The TEMPO mechanism works as follows:
 1. Perform a forward pass to get logit probabilities for the next token position
 2. Apply softmax and identify all tokens whose probabilities exceed a threshold
 3. Output this set of tokens as the generation for the current step
@@ -83,4 +91,3 @@ The visualizations include:
 - `src/retroactive_pruning.py`: Implementation of the coherence-based token pruning
 - `src/generate.py`: CLI for running generation experiments
 - `src/visualize_parallel.py`: Visualization tools for analyzing results
-- `src/test_model.py`: Basic model testing utilities 

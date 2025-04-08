@@ -28,6 +28,7 @@ def load_model(model_name="mistralai/Mistral-7B-Instruct-v0.3", use_mps=True):
         model_name,
         torch_dtype=torch.float16,  # Use half precision for better performance
         low_cpu_mem_usage=True,
+        attn_implementation="eager"
     )
     
     # Move model to device after loading
