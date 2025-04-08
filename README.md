@@ -14,6 +14,12 @@ Standard autoregressive text generation may constrain a model's ability to expre
 
 The experiment tests generating multiple tokens simultaneously based on a probability threshold.
 
+## Example Output
+
+Below is a screenshot showing TEMPO in action:
+
+![TEMPO project screenshot](images/hotdog-sandwich.png)
+
 ## Core Mechanism
 
 The TEMPO mechanism works as follows:
@@ -50,8 +56,6 @@ The two pruning strategies directly connect to the Accuracy/Compression/Invarian
 - **Accuracy**: Coherence pruning maximizes accuracy at the cost of compression
 - **Compression**: Diversity pruning preserves multiple distinct pathways (less compression)
 - **Invariance**: Different pruning strategies reveal which representations remain invariant across approaches
-
-<img src="images/pruning_comparison.png" alt="Comparison of coherence vs diversity pruning strategies" width="800"/>
 
 The visualization above compares the effects of coherence-based pruning (left) and diversity-optimized pruning (right) on the same set of parallel tokens. Notice how coherence pruning selects for similar, focused tokens while diversity pruning maintains representational variety.
 
@@ -108,10 +112,6 @@ python src/visualize_parallel.py --results-file results/diversity/results_divers
 
 This allows for examining how different pruning strategies affect the model's representational dynamics.
 
-<img src="images/diversity_clusters.png" alt="Semantic clustering in diversity-optimized pruning" width="700"/>
-
-The visualization above shows how diversity-optimized pruning creates semantic clusters from a set of parallel tokens and selects representatives from each cluster, maintaining broader coverage of the probability space.
-
 ## Visualization
 
 To visualize the parallel token sets and analyze the results:
@@ -130,11 +130,6 @@ The visualizations include:
 - Parallel token sets visualization
 - Pruning effectiveness (when pruning is enabled)
 
-## Example Output
-
-Below is a screenshot showing TEMPO in action:
-
-<img src="images/hotdog-sandwich.png" alt="TEMPO project screenshot" width="800"/>
 
 ## Project Structure
 
