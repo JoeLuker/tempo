@@ -6,4 +6,6 @@ numpy
 tqdm
 matplotlib
 sentencepiece
-protobuf 
+protobuf
+colorama
+seaborn 

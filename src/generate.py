@@ -127,12 +127,6 @@ def run_experiment(args):
         print(f"Average tokens per step: {np.mean(token_counts):.2f}")
         print(f"Max tokens in a step: {max(token_counts)}")
         
-        # Print some example token sets
-        print("\nExample parallel token sets (first 5):")
-        for i, token_set in enumerate(token_sets[:5]):
-            print(f"Step {i}:")
-            for token_text, prob in token_set:
-                print(f"  - '{token_text}' (p={prob:.4f})")
     
     # Save results
     output_file = output_dir / f"results_thresh{args.threshold}.json"

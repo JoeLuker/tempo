@@ -2,6 +2,20 @@ import torch
 import torch.nn.functional as F
 import numpy as np
 from typing import List, Dict, Tuple, Optional, Set
+from colorama import Fore, Style, init as colorama_init
+
+# Initialize colorama for colored terminal output
+colorama_init()
+
+# Define a list of colors to cycle through for parallel tokens
+COLORS = [
+    Fore.RED,
+    Fore.GREEN,
+    Fore.BLUE,
+    Fore.YELLOW,
+    Fore.MAGENTA,
+    Fore.CYAN,
+]
 
 class ParallelThresholdGenerator:
     """
@@ -108,6 +122,115 @@ class ParallelThresholdGenerator:
         
         return new_input_ids, new_attention_mask, parallel_tokens
     
+    def _format_text(self, prompt_text: str, position_to_tokens: Dict[int, List[int]], original_parallel_positions: Set[int], prompt_length: int, token_original_indices: Dict[Tuple[int, int], int]) -> str:
+        """
+        Format generated text using colored brackets for parallel tokens.
+        
+        Args:
+            prompt_text: The initial prompt text
+            position_to_tokens: Mapping of positions to parallel token IDs
+            original_parallel_positions: Set of positions that originally had multiple tokens
+            prompt_length: Length of the prompt in tokens
+            token_original_indices: Mapping of (position, token_id) to original index in the set
+            
+        Returns:
+            str: Formatted text with colored brackets notation
+        """
+        # Start with prompt text (we'll use the raw prompt, not reconstruct it)
+        formatted_text = prompt_text
+        
+        # Process only generated tokens (after prompt)
+        generated_positions = sorted([p for p in position_to_tokens.keys() if p >= prompt_length])
+        
+        # First, create the base sequence with just one token per position
+        # This gives us proper spacing and context
+        base_tokens = []
+        for pos in generated_positions:
+            base_tokens.append(position_to_tokens[pos][0])  # Just take first token from each position
+        
+        # Decode the base sequence to get spacing right
+        base_text = self.tokenizer.decode(base_tokens, skip_special_tokens=True)
+        
+        # Create a text representation for each position
+        position_texts = {}
+        for pos in generated_positions:
+            tokens = position_to_tokens[pos]
+            
+            # Check if this position originally had multiple tokens (before pruning)
+            was_parallel = pos in original_parallel_positions
+            
+            # Format tokens based on whether they were originally part of a parallel set
+            if len(tokens) > 1:
+                # Multiple tokens - use colored bracket notation
+                colored_tokens = []
+                
+                for i, token_id in enumerate(tokens):
+                    token_text = self.tokenizer.decode([token_id], skip_special_tokens=False)
+                    
+                    # Get color based on token's original index in the set
+                    orig_idx = token_original_indices.get((pos, token_id), i)
+                    color_idx = orig_idx % len(COLORS)
+                    color = COLORS[color_idx]
+                    
+                    colored_tokens.append(f"{color}{token_text}{Style.RESET_ALL}")
+                    
+                position_texts[pos] = f"[{'/'.join(colored_tokens)}]"
+            elif was_parallel:
+                # This position originally had multiple tokens but was pruned to one
+                token_id = tokens[0]
+                token_text = self.tokenizer.decode([token_id], skip_special_tokens=False)
+                
+                # Get color based on token's original index in the set
+                orig_idx = token_original_indices.get((pos, token_id), 0)
+                color_idx = orig_idx % len(COLORS)
+                color = COLORS[color_idx]
+                
+                position_texts[pos] = f"{color}{token_text}{Style.RESET_ALL}"
+            else:
+                # Single token that was never part of a parallel set
+                token_text = self.tokenizer.decode([tokens[0]], skip_special_tokens=False)
+                position_texts[pos] = token_text
+        
+        # Reconstruct the text with formatting
+        result = ""
+        remaining_text = base_text
+        
+        # For each position, find its token in the base text and replace with formatted version
+        for pos_idx, pos in enumerate(generated_positions):
+            # Get the token we want to find in the base text
+            token = position_to_tokens[pos][0]
+            token_text = self.tokenizer.decode([token], skip_special_tokens=True)
+            
+            # Single tokens might be subwords that are hard to find, so we need to be smarter
+            # If this is not the first token, use the preceding text as context
+            if pos_idx > 0:
+                # Get a chunk of text to search within
+                search_idx = remaining_text.find(token_text)
+                if search_idx != -1:
+                    # Add text up to this token
+                    result += remaining_text[:search_idx]
+                    # Add our formatted token
+                    result += position_texts[pos]
+                    # Update remaining text
+                    remaining_text = remaining_text[search_idx + len(token_text):]
+                else:
+                    # Fallback - just append the formatted token
+                    result += position_texts[pos]
+            else:
+                # First token - simpler case
+                if remaining_text.startswith(token_text):
+                    result += position_texts[pos]
+                    remaining_text = remaining_text[len(token_text):]
+                else:
+                    # Fallback
+                    result += position_texts[pos]
+        
+        # Add any remaining text
+        result += remaining_text
+            
+        # Combine prompt with formatted generated text
+        return prompt_text + " " + result
+    
     def generate(
         self, 
         prompt: str, 
@@ -143,7 +266,16 @@ class ParallelThresholdGenerator:
         
         # For properly tracking token positions
         position_to_tokens = {}  # Maps position -> list of parallel tokens
-        actual_tokens = []  # All tokens in sequence order
+        # Also track which positions originally had multiple tokens before pruning
+        original_parallel_positions = set()  # Set of positions that had multiple tokens before pruning
+        
+        # Track the original token indices to maintain colors
+        token_original_indices = {}  # Maps (position, token_id) -> original index in the set
+        
+        # Store prompt token positions
+        prompt_length = len(input_data.input_ids[0])
+        for i in range(prompt_length):
+            position_to_tokens[i] = [input_data.input_ids[0, i].item()]
         
         with torch.no_grad():
             for step in range(max_tokens):
@@ -169,6 +301,17 @@ class ParallelThresholdGenerator:
                 token_set = [(t, p) for t, p in zip(tokens, probs)]
                 parallel_token_sets.append(token_set)
                 
+                # Track the current position
+                position = input_ids.size(1)
+                
+                # Store original token indices for color tracking
+                for i, token_id in enumerate(tokens):
+                    token_original_indices[(position, token_id)] = i
+                
+                # Check if this is originally a parallel position (has multiple tokens)
+                if len(tokens) > 1:
+                    original_parallel_positions.add(position)
+                
                 # Apply retroactive pruning if enabled and available
                 if use_pruning and self.pruner is not None:
                     pruned_token_set = self.pruner.prune_parallel_tokens(input_ids, token_set)
@@ -179,9 +322,7 @@ class ParallelThresholdGenerator:
                     pruned_token_sets.append(token_set)
                 
                 # Store parallel tokens at this position
-                position = input_ids.size(1)
                 position_to_tokens[position] = tokens
-                actual_tokens.extend(tokens)
                 
                 # Create new input representation for next step
                 # This properly implements Option A by treating all tokens at the same position
@@ -193,22 +334,33 @@ class ParallelThresholdGenerator:
                 if self.tokenizer.eos_token_id in tokens:
                     break
         
-        # Create a raw representation of the full token sequence including all parallel tokens
-        # This is for decoding the final output
+        # Format output text
+        prompt_text = self.tokenizer.decode(input_data.input_ids[0], skip_special_tokens=True)
+        formatted_text = self._format_text(
+            prompt_text, 
+            position_to_tokens, 
+            original_parallel_positions, 
+            prompt_length, 
+            token_original_indices
+        )
+        
+        # Also generate raw text for analysis purposes
         full_token_sequence = []
-        for i in range(len(input_data.input_ids[0])):  # Add prompt tokens
-            full_token_sequence.append(input_ids[0, i].item())
+        for i in range(prompt_length):
+            full_token_sequence.append(input_data.input_ids[0, i].item())
             
         # Add generated tokens
         for pos in sorted(position_to_tokens.keys()):
-            full_token_sequence.extend(position_to_tokens[pos])
+            if pos >= prompt_length:  # Only add tokens after the prompt
+                full_token_sequence.extend(position_to_tokens[pos])
         
-        # Decode the generated text with all parallel tokens
-        generated_text = self.tokenizer.decode(full_token_sequence, skip_special_tokens=True)
+        # Decode the raw generated text
+        raw_generated_text = self.tokenizer.decode(full_token_sequence, skip_special_tokens=True)
         
         # Return results
         results = {
-            "generated_text": generated_text,
+            "generated_text": formatted_text,
+            "raw_generated_text": raw_generated_text,
             "prompt": prompt,
             "threshold": threshold,
             "use_pruning": use_pruning
@@ -242,7 +394,8 @@ class ParallelThresholdGenerator:
             # Also add positional information
             position_info = {}
             for pos, tokens in position_to_tokens.items():
-                position_info[str(pos)] = [self.tokenizer.decode([t]) for t in tokens]
+                if pos >= prompt_length:  # Only include generated tokens
+                    position_info[str(pos)] = [self.tokenizer.decode([t]) for t in tokens]
             results["position_to_tokens"] = position_info
             
         return results 
