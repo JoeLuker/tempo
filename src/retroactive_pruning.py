@@ -12,6 +12,7 @@ class RetroactivePruner:
     This class analyzes parallel token sets and prunes tokens either based on:
     1. Coherence - prioritizing tokens that lead to coherent continuations
     2. Diversity - intentionally preserving tokens that represent different semantic pathways
+    3. Hybrid - using diversity for initial steps, then switching to coherence
     """
     
     def __init__(
@@ -25,7 +26,8 @@ class RetroactivePruner:
         use_dynamic_threshold: bool = False,
         max_steps: Optional[int] = None,
         bezier_points: Optional[List[float]] = None,
-        final_threshold: float = 1.0
+        final_threshold: float = 1.0,
+        diversity_steps: int = 0
     ):
         """
         Initialize the pruner.
@@ -35,12 +37,13 @@ class RetroactivePruner:
             tokenizer: HuggingFace tokenizer
             coherence_threshold: Threshold for pruning tokens based on attention coherence
             diversity_clusters: Number of clusters to use for diversity-optimized pruning
-            pruning_strategy: Strategy to use, either "coherence" or "diversity"
+            pruning_strategy: Strategy to use, either "coherence", "diversity", or "hybrid"
             device: Device to use for computation
             use_dynamic_threshold: Whether to use dynamic thresholds that increase over steps
             max_steps: Maximum number of steps (for calculating dynamic threshold)
             bezier_points: Control points for Bezier curve [p1, p2] between 0-1 (default creates exponential curve)
             final_threshold: Final threshold value for dynamic threshold (default 1.0)
+            diversity_steps: Number of steps to use diversity pruning before switching to coherence (for hybrid strategy)
         """
         self.model = model
         self.tokenizer = tokenizer
@@ -52,6 +55,7 @@ class RetroactivePruner:
         self.max_steps = max_steps
         self.current_step = 0
         self.final_threshold = final_threshold
+        self.diversity_steps = diversity_steps
         
         # Default Bezier control points for exponential-like curve that starts slow and accelerates
         self.bezier_points = bezier_points if bezier_points is not None else [0.2, 0.8]
@@ -449,7 +453,28 @@ class RetroactivePruner:
             return pruned_tokens, all_pruned_sets
         elif self.pruning_strategy == "diversity":
             pruned_tokens = self._diversity_optimized_pruning(input_ids, parallel_tokens)
+            
+            # Increment step counter for hybrid strategy tracking
+            self.current_step += 1
+            
+            return pruned_tokens, [pruned_tokens]
+        elif self.pruning_strategy == "hybrid":
+            # Use diversity pruning for the first diversity_steps steps
+            if self.current_step < self.diversity_steps:
+                pruned_tokens = self._diversity_optimized_pruning(input_ids, parallel_tokens)
+            else:
+                # Switch to coherence pruning after diversity_steps
+                pruned_tokens, _ = self._coherence_optimized_pruning(input_ids, parallel_tokens)
+            
+            # Increment step counter
+            self.current_step += 1
+            
             return pruned_tokens, [pruned_tokens]
         else:
+            # Default to coherence pruning
             pruned_tokens, _ = self._coherence_optimized_pruning(input_ids, parallel_tokens)
+            
+            # Increment step counter for hybrid strategy tracking
+            self.current_step += 1
+            
             return pruned_tokens, [pruned_tokens] 

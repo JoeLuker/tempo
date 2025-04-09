@@ -379,7 +379,8 @@ class ParallelThresholdGenerator:
         threshold: Optional[float] = None,
         return_parallel_sets: bool = False,
         use_pruning: bool = False,
-        require_custom_attention: bool = False
+        require_custom_attention: bool = False,
+        min_steps: int = 0
     ) -> Dict:
         """
         Generate text using the Parallel Threshold Output mechanism.
@@ -391,6 +392,7 @@ class ParallelThresholdGenerator:
             return_parallel_sets: If True, return the sets of parallel tokens
             use_pruning: Whether to use retroactive pruning (if pruner is available)
             require_custom_attention: If True, will raise an error if custom attention is not available
+            min_steps: Minimum number of steps before stopping for EOS tokens
             
         Returns:
             dict: Results including the generated text
@@ -588,10 +590,12 @@ class ParallelThresholdGenerator:
                     attention_mask = new_attention_mask
             
             # Only stop generation if ALL tokens in the set are EOS tokens
+            # and we've generated at least min_steps tokens
             if (hasattr(self.tokenizer, 'eos_token_id') and 
                 len(pruned_token_ids) > 0 and 
-                all(t == self.tokenizer.eos_token_id for t in pruned_token_ids)):
-                print(f"DEBUG: Stopping because all tokens are EOS")
+                all(t == self.tokenizer.eos_token_id for t in pruned_token_ids) and
+                i >= min_steps):
+                print(f"DEBUG: Stopping because all tokens are EOS after {i+1} steps (min_steps={min_steps})")
                 break
         
         # If using dynamic threshold, we need to update position_to_tokens with final pruned states
@@ -635,7 +639,8 @@ class ParallelThresholdGenerator:
             "raw_generated_text": raw_generated_text,
             "prompt": prompt,
             "threshold": threshold,
-            "use_pruning": use_pruning
+            "use_pruning": use_pruning,
+            "min_steps": min_steps
         }
         
         if return_parallel_sets:

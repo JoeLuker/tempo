@@ -34,6 +34,8 @@ def parse_args():
                         help="Probability threshold for token selection")
     parser.add_argument("--max-tokens", type=int, default=100,
                         help="Maximum number of tokens to generate")
+    parser.add_argument("--min-steps", type=int, default=0,
+                        help="Minimum number of generation steps before stopping for EOS tokens")
     parser.add_argument("--use-pruning", action="store_true",
                         help="Enable retroactive pruning")
     parser.add_argument("--output-dir", type=str, default="results",
@@ -42,8 +44,10 @@ def parse_args():
                         help="Threshold for pruning tokens based on coherence")
     parser.add_argument("--diversity-clusters", type=int, default=3,
                         help="Number of clusters for diversity-optimized pruning")
-    parser.add_argument("--pruning-strategy", type=str, default="coherence", choices=["coherence", "diversity"],
-                        help="Pruning strategy to use: coherence or diversity")
+    parser.add_argument("--pruning-strategy", type=str, default="coherence", choices=["coherence", "diversity", "hybrid"],
+                        help="Pruning strategy to use: coherence, diversity, or hybrid")
+    parser.add_argument("--diversity-steps", type=int, default=10,
+                        help="Number of steps to use diversity pruning before switching to coherence (for hybrid strategy)")
     parser.add_argument("--threshold-sweep", action="store_true",
                         help="Run experiments with various threshold values")
     parser.add_argument("--thresholds", type=str, default="0.01,0.05,0.1,0.2,0.3",
@@ -81,6 +85,9 @@ def visualize_token_sets(results, output_path):
     use_pruning = results.get("use_pruning", False)
     dynamic_threshold = results.get("dynamic_threshold", False)
     bezier_points = results.get("bezier_points", [0.2, 0.8])
+    pruning_strategy = results.get("pruning_strategy", "coherence") 
+    diversity_steps = results.get("diversity_steps", 0)
+    min_steps = results.get("min_steps", 0)
     
     # Count number of tokens per step
     steps = list(range(len(token_sets)))
@@ -96,10 +103,31 @@ def visualize_token_sets(results, output_path):
     plt.bar(steps, token_counts, alpha=0.7, label="Original")
     if pruned_sets:
         plt.bar(steps, pruned_counts, alpha=0.5, label="After Pruning")
+        
+        # If using hybrid strategy, show where the switch happens
+        if pruning_strategy == "hybrid" and diversity_steps > 0 and diversity_steps < len(steps):
+            plt.axvline(x=diversity_steps, color='red', linestyle='--', 
+                        label=f"Switch from Diversity to Coherence")
+        
+        # If min_steps is set, show a line indicating where the model can start stopping for EOS
+        if min_steps > 0 and min_steps < len(steps):
+            plt.axvline(x=min_steps, color='green', linestyle='-.',
+                       label=f"Min. Steps ({min_steps})")
+            
         plt.legend()
     plt.xlabel("Generation Step")
     plt.ylabel("Number of Parallel Tokens")
-    plt.title(f"Tokens per Step (Threshold={results['threshold']})")
+    
+    strategy_text = f"Threshold={results['threshold']}"
+    if pruning_strategy == "hybrid":
+        strategy_text += f", Hybrid (Diversity→Coherence at step {diversity_steps})"
+    elif pruning_strategy:
+        strategy_text += f", {pruning_strategy.capitalize()} pruning"
+    
+    if min_steps > 0:
+        strategy_text += f", Min Steps={min_steps}"
+        
+    plt.title(f"Tokens per Step ({strategy_text})")
     
     # Plot token probabilities for each step
     plt.subplot(1 if not dynamic_threshold else 3, 2, 2)
@@ -107,6 +135,14 @@ def visualize_token_sets(results, output_path):
         probs = [t[1] for t in token_set]
         plt.scatter([i] * len(probs), probs, alpha=0.6)
     
+    # If using hybrid strategy, show where the switch happens
+    if pruning_strategy == "hybrid" and diversity_steps > 0 and diversity_steps < 20:
+        plt.axvline(x=diversity_steps, color='red', linestyle='--')
+    
+    # If min_steps is set, show a line indicating where the model can start stopping for EOS
+    if min_steps > 0 and min_steps < 20:
+        plt.axvline(x=min_steps, color='green', linestyle='-.')
+        
     plt.xlabel("Generation Step")
     plt.ylabel("Token Probability")
     plt.title("Token Probabilities by Step")
@@ -222,8 +258,12 @@ def run_experiment(args):
                     print(f"  - All sets will collapse to single tokens by completion (final threshold ≈ 1.0)")
                 else:
                     print(f"  - Sets will maintain multiple tokens based on threshold (final threshold < 1.0)")
-        else:
+        elif args.pruning_strategy == "diversity":
             print(f"Diversity clusters: {args.diversity_clusters}")
+        elif args.pruning_strategy == "hybrid":
+            print(f"Hybrid strategy using diversity for {args.diversity_steps} steps, then coherence")
+            print(f"Diversity clusters: {args.diversity_clusters}")
+            print(f"Coherence threshold: {args.coherence_threshold}")
             
         pruner = RetroactivePruner(
             model=model,
@@ -233,8 +273,10 @@ def run_experiment(args):
             pruning_strategy=args.pruning_strategy,
             device="mps" if not args.cpu and torch.backends.mps.is_available() else "cpu",
             use_dynamic_threshold=args.dynamic_threshold,
+            max_steps=args.max_tokens,
             bezier_points=bezier_points,
-            final_threshold=args.final_threshold
+            final_threshold=args.final_threshold,
+            diversity_steps=args.diversity_steps
         )
     
     # Initialize generator
@@ -249,6 +291,8 @@ def run_experiment(args):
     
     # Generate text
     print(f"Generating with prompt: '{args.prompt}'")
+    print(f"Using min_steps={args.min_steps}, max_tokens={args.max_tokens}")
+    
     if generation_mode == "standard" and not args.custom_attention:
         # For standard generation without custom attention, use standard methods
         with torch.no_grad():
@@ -256,14 +300,16 @@ def run_experiment(args):
             output = model.generate(
                 input_ids,
                 max_length=input_ids.shape[1] + args.max_tokens, 
-                do_sample=True
+                do_sample=True,
+                min_length=input_ids.shape[1] + args.min_steps  # Ensure min_steps tokens are generated
             )
             results = {
                 "generated_text": tokenizer.decode(output[0], skip_special_tokens=True),
                 "raw_generated_text": tokenizer.decode(output[0], skip_special_tokens=True),
                 "prompt": args.prompt,
                 "threshold": args.threshold,
-                "use_pruning": args.use_pruning
+                "use_pruning": args.use_pruning,
+                "min_steps": args.min_steps
             }
     else:
         # Use parallel generation
@@ -273,7 +319,8 @@ def run_experiment(args):
             threshold=args.threshold,
             return_parallel_sets=True,
             use_pruning=args.use_pruning,
-            require_custom_attention=args.require_custom_attention
+            require_custom_attention=args.require_custom_attention,
+            min_steps=args.min_steps
         )
     
     # Add dynamic threshold info to results for visualization
@@ -290,6 +337,12 @@ def run_experiment(args):
                 print(f"SUCCESS: Final token set collapsed to a single token as expected")
             else:
                 print(f"WARNING: Final token set did not collapse to a single token!")
+    
+    # Add pruning strategy info to results
+    if args.use_pruning:
+        results["pruning_strategy"] = args.pruning_strategy
+        if args.pruning_strategy == "hybrid":
+            results["diversity_steps"] = args.diversity_steps
     
     # Print generated text
     print("\nGenerated Text:")
@@ -312,6 +365,8 @@ def run_experiment(args):
             pruned_counts = [len(s) for s in pruned_sets]
             
             print(f"\nPruning Statistics ({args.pruning_strategy} strategy):")
+            if args.pruning_strategy == "hybrid":
+                print(f"Strategy: Diversity for {args.diversity_steps} steps, then Coherence")
             print(f"Average tokens before pruning: {np.mean(token_counts):.2f}")
             print(f"Average tokens after pruning: {np.mean(pruned_counts):.2f}")
             print(f"Max tokens before pruning: {max(token_counts)}")
@@ -362,6 +417,14 @@ def run_threshold_sweep(args):
     attention_mode = "with custom attention" if args.custom_attention else "without custom attention"
     
     print(f"Running {generation_mode} threshold sweep {attention_mode} with values: {thresholds}")
+    
+    # Print pruning strategy info
+    if args.use_pruning:
+        if args.pruning_strategy == "hybrid":
+            print(f"Using hybrid pruning strategy: diversity for {args.diversity_steps} steps, then coherence")
+        else:
+            print(f"Using {args.pruning_strategy} pruning strategy")
+            
     all_results = []
     
     for threshold in tqdm(thresholds):
@@ -417,7 +480,8 @@ def run_threshold_sweep(args):
             "thresholds": thresholds,
             "generation_mode": generation_mode,
             "custom_attention": args.custom_attention,
-            "prompt": args.prompt
+            "prompt": args.prompt,
+            "min_steps": args.min_steps
         }
         
         # Add mode-specific metrics
@@ -446,3 +510,7 @@ if __name__ == "__main__":
         run_experiment(args)
     
     print("\nGeneration Complete!")
+    if args.use_pruning and args.pruning_strategy == "hybrid":
+        print(f"Used hybrid pruning: diversity for {args.diversity_steps} steps, then coherence")
+    if args.min_steps > 0:
+        print(f"Enforced minimum of {args.min_steps} steps before stopping for EOS tokens")
