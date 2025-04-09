@@ -28,6 +28,8 @@ def parse_args():
     
     parser.add_argument("--prompt", type=str, default="In a surprising turn of events, scientists discovered that",
                         help="Text prompt to start generation")
+    parser.add_argument("--prompt-file", type=str,
+                        help="Path to a text file containing the prompt (overrides --prompt if specified)")
     parser.add_argument("--model", type=str, default="mistralai/Mistral-7B-Instruct-v0.3",
                         help="HuggingFace model name/path")
     parser.add_argument("--threshold", type=float, default=0.1,
@@ -199,6 +201,16 @@ def run_experiment(args):
     # Create output directory
     output_dir = Path(args.output_dir)
     output_dir.mkdir(exist_ok=True, parents=True)
+    
+    # Handle prompt file if specified
+    if args.prompt_file:
+        try:
+            with open(args.prompt_file, 'r', encoding='utf-8') as f:
+                args.prompt = f.read().strip()
+            print(f"Loaded prompt from file: {args.prompt_file}")
+        except Exception as e:
+            print(f"Error loading prompt file: {e}")
+            print(f"Falling back to default prompt: '{args.prompt}'")
     
     # Parse Bezier control points if using dynamic threshold
     bezier_points = None
@@ -410,6 +422,16 @@ def run_experiment(args):
 
 def run_threshold_sweep(args):
     """Run experiments with multiple threshold values."""
+    # Handle prompt file if specified
+    if args.prompt_file:
+        try:
+            with open(args.prompt_file, 'r', encoding='utf-8') as f:
+                args.prompt = f.read().strip()
+            print(f"Loaded prompt from file: {args.prompt_file}")
+        except Exception as e:
+            print(f"Error loading prompt file: {e}")
+            print(f"Falling back to default prompt: '{args.prompt}'")
+    
     thresholds = [float(t) for t in args.thresholds.split(",")]
     
     # Determine generation mode for display

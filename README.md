@@ -100,6 +100,9 @@ pip install -r requirements.txt
 # Run the generator
 python src/generate.py --prompt "Your prompt here" --threshold 0.1
 
+# Run the generator with a prompt from a text file
+python src/generate.py --prompt-file "your_prompt.txt" --threshold 0.1
+
 # Run with coherence-based pruning (maximizes coherence)
 python src/generate.py --prompt "Your prompt here" --threshold 0.1 --use-pruning --pruning-strategy coherence --coherence-threshold 0.7
 
@@ -121,6 +124,9 @@ python src/generate.py --prompt "Your prompt here" --threshold 0.1 --use-pruning
 # Run threshold sweep experiments
 python src/generate.py --prompt "Your prompt here" --threshold-sweep --thresholds "0.05,0.1,0.2,0.3"
 
+# Run threshold sweep with a prompt from file
+python src/generate.py --prompt-file "your_prompt.txt" --threshold-sweep --thresholds "0.05,0.1,0.2,0.3"
+
 # Basic model testing (no parallel generation)
 python src/test_model.py
 ```
@@ -132,6 +138,9 @@ To compare the effect of different pruning strategies on the same prompt:
 ```bash
 # Generate with coherence pruning
 python src/generate.py --prompt "Your prompt here" --threshold 0.1 --use-pruning --pruning-strategy coherence --output-dir results/coherence
+
+# Generate with coherence pruning using a prompt from file
+python src/generate.py --prompt-file "your_prompt.txt" --threshold 0.1 --use-pruning --pruning-strategy coherence --output-dir results/coherence
 
 # Generate with dynamic coherence pruning (slow-start Bezier curve)
 python src/generate.py --prompt "Your prompt here" --threshold 0.1 --use-pruning --pruning-strategy coherence --dynamic-threshold --bezier-preset slow-start --output-dir results/dynamic-slow
