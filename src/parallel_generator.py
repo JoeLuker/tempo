@@ -530,27 +530,24 @@ class ParallelThresholdGenerator:
                 try:
                     if len(pruned_token_ids) > 1:
                         # Only bother pruning if we have multiple tokens
+                        # Create the expected list of (token_id, probability) tuples
+                        parallel_tokens_with_probs = list(zip(pruned_token_ids, pruned_token_probs))
+                        
                         pruned_result = self.pruner.prune_parallel_tokens(
                             input_ids=input_ids,
-                            attention_mask=attention_mask,
-                            parallel_tokens=pruned_token_ids,
-                            position_idx=i,
-                            token_probs=pruned_token_probs
+                            parallel_tokens=parallel_tokens_with_probs
                         )
                         
                         # Replace with the pruned set if we got results
                         if pruned_result and isinstance(pruned_result, tuple) and len(pruned_result) >= 1:
-                            pruned_token_ids = pruned_result[0]
+                            pruned_tokens_with_probs = pruned_result[0]
                             
-                            # Extract probabilities from the pruned result if available
-                            pruned_token_probs = [p for _, p in pruned_token_ids] if hasattr(pruned_token_ids[0], '__iter__') else pruned_token_probs[:len(pruned_token_ids)]
-                            
-                            # Ensure pruned_token_ids is just a list of IDs (not tuples)
-                            if hasattr(pruned_token_ids[0], '__iter__'):
-                                pruned_token_ids = [t for t, _ in pruned_token_ids]
+                            # Extract token IDs and probabilities from the pruned result
+                            pruned_token_ids = [t for t, _ in pruned_tokens_with_probs]
+                            pruned_token_probs = [p for _, p in pruned_tokens_with_probs]
                 except Exception as e:
                     # If pruning fails, just continue with the original tokens
-                    pass
+                    print(f"Pruning failed: {e}")
             
             # Create a list of (token_id, probability) tuples for the pruned set
             pruned_raw_token_set = list(zip(pruned_token_ids, pruned_token_probs))

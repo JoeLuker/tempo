@@ -38,7 +38,7 @@ def parse_args():
                         help="Enable retroactive pruning")
     parser.add_argument("--output-dir", type=str, default="results",
                         help="Directory to save results")
-    parser.add_argument("--coherence-threshold", type=float, default=0.3,
+    parser.add_argument("--coherence-threshold", type=float, default=0.7,
                         help="Threshold for pruning tokens based on coherence")
     parser.add_argument("--diversity-clusters", type=int, default=3,
                         help="Number of clusters for diversity-optimized pruning")
@@ -446,14 +446,3 @@ if __name__ == "__main__":
         run_experiment(args)
     
     print("\nGeneration Complete!")
-    print("\nUsage examples:")
-    print("-" * 50)
-    print("# Standard generation:")
-    print("python src/generate.py --standard-generation --prompt \"Your prompt here\"")
-    print("\n# Parallel generation with custom attention (default):")
-    print("python src/generate.py --prompt \"Your prompt here\" --threshold 0.05")
-    print("\n# Parallel generation without custom attention:")
-    print("python src/generate.py --prompt \"Your prompt here\" --threshold 0.05 --no-custom-attention")
-    print("\n# Parallel generation with pruning:")
-    print("python src/generate.py --prompt \"Your prompt here\" --threshold 0.05 --use-pruning")
-    print("-" * 50) 
