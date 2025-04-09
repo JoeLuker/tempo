@@ -6,10 +6,22 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 from tqdm import tqdm
+import os
+import sys
 
-from model_loader import load_model
-from parallel_generator import ParallelThresholdGenerator
-from retroactive_pruning import RetroactivePruner
+# Add this for handling imports when run as a script
+if __name__ == "__main__":
+    # Add the parent directory to the Python path so we can import from src
+    parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    sys.path.insert(0, parent_dir)
+    from src.model_loader import load_model
+    from src.parallel_generator import ParallelThresholdGenerator
+    from src.retroactive_pruning import RetroactivePruner
+else:
+    # Regular imports when imported as a module
+    from src.model_loader import load_model
+    from src.parallel_generator import ParallelThresholdGenerator
+    from src.retroactive_pruning import RetroactivePruner
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Run Parallel Threshold Output generation experiments")
@@ -46,6 +58,14 @@ def parse_args():
                         help="Preset Bezier curves: slow-start [0.2,0.8], linear [0.5,0.5], fast-start [0.8,0.2], s-curve [0.2,0.2]")
     parser.add_argument("--cpu", action="store_true", 
                         help="Force CPU execution (no MPS)")
+    
+    # New parallel generation options
+    parser.add_argument("--standard-generation", action="store_true",
+                        help="Use standard single-token generation instead of parallel generation")
+    parser.add_argument("--require-custom-attention", action="store_true",
+                        help="Require custom attention support for parallel generation")
+    parser.add_argument("--custom-attention", action="store_true",
+                        help="Enable custom attention masking for parallel generation")
     
     return parser.parse_args()
 
@@ -165,9 +185,24 @@ def run_experiment(args):
                 bezier_points = [0.2, 0.2]  # S-shaped curve with slow start and end
                 print("Using 's-curve' Bezier preset: [0.2, 0.2]")
     
-    # Load model and tokenizer
+    # Load model and tokenizer with custom attention if requested
     print(f"Loading model: {args.model}")
-    model, tokenizer = load_model(args.model, use_mps=not args.cpu)
+    model, tokenizer = load_model(
+        args.model, 
+        use_mps=not args.cpu,
+        use_custom_attention=args.custom_attention
+    )
+    
+    # Determine generation mode
+    if args.standard_generation:
+        generation_mode = "standard"
+        print("Using standard (single-token) generation mode")
+    else:
+        generation_mode = "parallel"
+        if args.custom_attention:
+            print("Using parallel generation with custom attention masking")
+        else:
+            print("Using parallel generation without custom attention masking")
     
     # Initialize pruner if needed
     pruner = None
@@ -212,12 +247,32 @@ def run_experiment(args):
     
     # Generate text
     print(f"Generating with prompt: '{args.prompt}'")
-    results = generator.generate(
-        prompt=args.prompt,
-        max_tokens=args.max_tokens,
-        return_parallel_sets=True,
-        use_pruning=args.use_pruning
-    )
+    if generation_mode == "standard" and not args.custom_attention:
+        # For standard generation without custom attention, use standard methods
+        with torch.no_grad():
+            input_ids = tokenizer.encode(args.prompt, return_tensors="pt").to("mps" if not args.cpu and torch.backends.mps.is_available() else "cpu")
+            output = model.generate(
+                input_ids,
+                max_length=input_ids.shape[1] + args.max_tokens, 
+                do_sample=True
+            )
+            results = {
+                "generated_text": tokenizer.decode(output[0], skip_special_tokens=True),
+                "raw_generated_text": tokenizer.decode(output[0], skip_special_tokens=True),
+                "prompt": args.prompt,
+                "threshold": args.threshold,
+                "use_pruning": args.use_pruning
+            }
+    else:
+        # Use parallel generation
+        results = generator.generate(
+            prompt=args.prompt,
+            max_tokens=args.max_tokens,
+            threshold=args.threshold,
+            return_parallel_sets=True,
+            use_pruning=args.use_pruning,
+            require_custom_attention=args.require_custom_attention
+        )
     
     # Add dynamic threshold info to results for visualization
     if args.use_pruning and args.dynamic_threshold:
@@ -255,12 +310,32 @@ def run_experiment(args):
             pruned_counts = [len(s) for s in pruned_sets]
             
             print(f"\nPruning Statistics ({args.pruning_strategy} strategy):")
+            print(f"Average tokens before pruning: {np.mean(token_counts):.2f}")
             print(f"Average tokens after pruning: {np.mean(pruned_counts):.2f}")
+            print(f"Max tokens before pruning: {max(token_counts)}")
             print(f"Max tokens after pruning: {max(pruned_counts)}")
-            print(f"Average reduction: {(1 - np.mean(pruned_counts) / np.mean(token_counts)) * 100:.1f}%")
+            
+            # Calculate the average reduction percentage
+            # Avoid division by zero
+            reductions = []
+            for orig, pruned in zip(token_counts, pruned_counts):
+                if orig > 0:
+                    reduction = (1 - pruned / orig) * 100
+                    reductions.append(reduction)
+            
+            if reductions:
+                avg_reduction = np.mean(reductions)
+                print(f"Average reduction: {avg_reduction:.1f}%")
+                
+                # Count how many sets had any pruning applied
+                sets_pruned = sum(1 for orig, pruned in zip(token_counts, pruned_counts) if orig > pruned)
+                print(f"Sets with pruning applied: {sets_pruned}/{len(token_sets)} ({(sets_pruned/len(token_sets))*100:.1f}%)")
+            else:
+                print("No reduction data available")
     
     # Save results
-    output_file = output_dir / f"results_{args.pruning_strategy}_thresh{args.threshold}.json"
+    strategy_name = "standard" if generation_mode == "standard" else args.pruning_strategy if args.use_pruning else "parallel"
+    output_file = output_dir / f"results_{strategy_name}_thresh{args.threshold}.json"
     with open(output_file, "w") as f:
         # Convert any numpy values to Python scalars for JSON serialization
         json_serializable_results = {}
@@ -280,7 +355,11 @@ def run_threshold_sweep(args):
     """Run experiments with multiple threshold values."""
     thresholds = [float(t) for t in args.thresholds.split(",")]
     
-    print(f"Running threshold sweep with values: {thresholds}")
+    # Determine generation mode for display
+    generation_mode = "standard" if args.standard_generation else "parallel"
+    attention_mode = "with custom attention" if args.custom_attention else "without custom attention"
+    
+    print(f"Running {generation_mode} threshold sweep {attention_mode} with values: {thresholds}")
     all_results = []
     
     for threshold in tqdm(thresholds):
@@ -293,31 +372,86 @@ def run_threshold_sweep(args):
     
     # Compare number of tokens per threshold
     plt.figure(figsize=(10, 6))
-    avg_tokens = [
-        np.mean([len(s) for s in result["parallel_sets"]])
-        for result in all_results
-    ]
     
-    plt.plot(thresholds, avg_tokens, marker='o')
-    plt.xlabel("Threshold Value")
-    plt.ylabel("Average Tokens per Step")
-    plt.title("Effect of Threshold on Parallel Token Generation")
-    plt.grid(True, alpha=0.3)
+    # For parallel generation, get average tokens per step
+    if not args.standard_generation and "parallel_sets" in all_results[0]:
+        avg_tokens = [
+            np.mean([len(s) for s in result["parallel_sets"]])
+            for result in all_results
+        ]
+        
+        plt.plot(thresholds, avg_tokens, marker='o')
+        plt.xlabel("Threshold Value")
+        plt.ylabel("Average Tokens per Step")
+        plt.title(f"Effect of Threshold on {generation_mode.capitalize()} Token Generation")
+        plt.grid(True, alpha=0.3)
+        
+        # Also calculate and plot average token probabilities
+        if len(all_results) > 0 and "parallel_sets" in all_results[0]:
+            plt.figure(figsize=(10, 6))
+            avg_probs = []
+            
+            for result in all_results:
+                # Calculate average probability of all tokens across all sets
+                all_probs = []
+                for token_set in result["parallel_sets"]:
+                    all_probs.extend([prob for _, prob in token_set])
+                
+                avg_probs.append(np.mean(all_probs) if all_probs else 0)
+            
+            plt.plot(thresholds, avg_probs, marker='o', color='orange')
+            plt.xlabel("Threshold Value")
+            plt.ylabel("Average Token Probability")
+            plt.title(f"Average Token Probability by Threshold ({generation_mode.capitalize()})")
+            plt.grid(True, alpha=0.3)
+            plt.savefig(output_dir / "probability_by_threshold.png")
+    
+    # Save main comparison plot
     plt.savefig(output_dir / "threshold_comparison.png")
     
     # Save sweep results
     with open(output_dir / "threshold_sweep_summary.json", "w") as f:
         summary = {
             "thresholds": thresholds,
-            "avg_tokens_per_step": avg_tokens,
+            "generation_mode": generation_mode,
+            "custom_attention": args.custom_attention,
             "prompt": args.prompt
         }
+        
+        # Add mode-specific metrics
+        if not args.standard_generation and "parallel_sets" in all_results[0]:
+            summary["avg_tokens_per_step"] = avg_tokens
+            if 'avg_probs' in locals():
+                summary["avg_token_probabilities"] = avg_probs
+        
         json.dump(summary, f, indent=2)
 
 if __name__ == "__main__":
     args = parse_args()
     
+    # Show generation mode based on args
+    if args.standard_generation:
+        print("Running in standard generation mode")
+    else:
+        if args.custom_attention:
+            print("Running in parallel generation mode WITH custom attention")
+        else:
+            print("Running in parallel generation mode WITHOUT custom attention")
+    
     if args.threshold_sweep:
         run_threshold_sweep(args)
     else:
-        run_experiment(args) 
+        run_experiment(args)
+    
+    print("\nGeneration Complete!")
+    print("\nUsage examples:")
+    print("-" * 50)
+    print("# Standard generation:")
+    print("python src/generate.py --standard-generation --prompt \"Your prompt here\"")
+    print("\n# Parallel generation without custom attention:")
+    print("python src/generate.py --prompt \"Your prompt here\" --threshold 0.05")
+    print("\n# Parallel generation with custom attention:")
+    print("python src/generate.py --prompt \"Your prompt here\" --threshold 0.05 --custom-attention")
+    print("\n# Parallel generation with pruning:")
+    print("python src/generate.py --prompt \"Your prompt here\" --threshold 0.05 --custom-attention --use-pruning")
+    print("-" * 50) 

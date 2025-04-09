@@ -1,13 +1,26 @@
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
+import os
+import sys
 
-def load_model(model_name="mistralai/Mistral-7B-Instruct-v0.3", use_mps=True):
+# Add this for handling imports when run as a script
+if __name__ == "__main__":
+    # Add the parent directory to the Python path so we can import from src
+    parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    sys.path.insert(0, parent_dir)
+    from src.custom_transformer_model import CustomParallelAttentionModel
+else:
+    # Regular imports when imported as a module
+    from src.custom_transformer_model import CustomParallelAttentionModel
+
+def load_model(model_name="mistralai/Mistral-7B-Instruct-v0.3", use_mps=True, use_custom_attention=False):
     """
     Load the Mistral-7B model and tokenizer optimized for MPS on Apple Silicon.
     
     Args:
         model_name (str): HuggingFace model identifier
         use_mps (bool): Whether to use MPS for acceleration
+        use_custom_attention (bool): Whether to wrap the model with custom attention support
     
     Returns:
         tuple: (model, tokenizer)
@@ -33,6 +46,11 @@ def load_model(model_name="mistralai/Mistral-7B-Instruct-v0.3", use_mps=True):
     
     # Move model to device after loading
     model = model.to(device)
+    
+    # Optionally wrap with custom attention model
+    if use_custom_attention:
+        print(f"Wrapping model with custom parallel attention support")
+        model = CustomParallelAttentionModel(model)
     
     return model, tokenizer
 

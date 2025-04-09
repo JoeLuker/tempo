@@ -1,3 +1,31 @@
+# Parallel Token Generation with Custom Attention Masks
+# 
+# IMPORTANT NOTE:
+# This implementation requires a modified transformer model that accepts a 'custom_attention_mask' parameter
+# in its forward method. The custom_attention_mask should be a 3D tensor of shape (batch_size, seq_len, seq_len)
+# where a value of 1.0 means the token can attend to another token, and 0.0 means it cannot.
+#
+# To modify a huggingface transformer model to accept this parameter, you'll need to:
+# 1. Subclass the model and override the forward method
+# 2. Modify the forward method to use the custom_attention_mask when provided
+# 3. Pass the custom_attention_mask to each layer's attention mechanism
+#
+# Example modification for a transformer model:
+#
+# ```python
+# class CustomTransformerModel(AutoModelForCausalLM):
+#     def forward(self, input_ids, attention_mask=None, custom_attention_mask=None, **kwargs):
+#         if custom_attention_mask is not None:
+#             # Use the custom attention mask
+#             # This would require modifying how attention is computed in each layer
+#             return super().forward(input_ids, attention_mask=attention_mask, 
+#                                   custom_attention_pattern=custom_attention_mask, **kwargs)
+#         else:
+#             return super().forward(input_ids, attention_mask=attention_mask, **kwargs)
+# ```
+#
+# The specific implementation details will vary depending on the transformer architecture.
+
 import torch
 import torch.nn.functional as F
 import numpy as np
@@ -19,38 +47,53 @@ COLORS = [
 
 class ParallelThresholdGenerator:
     """
-    Implements the Parallel Threshold Output generation mechanism for Mistral-7B.
+    Text generator that produces multiple tokens at each position based on a probability threshold.
     
-    This mechanism generates multiple tokens in parallel at each step based on a
-    probability threshold, instead of the standard autoregressive approach.
+    This approach outputs all tokens above a certain probability threshold at each step,
+    providing a more nuanced view of the model's predictions and handling ambiguity better.
+    
+    Features:
+    - Outputs tokens with probabilities above a threshold at each generation step
+    - Tracks parallel tokens at the same position for analysis or visualization
+    - Optional retroactive pruning to prune parallel tokens based on additional criteria
+    - Uses custom attention masking to allow all tokens at position N to attend to each other
     """
     
     def __init__(
         self, 
         model, 
         tokenizer, 
-        threshold: float = 0.1,
-        max_length: int = 512,
-        device: str = "mps",
-        pruner = None
+        device="cpu", 
+        threshold=0.005,
+        pruner=None
     ):
         """
-        Initialize the generator.
+        Initialize the parallel text generator.
         
         Args:
-            model: The Mistral-7B model
-            tokenizer: HuggingFace tokenizer
-            threshold: Probability threshold for token selection
-            max_length: Maximum sequence length
-            device: Device to use for computation
-            pruner: Optional RetroactivePruner instance for coherence-based pruning
+            model: Hugging Face transformer model (should be a CustomParallelAttentionModel for full functionality)
+            tokenizer: Hugging Face tokenizer
+            device: Device to use (cuda, cpu, etc.)
+            threshold: Probability threshold for token selection (default: 0.005)
+            pruner: Optional RetroactivePruner for pruning parallel tokens
         """
         self.model = model
         self.tokenizer = tokenizer
-        self.threshold = threshold
-        self.max_length = max_length
         self.device = device
+        self.threshold = threshold
         self.pruner = pruner
+        
+        # Check if we have a custom model that supports custom attention masks
+        # Look for the has_custom_attention_support attribute from our CustomParallelAttentionModel
+        self.has_custom_attention = (
+            hasattr(model, 'has_custom_attention_support') and 
+            model.has_custom_attention_support
+        )
+        
+        if self.has_custom_attention:
+            print("Using custom parallel attention masking")
+        else:
+            print("Custom attention masking not available - parallel tokens will be independent")
         
     def _get_parallel_tokens(
         self, 
@@ -77,8 +120,17 @@ class ParallelThresholdGenerator:
         # Sort by probability (highest first)
         sorted_indices = torch.argsort(selected_probs, descending=True)
         
-        tokens = tokens_above_threshold[sorted_indices].tolist()
-        probabilities = selected_probs[sorted_indices].tolist()
+        # Get token IDs and probabilities as integers and floats
+        tokens = [int(token_id.item()) for token_id in tokens_above_threshold[sorted_indices]]
+        probabilities = [float(prob.item()) for prob in selected_probs[sorted_indices]]
+        
+        # If no tokens above threshold, get the single highest probability token
+        if not tokens:
+            # Get the token with highest probability
+            max_prob_token = torch.argmax(probs, dim=-1).item()
+            max_prob = probs[0, max_prob_token].item()
+            tokens = [int(max_prob_token)]
+            probabilities = [float(max_prob)]
         
         return tokens, probabilities
     
@@ -90,7 +142,7 @@ class ParallelThresholdGenerator:
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Create input tensors for the next forward pass where all tokens in the
-        parallel set are represented with the same positional encoding.
+        parallel set are represented with their own position but can attend to each other.
         
         Args:
             base_input_ids: Current input token IDs
@@ -100,27 +152,77 @@ class ParallelThresholdGenerator:
         Returns:
             tuple: (new_input_ids, new_attention_mask)
         """
+        # Verify all tokens are integers
+        valid_tokens = []
+        for token in parallel_tokens:
+            if isinstance(token, int):
+                valid_tokens.append(token)
+            else:
+                try:
+                    # Try to convert to int if possible
+                    valid_tokens.append(int(token))
+                except (ValueError, TypeError):
+                    pass
+        
+        # Update parallel_tokens with valid tokens only
+        parallel_tokens = valid_tokens
+        
+        # If we have no valid tokens, return the base inputs unchanged
+        if not parallel_tokens:
+            return base_input_ids, base_attention_mask
+            
         batch_size, seq_len = base_input_ids.shape
         num_parallel_tokens = len(parallel_tokens)
         
-        # Create a new tensor that will hold all parallel tokens at the next position
-        new_seq_len = seq_len + 1  # Only add one position for all parallel tokens
+        
+        # Create a new tensor that will hold all parallel tokens
+        new_seq_len = seq_len + num_parallel_tokens  # Add each parallel token as its own position
         new_input_ids = torch.zeros((batch_size, new_seq_len), dtype=base_input_ids.dtype, device=self.device)
         
         # Copy existing tokens
         new_input_ids[:, :seq_len] = base_input_ids
         
-        # Set the first token of the parallel set at the next position
-        # Other tokens in the set are tracked separately but not added to the input sequence
-        # This implements Option A: all tokens share the exact same position
-        if parallel_tokens:
-            new_input_ids[:, seq_len] = parallel_tokens[0]
+        # Add all parallel tokens at subsequent positions
+        for i, token_id in enumerate(parallel_tokens):
+            new_input_ids[:, seq_len + i] = token_id
         
-        # Create new attention mask for expanded sequence
-        new_attention_mask = torch.ones((batch_size, new_seq_len), dtype=base_attention_mask.dtype, device=self.device)
-        new_attention_mask[:, :seq_len] = base_attention_mask
+        # Create standard token-level attention mask (1=use token, 0=mask token)
+        # This is the default causal mask used by most transformer models
+        simple_attention_mask = torch.ones((batch_size, new_seq_len), 
+                                          dtype=base_attention_mask.dtype, 
+                                          device=self.device)
         
-        return new_input_ids, new_attention_mask, parallel_tokens
+        # For our 3D custom attention mask (used by the custom model)
+        # We'll store this separately and pass it to the forward pass
+        custom_attention_mask = torch.zeros((batch_size, new_seq_len, new_seq_len), 
+                                           dtype=torch.float, 
+                                           device=self.device)
+        
+        # Build the custom 3D attention mask:
+        # 1. Standard causal mask for original tokens (lower triangular)
+        for i in range(seq_len):
+            for j in range(i+1):  # j <= i
+                custom_attention_mask[:, i, j] = 1.0
+                
+        # 2. Parallel tokens can attend to all previous tokens
+        for i in range(num_parallel_tokens):
+            pos = seq_len + i
+            # Allow this parallel token to attend to all original tokens
+            custom_attention_mask[:, pos, :seq_len] = 1.0
+            
+            # 3. All parallel tokens can attend to each other (full connectivity)
+            for j in range(num_parallel_tokens):
+                other_pos = seq_len + j
+                custom_attention_mask[:, pos, other_pos] = 1.0
+        
+        # First, simplify to a binary mask where 1=can attend, 0=cannot attend
+        self.full_attention_mask = custom_attention_mask
+        # Ensure the mask has the right shape and dtype for the model
+        if self.full_attention_mask is not None:
+            # Should be float tensor with shape [batch_size, seq_len, seq_len]
+            self.full_attention_mask = self.full_attention_mask.to(dtype=torch.float)
+        
+        return new_input_ids, simple_attention_mask
     
     def _format_text(self, prompt_text: str, position_to_tokens: Dict[int, List[int]], original_parallel_positions: Set[int], prompt_length: int, token_original_indices: Dict[Tuple[int, int], int]) -> str:
         """
@@ -237,7 +339,8 @@ class ParallelThresholdGenerator:
         max_tokens: int = 100, 
         threshold: Optional[float] = None,
         return_parallel_sets: bool = False,
-        use_pruning: bool = False
+        use_pruning: bool = False,
+        require_custom_attention: bool = False
     ) -> Dict:
         """
         Generate text using the Parallel Threshold Output mechanism.
@@ -248,17 +351,36 @@ class ParallelThresholdGenerator:
             threshold: Override default threshold
             return_parallel_sets: If True, return the sets of parallel tokens
             use_pruning: Whether to use retroactive pruning (if pruner is available)
+            require_custom_attention: If True, will raise an error if custom attention is not available
             
         Returns:
             dict: Results including the generated text
         """
         if threshold is None:
             threshold = self.threshold
-            
+        
+        # Check if we need custom attention
+        if require_custom_attention and not self.has_custom_attention:
+            raise ValueError(
+                "Custom attention is required but not available. "
+                "Please use a model with CustomParallelAttentionModel wrapper."
+            )
+        
+        # If we don't have custom attention support, warn the user
+        if not self.has_custom_attention:
+            print(
+                "Warning: Custom attention is not available. "
+                "Parallel tokens will be added to the sequence but won't see each other. "
+                "This may produce less coherent results."
+            )
+        
         # Encode prompt
         input_data = self.tokenizer(prompt, return_tensors="pt")
         input_ids = input_data.input_ids.to(self.device)
         attention_mask = input_data.attention_mask.to(self.device)
+        
+        # Initialize our full attention mask property
+        self.full_attention_mask = None
         
         # If using dynamic threshold, set the max steps in the pruner
         if use_pruning and self.pruner is not None and hasattr(self.pruner, 'use_dynamic_threshold') and self.pruner.use_dynamic_threshold:
@@ -269,97 +391,178 @@ class ParallelThresholdGenerator:
             # Clear any existing token sets
             if hasattr(self.pruner, 'all_token_sets'):
                 self.pruner.all_token_sets = []
-                self.pruner.all_token_scores = []
-                self.pruner.all_input_ids = []
         
         # Track sets of parallel tokens for analysis
-        parallel_token_sets = []
-        pruned_token_sets = []
+        original_token_sets = []  # Before pruning
+        pruned_token_sets = []    # After pruning
+        original_token_sets_raw = []  # Raw token IDs and probs before pruning
+        pruned_token_sets_raw = []    # Raw token IDs and probs after pruning
+        generated_ids = []
         
-        # For properly tracking token positions
-        position_to_tokens = {}  # Maps position -> list of parallel tokens
-        # Also track which positions originally had multiple tokens before pruning
-        original_parallel_positions = set()  # Set of positions that had multiple tokens before pruning
+        # Track positions that originally had multiple tokens (before pruning)
+        original_parallel_positions = set()
         
-        # Track the original token indices to maintain colors
-        token_original_indices = {}  # Maps (position, token_id) -> original index in the set
+        # Track token indices within their original sets
+        # This is used for consistent coloring in the final output
+        token_original_indices = {}
         
-        # Store prompt token positions
+        # Initialize position_to_tokens mapping
+        position_to_tokens = {}
         prompt_length = len(input_data.input_ids[0])
+        
+        # Add prompt tokens to the position mapping
         for i in range(prompt_length):
             position_to_tokens[i] = [input_data.input_ids[0, i].item()]
         
-        with torch.no_grad():
-            for step in range(max_tokens):
-                # Forward pass to get logits
-                outputs = self.model(
-                    input_ids=input_ids,
-                    attention_mask=attention_mask
-                )
-                
-                # Get last token's logits
-                next_token_logits = outputs.logits[:, -1, :]
-                
-                # Get parallel tokens above threshold
-                tokens, probs = self._get_parallel_tokens(next_token_logits, threshold)
-                
-                # If no tokens above threshold, fall back to standard sampling
-                if not tokens:
-                    next_token = torch.argmax(next_token_logits, dim=-1)
-                    tokens = [next_token.item()]
-                    probs = [F.softmax(next_token_logits, dim=-1)[0, next_token].item()]
-                
-                # Create token set for this generation step
-                token_set = [(t, p) for t, p in zip(tokens, probs)]
-                parallel_token_sets.append(token_set)
-                
-                # Track the current position
-                position = input_ids.size(1)
-                
-                # Store original token indices for color tracking
-                for i, token_id in enumerate(tokens):
-                    token_original_indices[(position, token_id)] = i
-                
-                # Check if this is originally a parallel position (has multiple tokens)
-                if len(tokens) > 1:
-                    original_parallel_positions.add(position)
-                
-                # Apply retroactive pruning if enabled and available
-                if use_pruning and self.pruner is not None:
-                    # The new interface returns both the current pruned set and all updated pruned sets
-                    if hasattr(self.pruner, 'use_dynamic_threshold') and self.pruner.use_dynamic_threshold:
-                        current_pruned_set, all_pruned_sets = self.pruner.prune_parallel_tokens(input_ids, token_set)
-                        # Use the most recent pruned sets for all positions
-                        pruned_token_sets = all_pruned_sets
-                        tokens = [t[0] for t in current_pruned_set]
-                        probs = [t[1] for t in current_pruned_set]
-                    else:
-                        # Old interface for non-dynamic threshold
-                        pruned_token_set = self.pruner.prune_parallel_tokens(input_ids, token_set)
-                        tokens = [t[0] for t in pruned_token_set]
-                        probs = [t[1] for t in pruned_token_set]
-                        pruned_token_sets.append(pruned_token_set)
+        # Iteratively generate tokens
+        for i in range(max_tokens):
+            # Get model prediction
+            with torch.no_grad():
+                if self.has_custom_attention and self.full_attention_mask is not None:
+                    # Use custom attention mask if available
+                    outputs = self.model(
+                        input_ids=input_ids,
+                        attention_mask=attention_mask,
+                        custom_attention_mask=self.full_attention_mask
+                    )
                 else:
-                    pruned_token_sets.append(token_set)
+                    # Standard forward pass
+                    outputs = self.model(
+                        input_ids=input_ids,
+                        attention_mask=attention_mask
+                    )
+            
+            # Get logits for the next token (last position in sequence)
+            next_token_logits = outputs.logits[:, -1, :]
+            
+            # Get tokens above threshold
+            next_token_ids, next_token_probs = self._get_parallel_tokens(
+                next_token_logits, threshold
+            )
+            
+            # Skip if no tokens above threshold
+            if not next_token_ids:
+                continue
+            
+            # Only filter out EOS tokens if they are the only token in the set
+            # and this isn't the last token generation
+            if (len(next_token_ids) == 1 and 
+                hasattr(self.tokenizer, 'eos_token_id') and 
+                next_token_ids[0] == self.tokenizer.eos_token_id and
+                i < max_tokens - 1):
+                # Skip this step - get a different token
+                continue
                 
-                # Store parallel tokens at this position
-                position_to_tokens[position] = tokens
+            # Create a list of (token_id, probability) tuples for the original set
+            original_raw_token_set = list(zip(next_token_ids, next_token_probs))
+            
+            # Store raw token IDs and probabilities of the original set
+            original_token_sets_raw.append(original_raw_token_set)
+            
+            # Decode tokens to strings for human-readable output
+            original_token_texts = []
+            for token_id, prob in original_raw_token_set:
+                try:
+                    token_text = self.tokenizer.decode([token_id], skip_special_tokens=False)
+                    original_token_texts.append((token_text, prob))
+                except Exception:
+                    pass
+            
+            # Store decoded token texts for the original set
+            original_token_sets.append(original_token_texts)
+            
+            # Track original token indices in the set
+            for idx, (token_id, _) in enumerate(original_raw_token_set):
+                token_original_indices[(len(generated_ids), token_id)] = idx
                 
-                # Create new input representation for next step
-                # This properly implements Option A by treating all tokens at the same position
-                input_ids, attention_mask, _ = self._create_parallel_set_input(
-                    input_ids, attention_mask, tokens
+            # If we have multiple tokens, mark this as a parallel position
+            if len(next_token_ids) > 1:
+                original_parallel_positions.add(len(generated_ids))
+                
+            # Create a copy of the original tokens for pruning
+            pruned_token_ids = next_token_ids.copy()
+            pruned_token_probs = next_token_probs.copy()
+                
+            # Apply pruning if requested and available
+            if (use_pruning and self.pruner is not None and 
+                hasattr(self.pruner, 'prune_parallel_tokens')):
+                
+                # Apply retroactive pruning to potentially reduce the token set
+                try:
+                    if len(pruned_token_ids) > 1:
+                        # Only bother pruning if we have multiple tokens
+                        pruned_result = self.pruner.prune_parallel_tokens(
+                            input_ids=input_ids,
+                            attention_mask=attention_mask,
+                            parallel_tokens=pruned_token_ids,
+                            position_idx=i,
+                            token_probs=pruned_token_probs
+                        )
+                        
+                        # Replace with the pruned set if we got results
+                        if pruned_result and isinstance(pruned_result, tuple) and len(pruned_result) >= 1:
+                            pruned_token_ids = pruned_result[0]
+                            
+                            # Extract probabilities from the pruned result if available
+                            pruned_token_probs = [p for _, p in pruned_token_ids] if hasattr(pruned_token_ids[0], '__iter__') else pruned_token_probs[:len(pruned_token_ids)]
+                            
+                            # Ensure pruned_token_ids is just a list of IDs (not tuples)
+                            if hasattr(pruned_token_ids[0], '__iter__'):
+                                pruned_token_ids = [t for t, _ in pruned_token_ids]
+                except Exception as e:
+                    # If pruning fails, just continue with the original tokens
+                    pass
+            
+            # Create a list of (token_id, probability) tuples for the pruned set
+            pruned_raw_token_set = list(zip(pruned_token_ids, pruned_token_probs))
+            
+            # Store raw token IDs and probabilities of the pruned set
+            pruned_token_sets_raw.append(pruned_raw_token_set)
+            
+            # Decode tokens to strings for human-readable output of the pruned set
+            pruned_token_texts = []
+            for token_id, prob in pruned_raw_token_set:
+                try:
+                    token_text = self.tokenizer.decode([token_id], skip_special_tokens=False)
+                    pruned_token_texts.append((token_text, prob))
+                except Exception:
+                    pass
+            
+            # Store decoded token texts for the pruned set
+            pruned_token_sets.append(pruned_token_texts)
+            
+            # Store pruned tokens at this position
+            generated_ids.append(pruned_token_ids)
+            
+            # Add pruned tokens to position_to_tokens mapping
+            position_to_tokens[prompt_length + len(generated_ids) - 1] = pruned_token_ids
+            
+            # Create new input representation for next step with all tokens in the pruned set
+            try:
+                input_ids, attention_mask = self._create_parallel_set_input(
+                    input_ids, attention_mask, pruned_token_ids
                 )
-                
-                # Check if any token is EOS
-                if self.tokenizer.eos_token_id in tokens:
-                    break
+            except Exception as e:
+                # Fall back to simpler approach if anything goes wrong - just add the first token
+                if pruned_token_ids:
+                    # Append the first token to input_ids
+                    new_input_ids = torch.cat([input_ids, torch.tensor([[pruned_token_ids[0]]], device=self.device)], dim=1)
+                    new_attention_mask = torch.cat([attention_mask, torch.ones((1, 1), device=self.device)], dim=1)
+                    input_ids = new_input_ids
+                    attention_mask = new_attention_mask
+            
+            # Only stop generation if ALL tokens in the set are EOS tokens
+            if (hasattr(self.tokenizer, 'eos_token_id') and 
+                len(pruned_token_ids) > 0 and 
+                all(t == self.tokenizer.eos_token_id for t in pruned_token_ids)):
+                print(f"DEBUG: Stopping because all tokens are EOS")
+                break
         
         # If using dynamic threshold, we need to update position_to_tokens with final pruned states
         if use_pruning and self.pruner is not None and hasattr(self.pruner, 'use_dynamic_threshold') and self.pruner.use_dynamic_threshold:
-            # First, get the final pruned sets with the highest threshold
-            if hasattr(self.pruner, 'reapply_dynamic_threshold_to_all_sets'):
-                final_pruned_sets = self.pruner.reapply_dynamic_threshold_to_all_sets()
+            # Check if we have final pruned sets
+            if hasattr(self.pruner, 'get_final_pruned_sets'):
+                final_pruned_sets = self.pruner.get_final_pruned_sets()
                 
                 # Update position_to_tokens with the final pruned state
                 for step, pruned_set in enumerate(final_pruned_sets):
@@ -368,10 +571,9 @@ class ParallelThresholdGenerator:
                         # Update with the final pruned tokens
                         position_to_tokens[position] = [t[0] for t in pruned_set]
         
-        # Format output text
-        prompt_text = self.tokenizer.decode(input_data.input_ids[0], skip_special_tokens=True)
+        # Format generated text
         formatted_text = self._format_text(
-            prompt_text, 
+            prompt,
             position_to_tokens, 
             original_parallel_positions, 
             prompt_length, 
@@ -401,35 +603,33 @@ class ParallelThresholdGenerator:
         }
         
         if return_parallel_sets:
-            # Convert tokens to text for easier analysis
-            readable_sets = []
-            readable_pruned_sets = []
+            # Include both raw token IDs and human-readable texts
+            results["parallel_sets_raw"] = original_token_sets_raw
             
-            for token_set, pruned_set in zip(parallel_token_sets, pruned_token_sets):
-                # Original parallel set
-                readable_set = []
-                for token, prob in token_set:
-                    token_text = self.tokenizer.decode([token])
-                    readable_set.append((token_text, prob))
-                readable_sets.append(readable_set)
-                
-                # Pruned set (if different)
-                if use_pruning and self.pruner is not None:
-                    readable_pruned = []
-                    for token, prob in pruned_set:
-                        token_text = self.tokenizer.decode([token])
-                        readable_pruned.append((token_text, prob))
-                    readable_pruned_sets.append(readable_pruned)
-                
-            results["parallel_sets"] = readable_sets
+            # Store both original and pruned sets
+            results["parallel_sets"] = original_token_sets
+            
             if use_pruning and self.pruner is not None:
-                results["pruned_sets"] = readable_pruned_sets
+                results["pruned_sets"] = pruned_token_sets
+                results["pruned_sets_raw"] = pruned_token_sets_raw
                 
             # Also add positional information
             position_info = {}
             for pos, tokens in position_to_tokens.items():
                 if pos >= prompt_length:  # Only include generated tokens
-                    position_info[str(pos)] = [self.tokenizer.decode([t]) for t in tokens]
+                    # Safely decode each token
+                    decoded_tokens = []
+                    for t in tokens:
+                        try:
+                            if isinstance(t, int):
+                                decoded_tokens.append(self.tokenizer.decode([t]))
+                            else:
+                                # Skip invalid tokens
+                                pass
+                        except Exception:
+                            # Skip on any decoding error
+                            pass
+                    position_info[str(pos)] = decoded_tokens
             results["position_to_tokens"] = position_info
             
         return results 
