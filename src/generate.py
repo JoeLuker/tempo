@@ -64,8 +64,10 @@ def parse_args():
                         help="Use standard single-token generation instead of parallel generation")
     parser.add_argument("--require-custom-attention", action="store_true",
                         help="Require custom attention support for parallel generation")
-    parser.add_argument("--custom-attention", action="store_true",
+    parser.add_argument("--custom-attention", action="store_true", default=True,
                         help="Enable custom attention masking for parallel generation")
+    parser.add_argument("--no-custom-attention", action="store_false", dest="custom_attention",
+                        help="Disable custom attention masking for parallel generation")
     
     return parser.parse_args()
 
@@ -434,7 +436,7 @@ if __name__ == "__main__":
         print("Running in standard generation mode")
     else:
         if args.custom_attention:
-            print("Running in parallel generation mode WITH custom attention")
+            print("Running in parallel generation mode WITH custom attention (default)")
         else:
             print("Running in parallel generation mode WITHOUT custom attention")
     
@@ -448,10 +450,10 @@ if __name__ == "__main__":
     print("-" * 50)
     print("# Standard generation:")
     print("python src/generate.py --standard-generation --prompt \"Your prompt here\"")
-    print("\n# Parallel generation without custom attention:")
+    print("\n# Parallel generation with custom attention (default):")
     print("python src/generate.py --prompt \"Your prompt here\" --threshold 0.05")
-    print("\n# Parallel generation with custom attention:")
-    print("python src/generate.py --prompt \"Your prompt here\" --threshold 0.05 --custom-attention")
+    print("\n# Parallel generation without custom attention:")
+    print("python src/generate.py --prompt \"Your prompt here\" --threshold 0.05 --no-custom-attention")
     print("\n# Parallel generation with pruning:")
-    print("python src/generate.py --prompt \"Your prompt here\" --threshold 0.05 --custom-attention --use-pruning")
+    print("python src/generate.py --prompt \"Your prompt here\" --threshold 0.05 --use-pruning")
     print("-" * 50) 

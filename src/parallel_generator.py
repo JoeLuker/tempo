@@ -30,19 +30,28 @@ import torch
 import torch.nn.functional as F
 import numpy as np
 from typing import List, Dict, Tuple, Optional, Set
-from colorama import Fore, Style, init as colorama_init
+from colorama import Fore, Style, just_fix_windows_console
+import os
+import platform
 
-# Initialize colorama for colored terminal output
-colorama_init()
+# Initialize colorama with the safer, newer approach
+# This makes Windows act like Unix with respect to ANSI escape handling
+just_fix_windows_console()
+
+# Set terminal capabilities for better color support
+os.environ['TERM'] = 'xterm-256color'
+os.environ['FORCE_COLOR'] = '1'
+if platform.system() == 'Darwin':  # macOS
+    print("Terminal should support colors with just_fix_windows_console()")
 
 # Define a list of colors to cycle through for parallel tokens
 COLORS = [
-    Fore.RED,
-    Fore.GREEN,
-    Fore.BLUE,
-    Fore.YELLOW,
-    Fore.MAGENTA,
-    Fore.CYAN,
+    Fore.LIGHTYELLOW_EX,  # Replacing red with light yellow as first color
+    Fore.LIGHTGREEN_EX,
+    Fore.LIGHTBLUE_EX,
+    Fore.LIGHTMAGENTA_EX,  # Light purple/pink
+    Fore.LIGHTCYAN_EX,
+    Fore.LIGHTGREEN_EX,
 ]
 
 class ParallelThresholdGenerator:
@@ -241,6 +250,17 @@ class ParallelThresholdGenerator:
         # Start with prompt text (we'll use the raw prompt, not reconstruct it)
         formatted_text = prompt_text
         
+        # Define fixed colors using direct ANSI codes for better compatibility
+        # Using direct ANSI codes since they work in the terminal
+        RED = "\033[93m"          # Light Yellow (replacing Red)
+        BLUE = "\033[94m"         # Bright Blue
+        GREEN = "\033[92m"        # Bright Green
+        YELLOW = "\033[95m"       # Light Magenta (swapping with Yellow)
+        MAGENTA = "\033[95m"      # Bright Magenta
+        CYAN = "\033[96m"         # Bright Cyan
+        RESET = "\033[0m"
+        BOLD = "\033[1m"  # Make brackets bold for better visibility
+        
         # Process only generated tokens (after prompt)
         generated_positions = sorted([p for p in position_to_tokens.keys() if p >= prompt_length])
         
@@ -255,6 +275,7 @@ class ParallelThresholdGenerator:
         
         # Create a text representation for each position
         position_texts = {}
+        
         for pos in generated_positions:
             tokens = position_to_tokens[pos]
             
@@ -263,31 +284,49 @@ class ParallelThresholdGenerator:
             
             # Format tokens based on whether they were originally part of a parallel set
             if len(tokens) > 1:
-                # Multiple tokens - use colored bracket notation
+                # Get all token texts first
+                token_texts = []
+                for token_id in tokens:
+                    text = self.tokenizer.decode([token_id], skip_special_tokens=False)
+                    token_texts.append(text)
+                    
+                # Now color them in order with direct ANSI codes
                 colored_tokens = []
                 
-                for i, token_id in enumerate(tokens):
-                    token_text = self.tokenizer.decode([token_id], skip_special_tokens=False)
-                    
-                    # Get color based on token's original index in the set
-                    orig_idx = token_original_indices.get((pos, token_id), i)
-                    color_idx = orig_idx % len(COLORS)
-                    color = COLORS[color_idx]
-                    
-                    colored_tokens.append(f"{color}{token_text}{Style.RESET_ALL}")
-                    
-                position_texts[pos] = f"[{'/'.join(colored_tokens)}]"
+                # First token - RED
+                colored_tokens.append(f"{RED}{token_texts[0]}{RESET}")
+                
+                # Second token - BLUE
+                if len(token_texts) > 1:
+                    colored_tokens.append(f"{BLUE}{token_texts[1]}{RESET}")
+                
+                # Third token - GREEN
+                if len(token_texts) > 2:
+                    colored_tokens.append(f"{GREEN}{token_texts[2]}{RESET}")
+                
+                # Fourth token - YELLOW
+                if len(token_texts) > 3:
+                    colored_tokens.append(f"{YELLOW}{token_texts[3]}{RESET}")
+                
+                # Fifth token - MAGENTA
+                if len(token_texts) > 4:
+                    colored_tokens.append(f"{MAGENTA}{token_texts[4]}{RESET}")
+                
+                # Any remaining tokens - CYAN
+                if len(token_texts) > 5:
+                    for i in range(5, len(token_texts)):
+                        colored_tokens.append(f"{CYAN}{token_texts[i]}{RESET}")
+                
+                # Join with explicit slash character
+                joined_tokens = "/".join(colored_tokens)
+                
+                # Add BOLD brackets with RESET codes to make the bracket notation more visible
+                position_texts[pos] = f"{BOLD}[{RESET}{joined_tokens}{BOLD}]{RESET}"
             elif was_parallel:
                 # This position originally had multiple tokens but was pruned to one
                 token_id = tokens[0]
                 token_text = self.tokenizer.decode([token_id], skip_special_tokens=False)
-                
-                # Get color based on token's original index in the set
-                orig_idx = token_original_indices.get((pos, token_id), 0)
-                color_idx = orig_idx % len(COLORS)
-                color = COLORS[color_idx]
-                
-                position_texts[pos] = f"{color}{token_text}{Style.RESET_ALL}"
+                position_texts[pos] = f"{RED}{token_text}{RESET}"  # Always RED for single token
             else:
                 # Single token that was never part of a parallel set
                 token_text = self.tokenizer.decode([tokens[0]], skip_special_tokens=False)
