@@ -1,8 +1,13 @@
-# Import primary modules for easier access
-from src.model_loader import load_model, prepare_input
-from src.parallel_generator import ParallelThresholdGenerator
-from src.retroactive_pruning import RetroactivePruner
-from src.custom_transformer_model import CustomParallelAttentionModel
+"""
+TEMPO: Threshold-based Exploration with Multipath Parallel Output
 
-# Version information
-__version__ = "0.1.0" 
+This package implements parallel token generation with threshold pruning.
+"""
+
+__version__ = "0.1.0"
+
+# Import subpackages
+from . import generation
+from . import pruning  
+from . import visualization
+from . import experiments 

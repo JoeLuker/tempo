@@ -34,6 +34,18 @@ The TEMPO mechanism works as follows:
 ### Positional Encoding (Option A)
 All tokens within a simultaneously generated set at step N receive the exact same positional encoding. This explicitly encodes their co-occurrence temporally and treats the set holistically.
 
+### Custom RoPE Implementation
+The system now includes a direct modification to Rotary Position Embeddings (RoPE) that explicitly assigns the same position to all tokens within a parallel set. This custom implementation:
+
+1. **Intercepts position IDs**: Modifies the position IDs before they're used by the attention mechanism
+2. **Creates position mapping**: Maps all tokens in a parallel set to share the same position embedding
+3. **Maintains coherence**: Helps parallel tokens behave as true alternatives by sharing identical positional context
+4. **Patches all layers**: Ensures that all RoPE implementations throughout the model are consistently modified
+5. **KV cache integration**: Maintains consistency between position encodings and key-value cache states
+6. **Coordinated attention**: Works together with custom attention masking for fully parallel generation
+
+This approach provides stronger theoretical grounding for parallel token generation by ensuring parallel tokens truly occupy the same position in the model's representation space.
+
 ### Attention Masking
 The attention mask is modified to maintain causality between steps while allowing full attention within each step's token set.
 
@@ -105,6 +117,18 @@ python src/generate.py --prompt-file "your_prompt.txt" --threshold 0.1
 
 # Run with coherence-based pruning (maximizes coherence)
 python src/generate.py --prompt "Your prompt here" --threshold 0.1 --use-pruning --pruning-strategy coherence --coherence-threshold 0.7
+
+# Run with direct RoPE modification disabled
+python src/generate.py --prompt "Your prompt here" --threshold 0.1 --no-use-custom-rope
+
+# Enable debug mode for detailed logging
+python src/generate.py --prompt "Your prompt here" --threshold 0.1 --debug-mode
+
+# Disable KV cache consistency checks if having issues
+python src/generate.py --prompt "Your prompt here" --threshold 0.1 --disable-kv-cache-consistency
+
+# Disable KV caching entirely for more consistent attention patterns
+python src/generate.py --prompt "Your prompt here" --threshold 0.1 --disable-kv-cache
 
 # Run with dynamic coherence threshold (gradually increases to 1.0)
 python src/generate.py --prompt "Your prompt here" --threshold 0.1 --use-pruning --pruning-strategy coherence --coherence-threshold 0.3 --dynamic-threshold
