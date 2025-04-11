@@ -43,6 +43,21 @@ class Pruner:
             final_threshold: Final threshold value for dynamic threshold
             diversity_steps: Number of steps to use diversity pruning before switching to coherence
         """
+        # Invariant: Model and tokenizer must exist
+        if model is None or tokenizer is None:
+            raise ValueError("Invariant violation: Model and tokenizer must be provided")
+            
+        # Invariant: Strategy must be valid
+        if strategy not in ["coherence", "diversity", "hybrid"]:
+            raise ValueError(f"Invariant violation: Strategy must be one of 'coherence', 'diversity', or 'hybrid', got '{strategy}'")
+            
+        # Invariant: Thresholds must be valid
+        if not (0 <= coherence_threshold <= 1):
+            raise ValueError(f"Invariant violation: Coherence threshold must be between 0 and 1, got {coherence_threshold}")
+            
+        if not (0 <= final_threshold <= 1):
+            raise ValueError(f"Invariant violation: Final threshold must be between 0 and 1, got {final_threshold}")
+            
         self.model = model
         self.tokenizer = tokenizer
         self.device = device
@@ -101,6 +116,18 @@ class Pruner:
                 - Pruned list of (token_id, probability) tuples for current step
                 - List of pruned token sets for all steps (when using dynamic threshold)
         """
+        # Invariant: Input must be valid
+        if not isinstance(input_ids, torch.Tensor):
+            raise ValueError("Invariant violation: input_ids must be a torch.Tensor")
+            
+        # Invariant: Parallel tokens must be valid tuples of (token_id, probability)
+        if not all(isinstance(t, tuple) and len(t) == 2 and isinstance(t[0], int) and isinstance(t[1], (int, float)) for t in parallel_tokens):
+            raise ValueError("Invariant violation: parallel_tokens must be a list of (token_id, probability) tuples")
+            
+        # Invariant: Probabilities must be between 0 and 1
+        if any(not (0 <= t[1] <= 1) for t in parallel_tokens):
+            raise ValueError("Invariant violation: Token probabilities must be between 0 and 1")
+            
         # Performance tracking
         start_time = time.time()
         self.perf_stats["prune_calls"] += 1

@@ -8,8 +8,9 @@ This script runs text generation using the TEMPO parallel generation approach.
 import torch
 import random
 import numpy as np
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig
 from src.experiments import ExperimentRunner, ArgumentParser
+from src.modeling.model_wrapper import TEMPOModelWrapper
 
 def main():
     """Main entry point for the TEMPO generator."""
@@ -30,7 +31,7 @@ def main():
     print(f"Using device: {device} with {dtype}")
     
     # Load model and tokenizer with optimized settings
-    model_name = "mistralai/Mistral-7B-v0.3"
+    model_name = "deepcogito/cogito-v1-preview-qwen-14B"
     print(f"Loading model: {model_name}")
     
     # Load tokenizer only once with caching
@@ -38,27 +39,35 @@ def main():
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     
-    # Load model with optimized settings
+    # First load the config to modify it
+    config = AutoConfig.from_pretrained(model_name)
+    
+    # Disable sliding window attention for Qwen models to fix compatibility issues
+    if hasattr(config, "sliding_window") and config.sliding_window is not None:
+        print(f"Disabling sliding window attention (was set to {config.sliding_window})")
+        config.sliding_window = None
+    
+    # Load model with optimized settings and modified config
     print("Loading model with optimized settings...")
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
+        config=config,
         torch_dtype=dtype,
         device_map="auto" if device == "cuda" else device,
-        attn_implementation="flash_attention_2" if torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 7 else "eager",
-        use_cache=True,
-        low_cpu_mem_usage=True
+        low_cpu_mem_usage=True,
+        attn_implementation="eager"  # Use eager attention for better compatibility
     )
     
     # Optimize model for inference
     if hasattr(model, "eval"):
         model.eval()
     
-    # Enable memory efficient attention if available
-    if hasattr(model.config, "use_memory_efficient_attention") and device == "cuda":
-        model.config.use_memory_efficient_attention = True
+    # Wrap the model to capture intermediate values
+    wrapped_model = TEMPOModelWrapper(model)
+    print("Model wrapped with TEMPO wrapper for intermediate value extraction")
     
-    # Create experiment runner
-    runner = ExperimentRunner(model, tokenizer, device)
+    # Create experiment runner with wrapped model
+    runner = ExperimentRunner(wrapped_model, tokenizer, device)
     
     # Run experiment
     prompt = args.get('prompt', '')

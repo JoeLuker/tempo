@@ -49,6 +49,10 @@ class ArgumentParser:
         parser.add_argument("--bezier-p2", type=float, default=0.8,
                             help="Second Bezier control point for dynamic threshold")
         
+        # Cogito model parameters
+        parser.add_argument("--enable-thinking", action="store_true",
+                            help="Enable Cogito's deep thinking mode for better reasoning")
+        
         # Other parameters
         parser.add_argument("--save-visualization", action="store_true", default=True,
                             help="Save visualization of token sets")

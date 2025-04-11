@@ -66,17 +66,29 @@ class DiversityPruningStrategy(PruningStrategy):
         kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
         cluster_labels = kmeans.fit_predict(token_embeddings_np)
         
-        # Select representative tokens from each cluster based on probability
+        # Vectorized approach to select representative tokens from each cluster
+        # Create arrays for vectorized processing
+        token_ids_array = np.array(token_ids)
+        probs_array = np.array([prob for _, prob in parallel_tokens])
+        
+        # Process all clusters at once
         pruned_tokens = []
-        for cluster_id in range(n_clusters):
-            # Get indices of tokens in this cluster
-            cluster_indices = [i for i, label in enumerate(cluster_labels) if label == cluster_id]
+        unique_clusters = np.unique(cluster_labels)
+        for cluster_id in unique_clusters:
+            # Get mask for this cluster
+            cluster_mask = (cluster_labels == cluster_id)
             
-            if cluster_indices:
-                # Select token with highest probability in this cluster
-                cluster_tokens = [(token_ids[i], parallel_tokens[i][1]) for i in cluster_indices]
-                best_token = max(cluster_tokens, key=lambda x: x[1])
-                pruned_tokens.append(best_token)
+            if np.any(cluster_mask):
+                # Find index with highest probability in this cluster
+                cluster_probs = probs_array[cluster_mask]
+                max_prob_idx = np.argmax(cluster_probs)
+                
+                # Get the original index in the token list
+                original_indices = np.where(cluster_mask)[0]
+                best_idx = original_indices[max_prob_idx]
+                
+                # Add the token with its probability
+                pruned_tokens.append((token_ids[best_idx], parallel_tokens[best_idx][1]))
         
         return pruned_tokens
     
@@ -117,17 +129,18 @@ class DiversityPruningStrategy(PruningStrategy):
         # Batch size should be 1 for generation
         batch_size, seq_len = input_ids.shape
         
-        # Create sequences with each token at the same position
-        test_sequences = []
+        # Vectorized approach to create all test sequences at once
+        # Create a base sequence template that we'll reuse
+        num_tokens = len(token_ids)
         
-        for token_id in token_ids:
-            new_seq = torch.zeros((1, seq_len + 1), dtype=input_ids.dtype, device=self.device)
-            new_seq[0, :seq_len] = input_ids[0]  # Copy existing tokens
-            new_seq[0, seq_len] = token_id  # Add test token
-            test_sequences.append(new_seq)
-            
-        # Stack sequences into a batch
-        batch_input_ids = torch.cat(test_sequences, dim=0)
+        # Create a batch tensor directly with all sequences
+        batch_input_ids = torch.zeros((num_tokens, seq_len + 1), dtype=input_ids.dtype, device=self.device)
+        
+        # Fill in the common prefix (broadcast the input_ids to all rows)
+        batch_input_ids[:, :seq_len] = input_ids[0].expand(num_tokens, -1)
+        
+        # Set the last position of each sequence to the corresponding token ID
+        batch_input_ids[:, seq_len] = torch.tensor(token_ids, dtype=input_ids.dtype, device=self.device)
         
         # Create appropriate attention mask
         attention_mask = torch.ones_like(batch_input_ids)

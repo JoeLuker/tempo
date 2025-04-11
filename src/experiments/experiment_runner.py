@@ -7,6 +7,7 @@ from ..generation.parallel_generator import ParallelGenerator
 from ..pruning.pruner import Pruner
 from ..visualization.token_visualizer import TokenVisualizer
 from ..visualization.position_visualizer import PositionVisualizer
+from ..modeling.model_wrapper import TEMPOModelWrapper
 
 class ExperimentRunner:
     """
@@ -18,17 +19,26 @@ class ExperimentRunner:
         Initialize the experiment runner.
         
         Args:
-            model: The language model
+            model: The language model (wrapped or unwrapped)
             tokenizer: HuggingFace tokenizer
             device: Device to use for computation
         """
-        self.model = model
+        # Ensure model is wrapped in TEMPOModelWrapper
+        if not isinstance(model, TEMPOModelWrapper):
+            print("Warning: Model not wrapped with TEMPOModelWrapper. Wrapping now...")
+            self.model = TEMPOModelWrapper(model)
+        else:
+            self.model = model
+            
         self.tokenizer = tokenizer
         self.device = device
         
         # Initialize visualizers
         self.token_visualizer = TokenVisualizer()
         self.position_visualizer = PositionVisualizer()
+        
+        # Debug mode flag
+        self.debug_mode = False
     
     def run_experiment(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -54,6 +64,13 @@ class ExperimentRunner:
         debug_mode = args.get("debug_mode", False)
         disable_kv_cache_consistency = args.get("disable_kv_cache_consistency", False)
         disable_kv_cache = args.get("disable_kv_cache", False)
+        enable_thinking = args.get("enable_thinking", False)
+        
+        # Set debug mode
+        self.debug_mode = debug_mode
+        if debug_mode:
+            print("Debug mode enabled for experiment runner")
+            self.model.set_debug_mode(True)
         
         # Create output directory if needed
         output_path = Path(output_dir)
@@ -101,7 +118,8 @@ class ExperimentRunner:
             pruner=pruner,
             device=self.device,
             has_custom_attention=True,  # Assuming model supports custom attention
-            use_custom_rope=use_custom_rope
+            use_custom_rope=use_custom_rope,
+            debug_mode=debug_mode
         )
         
         # Run generation
@@ -121,6 +139,12 @@ class ExperimentRunner:
         
         if disable_kv_cache:
             print("KV caching disabled for more consistent attention patterns")
+            
+        # Prepare messages format for Cogito model if thinking is enabled
+        system_content = None
+        if enable_thinking:
+            print("Enabling Cogito's deep thinking mode")
+            system_content = "Enable deep thinking subroutine."
         
         results = generator.generate(
             prompt=prompt,
@@ -131,7 +155,8 @@ class ExperimentRunner:
             min_steps=min_steps,
             show_token_ids=show_token_ids,
             debug_mode=debug_mode,
-            disable_kv_cache=disable_kv_cache
+            disable_kv_cache=disable_kv_cache,
+            system_content=system_content
         )
         
         # Add experiment parameters to results
@@ -143,6 +168,15 @@ class ExperimentRunner:
                 results["bezier_points"] = bezier_points
             if args.get("pruning_strategy", "") == "hybrid":
                 results["diversity_steps"] = args.get("diversity_steps", 0)
+                
+        # Add Cogito-specific parameters
+        if enable_thinking:
+            results["enable_thinking"] = True
+        
+        # Add model wrapper information if debug mode is enabled
+        if debug_mode:
+            intermediate_values = getattr(self.model, "intermediate_values", {})
+            results["captured_intermediate_values"] = list(intermediate_values.keys())
         
         # Save visualizations if requested
         if save_visualization and "parallel_sets" in results:
@@ -164,32 +198,30 @@ class ExperimentRunner:
         # Print statistics
         self.token_visualizer.print_statistics(results)
         
-        # Save results to JSON
-        try:
-            with open(output_path / "results.json", "w") as f:
-                # Create a copy of results with only serializable data
-                serializable_results = {
-                    "generated_text": results["generated_text"],
-                    "raw_generated_text": results["raw_generated_text"],
-                    "prompt": results["prompt"],
-                    "threshold": results["threshold"],
-                    "use_pruning": results["use_pruning"]
-                }
-                
-                # Add pruning params if available
-                if "pruning_strategy" in results:
-                    serializable_results["pruning_strategy"] = results["pruning_strategy"]
-                if "coherence_threshold" in results:
-                    serializable_results["coherence_threshold"] = results["coherence_threshold"]
-                if "dynamic_threshold" in results:
-                    serializable_results["dynamic_threshold"] = results["dynamic_threshold"]
-                if "bezier_points" in results:
-                    serializable_results["bezier_points"] = results["bezier_points"]
-                if "diversity_steps" in results:
-                    serializable_results["diversity_steps"] = results["diversity_steps"]
-                
-                json.dump(serializable_results, f, indent=2)
-        except Exception as e:
-            print(f"Error saving results: {e}")
+        # Save results to JSON - invariant: results must be savable
+        with open(output_path / "results.json", "w") as f:
+            # Create a copy of results with only serializable data
+            serializable_results = {
+                "generated_text": results["generated_text"],
+                "raw_generated_text": results["raw_generated_text"],
+                "prompt": results["prompt"],
+                "threshold": results["threshold"],
+                "use_pruning": results["use_pruning"],
+                "enable_thinking": enable_thinking
+            }
+            
+            # Add pruning params if available
+            if "pruning_strategy" in results:
+                serializable_results["pruning_strategy"] = results["pruning_strategy"]
+            if "coherence_threshold" in results:
+                serializable_results["coherence_threshold"] = results["coherence_threshold"]
+            if "dynamic_threshold" in results:
+                serializable_results["dynamic_threshold"] = results["dynamic_threshold"]
+            if "bezier_points" in results:
+                serializable_results["bezier_points"] = results["bezier_points"]
+            if "diversity_steps" in results:
+                serializable_results["diversity_steps"] = results["diversity_steps"]
+            
+            json.dump(serializable_results, f, indent=2)
         
         return results 

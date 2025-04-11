@@ -165,16 +165,16 @@ class TextFormatter:
                     # Update remaining text
                     remaining_text = remaining_text[search_idx + len(token_text):]
                 else:
-                    # Fallback - just append the formatted token
-                    result += position_texts[pos]
+                    # Invariant: Token must be found in remaining text
+                    raise ValueError(f"Token '{token_text}' not found in remaining text. Text formatting invariant violated.")
             else:
                 # First token - simpler case
                 if remaining_text.startswith(token_text):
                     result += position_texts[pos]
                     remaining_text = remaining_text[len(token_text):]
                 else:
-                    # Fallback
-                    result += position_texts[pos]
+                    # Invariant: First token must be at the start of remaining text
+                    raise ValueError(f"First token '{token_text}' not at start of remaining text. Text formatting invariant violated.")
         
         # Add any remaining text
         result += remaining_text

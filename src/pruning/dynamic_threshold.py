@@ -22,6 +22,23 @@ class DynamicThresholdManager:
             bezier_points: Control points for Bezier curve [p1, p2] between 0-1
             final_threshold: Final threshold value for dynamic threshold
         """
+        # Invariant: Thresholds must be valid values between 0 and 1
+        if not (0 <= base_threshold <= 1):
+            raise ValueError(f"Invariant violation: base_threshold must be between 0 and 1, got {base_threshold}")
+        if not (0 <= final_threshold <= 1):
+            raise ValueError(f"Invariant violation: final_threshold must be between 0 and 1, got {final_threshold}")
+            
+        # Invariant: Max steps must be positive
+        if max_steps is not None and max_steps <= 0:
+            raise ValueError(f"Invariant violation: max_steps must be positive, got {max_steps}")
+            
+        # Invariant: Bezier points must be in valid range
+        if bezier_points is not None:
+            if len(bezier_points) != 2:
+                raise ValueError(f"Invariant violation: bezier_points must contain exactly 2 values, got {len(bezier_points)}")
+            if not all(0 <= p <= 1 for p in bezier_points):
+                raise ValueError(f"Invariant violation: bezier_points must be between 0 and 1, got {bezier_points}")
+                
         self.base_threshold = base_threshold
         self.max_steps = max_steps or 100  # Default if not specified
         self.current_step = 0
@@ -72,6 +89,10 @@ class DynamicThresholdManager:
         Returns:
             float: Value at point t on the Bezier curve
         """
+        # Invariant: t must be between 0 and 1
+        if not (0 <= t <= 1):
+            raise ValueError(f"Invariant violation: Bezier parameter t must be between 0 and 1, got {t}")
+            
         return (1-t)**3 * p0 + 3*(1-t)**2*t * p1 + 3*(1-t)*t**2 * p2 + t**3 * p3
     
     def store_token_set(
@@ -86,6 +107,14 @@ class DynamicThresholdManager:
             token_set: List of (token_id, probability) tuples
             token_scores: List of (token_id, normalized_score) tuples
         """
+        # Invariant: Token set and scores must be the same length
+        if len(token_set) != len(token_scores):
+            raise ValueError(f"Invariant violation: token_set length ({len(token_set)}) must match token_scores length ({len(token_scores)})")
+            
+        # Invariant: All scores must be between 0 and 1
+        if any(not (0 <= score <= 1) for _, score in token_scores):
+            raise ValueError("Invariant violation: Token scores must be between 0 and 1")
+            
         self.all_token_sets.append(token_set.copy())
         self.all_token_scores.append(token_scores)
         
