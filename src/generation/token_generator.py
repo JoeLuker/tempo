@@ -35,6 +35,9 @@ class TokenGenerator:
         # Optional detailed performance tracking
         self.detailed_perf = False
         
+        # Track parallel token counts for optimization
+        self.last_parallel_count = 0
+        
         # Setup logging
         self._setup_logger()
         
@@ -48,7 +51,8 @@ class TokenGenerator:
             "cache_misses": 0,
             "decode_calls": 0,
             "decode_cache_hits": 0,
-            "decode_time": 0
+            "decode_time": 0,
+            "isolated_tokens_processed": 0
         }
     
     def _setup_logger(self):
@@ -619,6 +623,16 @@ class TokenGenerator:
             print(f"  Token decode cache hits: {cache_hits} ({hit_rate:.1f}%)")
             print(f"  Token decode time: {self.perf_stats['decode_time']:.4f}s")
         
+        # Isolated token optimization stats
+        if hasattr(self, 'isolated_tokens_processed') and self.isolated_tokens_processed > 0:
+            isolated_count = self.isolated_tokens_processed
+            print(f"\n  Isolated parallel token optimization:")
+            print(f"    Tokens processed in isolated mode: {isolated_count}")
+            if self.perf_stats['model_calls'] > 0:
+                avg_time = self.perf_stats['model_time'] / self.perf_stats['model_calls']
+                saved_time = (isolated_count - self.perf_stats['model_calls']) * avg_time
+                print(f"    Estimated compute time saved: {saved_time*1000:.1f}ms")
+        
         if self.perf_stats['model_calls'] > 0:
             avg_time = self.perf_stats['model_time'] / self.perf_stats['model_calls']
             print(f"  Average model call time: {avg_time:.4f}s")
@@ -638,3 +652,140 @@ class TokenGenerator:
             seq_len = self.cached_attention_seq_len[-1] if hasattr(self, 'cached_attention_seq_len') and self.cached_attention_seq_len else None
             return self.cached_attention, seq_len
         return None, None
+    
+    def get_next_token_logits_for_isolated_parallel(
+        self,
+        input_ids: torch.Tensor,
+        attention_mask: torch.Tensor,
+        past_key_values: Optional[List[Tuple[torch.Tensor]]] = None,
+        custom_attention_mask: Optional[torch.Tensor] = None,
+        num_parallel_tokens: int = 1
+    ) -> Tuple[torch.Tensor, Optional[List[Tuple[torch.Tensor]]]]:
+        """
+        Optimized method for getting logits for isolated parallel tokens.
+        Since isolated tokens can't see each other, we only need to compute
+        the forward pass once and can reuse the logits for all tokens.
+        
+        Args:
+            input_ids: Input token IDs
+            attention_mask: Current attention mask
+            past_key_values: Optional past key values for KV cache
+            custom_attention_mask: Optional custom attention mask
+            num_parallel_tokens: Number of parallel tokens to generate (for logging)
+            
+        Returns:
+            tuple: (next_token_logits, past_key_values)
+        """
+        # Performance tracking
+        start_time = time.time()
+        self.perf_stats["model_calls"] += 1
+        
+        if self.debug_mode:
+            self.log(f"Using optimized isolated parallel token generation for {num_parallel_tokens} tokens")
+            
+        # Input validation - same as the regular method
+        if not isinstance(input_ids, torch.Tensor):
+            raise ValueError("Invariant violation: input_ids must be a torch.Tensor")
+        if not isinstance(attention_mask, torch.Tensor):
+            raise ValueError("Invariant violation: attention_mask must be a torch.Tensor")
+            
+        # Compute the logits only once since we're in isolated mode
+        # We only need the first token of each parallel set since they all see the same context
+        if past_key_values is not None and len(input_ids.shape) > 1:
+            # Only use the last token when using KV cache
+            input_ids_for_model = input_ids[:, -1].unsqueeze(-1)
+            
+            # Extract the sequence length from past_key_values to ensure attention mask has correct size
+            if len(past_key_values) > 0 and isinstance(past_key_values[0], tuple) and len(past_key_values[0]) >= 1:
+                past_seq_len = past_key_values[0][0].size(2)
+                
+                # Create a proper attention mask that matches the expected size
+                attention_mask_for_model = torch.ones((input_ids.size(0), past_seq_len + 1), device=self.device)
+            else:
+                # If we can't determine the past sequence length, use the original attention mask
+                attention_mask_for_model = attention_mask
+        else:
+            # For the first token or when KV cache is disabled, use the full input
+            input_ids_for_model = input_ids
+            attention_mask_for_model = attention_mask
+        
+        # Check if the model is Qwen-based
+        model_type = getattr(self.model.config, "model_type", "").lower()
+        is_qwen = "qwen" in model_type
+        
+        # Use inference mode for efficiency
+        with torch.inference_mode():
+            # Prepare model arguments - similar to the regular method
+            model_args = {
+                "input_ids": input_ids_for_model,
+                "attention_mask": attention_mask_for_model,
+                "use_cache": True,
+                "output_attentions": True
+            }
+            
+            # Only include past_key_values if they are provided
+            if past_key_values is not None:
+                model_args["past_key_values"] = past_key_values
+            
+            # Add custom attention mask if provided
+            if custom_attention_mask is not None:
+                if is_qwen:
+                    # Handle Qwen-specific custom attention
+                    if custom_attention_mask.dim() == 3:  # [batch, seq, seq]
+                        model_args["position_bias"] = custom_attention_mask
+                    elif custom_attention_mask.dim() == 4:  # [batch, heads, seq, seq]
+                        model_args["attention_mask"] = custom_attention_mask
+                elif hasattr(self.model.config, "model_type") and "mistral" in self.model.config.model_type.lower():
+                    # Try to use the model-specific way to handle custom masks
+                    if custom_attention_mask.dim() == 3:  # [batch, seq, seq]
+                        model_args["position_attention_mask"] = custom_attention_mask
+                    elif custom_attention_mask.dim() == 4:  # [batch, heads, seq, seq]
+                        # Some models expect a 4D mask with head dimension
+                        model_args["attention_mask"] = custom_attention_mask
+                else:
+                    # For generic models, try the standard custom_attention_mask parameter
+                    model_args["custom_attention_mask"] = custom_attention_mask
+                    
+            # Run the model forward pass just once
+            outputs = self.model(**model_args)
+            
+            # Get logits for last position - this can be reused for all parallel tokens
+            next_token_logits = outputs.logits[:, -1, :]
+            
+            # Store attention patterns for later use in pruning
+            if hasattr(outputs, 'attentions') and outputs.attentions:
+                self.cached_attention = outputs.attentions
+                
+                # Store sequence length for verification
+                if not hasattr(self, 'cached_attention_seq_len'):
+                    self.cached_attention_seq_len = []
+                current_seq_len = input_ids_for_model.size(1)
+                if past_key_values is not None:
+                    # When using KV cache, add the past sequence length
+                    if len(past_key_values) > 0 and hasattr(past_key_values[0][0], 'size'):
+                        current_seq_len += past_key_values[0][0].size(2)
+                self.cached_attention_seq_len.append(current_seq_len)
+                
+                if self.debug_mode:
+                    self.log(f"Cached attention for sequence length {current_seq_len} (shared among {num_parallel_tokens} parallel tokens)")
+            
+        # Update performance stats
+        processing_time = time.time() - start_time
+        self.perf_stats["model_time"] += processing_time
+        
+        # Track isolated token stats
+        self.perf_stats["isolated_tokens_processed"] = self.perf_stats.get("isolated_tokens_processed", 0) + num_parallel_tokens
+        
+        if self.debug_mode:
+            self.log(f"Isolated parallel token generation took {processing_time*1000:.2f}ms for {num_parallel_tokens} tokens")
+            self.log(f"Efficiency gain: {num_parallel_tokens}x (one forward pass instead of {num_parallel_tokens})")
+        
+        # Get the updated KV cache
+        return_kvs = None
+        if hasattr(outputs, 'past_key_values') and outputs.past_key_values is not None:
+            return_kvs = outputs.past_key_values
+            
+        # Update parallel token count
+        self.last_parallel_count = num_parallel_tokens
+        
+        return next_token_logits, return_kvs

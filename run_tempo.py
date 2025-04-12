@@ -328,6 +328,12 @@ def main():
     # Get default mode flag
     default_mode = args.pop("default_mode", False)
     
+    # Get parallel token visibility flag (false means tokens are isolated)
+    allow_parallel_token_visibility = args.pop("allow_parallel_token_visibility", False)
+    
+    # Get preserving isolated tokens flag (true means don't preserve by default)
+    no_preserve_isolated_tokens = args.pop("no_preserve_isolated_tokens", False)
+    
     # Setup profiling if enabled
     profiler = None
     if enable_profiling:
@@ -450,8 +456,21 @@ def main():
     else:
         print(f"Running experiment with threshold: {threshold}, max tokens: {max_tokens}")
         
-    print(f"Prompt: {prompt[:100]}{'...' if len(prompt) > 100 else ''}")
-    
+        # Print parallel token visibility status if not in default mode
+        if allow_parallel_token_visibility:
+            print(f"Parallel tokens visibility mode enabled (tokens can see each other)")
+            args['allow_parallel_token_visibility'] = allow_parallel_token_visibility
+        
+        # Only add this parameter to args when explicitly enabled
+        if no_preserve_isolated_tokens:
+            args['no_preserve_isolated_tokens'] = no_preserve_isolated_tokens
+            
+            # Show warning when isolation is on but preservation is disabled
+            if not allow_parallel_token_visibility:
+                print(f"Warning: Pruning will evaluate isolated tokens (overriding default preservation)")
+        
+        print(f"Prompt: {prompt[:100]}{'...' if len(prompt) > 100 else ''}")
+        
     # Run with performance monitoring
     generation_tracker = PerformanceTracker("full_generation", detailed=enable_profiling) if enable_profiling else None
     if generation_tracker:

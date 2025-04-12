@@ -154,7 +154,9 @@ class ParallelGenerator:
         debug_mode: bool = False,
         disable_kv_cache: bool = False,
         system_content: Optional[str] = None,
-        optimize_pruning: bool = True
+        optimize_pruning: bool = True,
+        isolate_parallel_tokens: bool = True,
+        preserve_all_isolated_tokens: Optional[bool] = None
     ) -> Dict[str, Any]:
         """
         Generate text using multiple parallel tokens.
@@ -172,10 +174,17 @@ class ParallelGenerator:
             disable_kv_cache: Whether to disable KV cache for better attention calculations
             system_content: Optional system content for instruction-following models
             optimize_pruning: Whether to enable pruning optimizations (skip reapply)
+            isolate_parallel_tokens: If True, parallel tokens cannot attend to each other
+            preserve_all_isolated_tokens: If True, skip pruning when tokens are isolated.
+                                         When None (default), automatically set to match isolate_parallel_tokens
             
         Returns:
             Dict[str, Any]: Generated text and related information
         """
+        # Set default for preserve_all_isolated_tokens based on isolation mode
+        if preserve_all_isolated_tokens is None:
+            preserve_all_isolated_tokens = isolate_parallel_tokens
+            
         # Set debug mode if requested
         if debug_mode:
             self.debug_mode = True
@@ -329,27 +338,64 @@ class ParallelGenerator:
         # Iteratively generate tokens - optimized for speed
         progress_bar = tqdm(range(max_tokens), desc="Generating tokens", unit="token")
         for i in progress_bar:
-            # Get next token logits from the model with KV caching - simplified for performance
-            # DIAGNOSTIC: Track step number and input shape for each token generation
+            # Show progress while looping
             self.log(f"\nDIAGNOSTIC - Starting token generation step {i}")
             self.log(f"  Input shape: {input_ids.shape}")
             
-            # Detailed timing - token logits
-            logits_start = time.time()
-            next_token_logits, past_key_values = self.token_generator.get_next_token_logits_cached(
-                input_ids, 
-                attention_mask,
-                None if disable_kv_cache else past_key_values,
-                self.attention_manager.full_attention_mask if self.has_custom_attention else None
-            )
-            logits_time = time.time() - logits_start
+            # Determine whether to use the standard or optimized path
+            use_optimized_path = isolate_parallel_tokens and i > 0  # Only optimize after first token
             
-            # Detailed timing - token selection
-            select_start = time.time()
-            next_token_ids, next_token_probs = self.token_selector.select_tokens_above_threshold(
-                next_token_logits, threshold
-            )
-            select_time = time.time() - select_start
+            # For non-optimized path or first token, get the logits normally
+            if not use_optimized_path:
+                # Detailed timing - token logits
+                logits_start = time.time()
+                # Standard path for first token or non-isolated mode
+                next_token_logits, past_key_values = self.token_generator.get_next_token_logits_cached(
+                    input_ids, 
+                    attention_mask,
+                    None if disable_kv_cache else past_key_values,
+                    self.attention_manager.full_attention_mask if self.has_custom_attention else None
+                )
+                logits_time = time.time() - logits_start
+                
+                # Detailed timing - token selection
+                select_start = time.time()
+                next_token_ids, next_token_probs = self.token_selector.select_tokens_above_threshold(
+                    next_token_logits, threshold
+                )
+                select_time = time.time() - select_start
+            else:
+                # For optimization path, get logits once using optimized method
+                # First get token logits using the optimized method
+                logits_start = time.time()
+                next_token_logits, past_key_values = self.token_generator.get_next_token_logits_for_isolated_parallel(
+                    input_ids, 
+                    attention_mask,
+                    None if disable_kv_cache else past_key_values,
+                    self.attention_manager.full_attention_mask if self.has_custom_attention else None,
+                    num_parallel_tokens=5  # Initial estimate
+                )
+                logits_time = time.time() - logits_start
+                
+                # Select tokens
+                select_start = time.time()
+                next_token_ids, next_token_probs = self.token_selector.select_tokens_above_threshold(
+                    next_token_logits, threshold
+                )
+                select_time = time.time() - select_start
+                
+                # When using optimized path for isolated tokens, we need to ensure that 
+                # input_ids and attention_mask remain consistent, since get_next_token_logits_for_isolated_parallel
+                # may have modified the input_ids shape
+                if past_key_values is not None:
+                    # Restore consistent shapes - use only last token with proper attention mask
+                    seq_len = 1  # We're using KV cache, so we only need the last token
+                    input_ids = input_ids[:, -seq_len:]
+                    attention_mask = torch.ones((input_ids.size(0), seq_len), device=self.device)
+                
+                # Update the num_parallel_tokens in the token generator stats to reflect actual count
+                if hasattr(self.token_generator, 'last_parallel_count'):
+                    self.token_generator.last_parallel_count = len(next_token_ids)
             
             # Update running total of tokens
             running_total_tokens += len(next_token_ids)
@@ -463,34 +509,39 @@ class ParallelGenerator:
             # Apply pruning if requested and available
             pruning_start = time.time()
             if use_pruning and self.pruner is not None and len(pruned_token_ids) > 1:
-                # Pass token generator to pruner for attention reuse if not already set
-                if hasattr(self.pruner.strategy, 'token_generator') and self.pruner.strategy.token_generator is None:
-                    self.pruner.strategy.set_token_generator(self.token_generator)
-                
-                # Set the skip_reapply_threshold flag based on the optimize_pruning parameter
-                if hasattr(self.pruner, 'skip_reapply_threshold'):
-                    self.pruner.skip_reapply_threshold = optimize_pruning
-                
-                # Invariant: Pruning must succeed when requested
-                pruned_result = self.pruner.prune_parallel_tokens(
-                    input_ids=input_ids,
-                    parallel_tokens=(pruned_token_ids, pruned_token_probs)
-                )
-                
-                # Extract results
-                if pruned_result and isinstance(pruned_result, tuple) and len(pruned_result) >= 1:
-                    (pruned_token_ids, pruned_token_probs) = pruned_result[0]
-                    # Update the progress bar with pruned tokens count and running total tokens
-                    progress_bar.set_postfix(
-                        tokens=len(pruned_token_ids), 
-                        total_tokens=running_total_tokens, 
-                        logits_ms=f"{logits_time*1000:.1f}", 
-                        select_ms=f"{select_time*1000:.1f}",
-                        prune_ms=f"{(time.time() - pruning_start)*1000:.1f}",
-                        top_prob=f"{next_token_probs[0]:.4f}" if len(next_token_probs) > 0 else "N/A"
-                    )
+                # Skip pruning if tokens are isolated and we want to preserve them all
+                if isolate_parallel_tokens and preserve_all_isolated_tokens:
+                    if self.debug_mode:
+                        self.log(f"Skipping pruning for isolated tokens (preserve_all_isolated_tokens=True)")
                 else:
-                    raise RuntimeError("Pruning returned invalid result format")
+                    # Pass token generator to pruner for attention reuse if not already set
+                    if hasattr(self.pruner.strategy, 'token_generator') and self.pruner.strategy.token_generator is None:
+                        self.pruner.strategy.set_token_generator(self.token_generator)
+                    
+                    # Set the skip_reapply_threshold flag based on the optimize_pruning parameter
+                    if hasattr(self.pruner, 'skip_reapply_threshold'):
+                        self.pruner.skip_reapply_threshold = optimize_pruning
+                    
+                    # Invariant: Pruning must succeed when requested
+                    pruned_result = self.pruner.prune_parallel_tokens(
+                        input_ids=input_ids,
+                        parallel_tokens=(pruned_token_ids, pruned_token_probs)
+                    )
+                    
+                    # Extract results
+                    if pruned_result and isinstance(pruned_result, tuple) and len(pruned_result) >= 1:
+                        (pruned_token_ids, pruned_token_probs) = pruned_result[0]
+                        # Update the progress bar with pruned tokens count and running total tokens
+                        progress_bar.set_postfix(
+                            tokens=len(pruned_token_ids), 
+                            total_tokens=running_total_tokens, 
+                            logits_ms=f"{logits_time*1000:.1f}", 
+                            select_ms=f"{select_time*1000:.1f}",
+                            prune_ms=f"{(time.time() - pruning_start)*1000:.1f}",
+                            top_prob=f"{next_token_probs[0]:.4f}" if len(next_token_probs) > 0 else "N/A"
+                        )
+                    else:
+                        raise RuntimeError("Pruning returned invalid result format")
             pruning_time = time.time() - pruning_start
             self.pruning_time += pruning_time
             
@@ -508,10 +559,12 @@ class ParallelGenerator:
             # Invariant: Attention update must succeed
             # Pass disable_kv_cache flag to ensure proper context handling
             attention_start = time.time()
+            
             input_ids, attention_mask, past_key_values = self.attention_manager.update_input_efficiently(
-                input_ids, attention_mask, 
-                None if disable_kv_cache else past_key_values,  # Pass None explicitly if KV cache is disabled
-                pruned_token_ids.tolist(),  # Convert to list for attention_manager compatibility
+                input_ids=input_ids, 
+                attention_mask=attention_mask, 
+                past_key_values=None if disable_kv_cache else past_key_values,  # Pass None explicitly if KV cache is disabled
+                new_token_ids=pruned_token_ids.tolist(),  # Convert to list for attention_manager compatibility
                 is_kv_cache_disabled=disable_kv_cache  # Pass flag for explicit handling
             )
             attention_time = time.time() - attention_start
@@ -648,6 +701,50 @@ class ParallelGenerator:
             "is_qwen_model": self.is_qwen_model,
             "had_repetition_loop": in_repetition_loop
         }
+        
+        # Add isolated tokens mode information
+        if isolate_parallel_tokens:
+            results["isolate_parallel_tokens"] = True
+            
+            # Count how many tokens were generated in parallel mode
+            parallel_token_count = 0
+            total_parallel_sets = 0
+            for pos in sorted(position_to_tokens.keys()):
+                if pos >= prompt_length:
+                    tokens = position_to_tokens[pos]
+                    if len(tokens) > 1:
+                        parallel_token_count += len(tokens)
+                        total_parallel_sets += 1
+            
+            # Calculate efficiency gains
+            if total_parallel_sets > 0:
+                # Each parallel set with n tokens saved (n-1) forward passes
+                model_calls_saved = parallel_token_count - total_parallel_sets
+                
+                # Estimate compute savings (1 forward pass per parallel set instead of 1 per token)
+                if self.token_generator.perf_stats["model_calls"] > 0:
+                    avg_forward_time = self.token_generator.perf_stats["model_time"] / self.token_generator.perf_stats["model_calls"]
+                    estimated_time_saved = model_calls_saved * avg_forward_time
+                    
+                    results["isolated_mode_stats"] = {
+                        "parallel_token_count": parallel_token_count,
+                        "parallel_sets": total_parallel_sets,
+                        "model_calls_saved": model_calls_saved,
+                        "estimated_time_saved_ms": estimated_time_saved * 1000
+                    }
+                    
+                    # Print summary if in debug mode
+                    if debug_mode:
+                        print(f"\nIsolated Parallel Token Optimization:")
+                        print(f"  Parallel tokens processed: {parallel_token_count}")
+                        print(f"  Parallel token sets: {total_parallel_sets}")
+                        print(f"  Model forward passes saved: {model_calls_saved}")
+                        print(f"  Estimated compute time saved: {estimated_time_saved*1000:.1f}ms")
+                        
+                        # Print efficiency improvement ratio
+                        if parallel_token_count > 0:
+                            efficiency_ratio = parallel_token_count / total_parallel_sets
+                            print(f"  Efficiency ratio: {efficiency_ratio:.2f}x (computed {total_parallel_sets} times instead of {parallel_token_count})")
         
         # Add parallel sets data only if requested to save memory
         if return_parallel_sets:

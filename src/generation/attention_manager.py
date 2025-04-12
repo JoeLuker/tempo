@@ -99,7 +99,8 @@ class AttentionManager:
         self,
         input_ids: torch.Tensor,
         attention_mask: torch.Tensor,
-        new_token_ids: list
+        new_token_ids: list,
+        isolate_tokens: bool = True
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Create updated input tensors with the new parallel token set.
@@ -108,6 +109,7 @@ class AttentionManager:
             input_ids: Current input token IDs
             attention_mask: Current attention mask
             new_token_ids: List of token IDs to add
+            isolate_tokens: If True, parallel tokens cannot attend to each other
             
         Returns:
             tuple: (updated_input_ids, updated_attention_mask)
@@ -213,11 +215,11 @@ class AttentionManager:
             
             # Create a fresh mask that allows parallel tokens to attend to each other
             self.full_attention_mask = self._create_parallel_attention_mask(
-                seq_len, num_new_tokens, full_size
+                seq_len, num_new_tokens, full_size, isolate_tokens
             )
             
             # Cache it for potential reuse
-            self._mask_cache[('parallel', full_size, num_new_tokens)] = self.full_attention_mask
+            self._mask_cache[('parallel', full_size, num_new_tokens, isolate_tokens)] = self.full_attention_mask
         elif self.full_attention_mask is not None:
             # Use standard causal mask for single tokens
             full_size = seq_len + num_new_tokens
@@ -234,7 +236,7 @@ class AttentionManager:
         
         return new_input_ids, new_attention_mask
     
-    def _create_parallel_attention_mask(self, seq_len: int, num_parallel: int, full_size: int) -> torch.Tensor:
+    def _create_parallel_attention_mask(self, seq_len: int, num_parallel: int, full_size: int, isolate_tokens: bool = True) -> torch.Tensor:
         """
         Create a custom attention mask that allows tokens in a parallel set to attend to each other.
         Optimized with caching for better performance.
@@ -243,6 +245,7 @@ class AttentionManager:
             seq_len: Original sequence length (before adding parallel tokens)
             num_parallel: Number of tokens in the parallel set
             full_size: Full size of the sequence including parallel tokens
+            isolate_tokens: If True, parallel tokens cannot attend to each other
             
         Returns:
             torch.Tensor: Custom attention mask
@@ -251,18 +254,18 @@ class AttentionManager:
         start_time = time.time()
         
         # Check cache first for exact match
-        cache_key = ('parallel', full_size, seq_len, num_parallel)
+        cache_key = ('parallel', full_size, seq_len, num_parallel, isolate_tokens)
         if cache_key in self._mask_cache:
             self.perf_stats["mask_cache_hits"] += 1
             if self.debug_mode:
-                self.log(f"Attention mask cache hit for size {full_size} with {num_parallel} parallel tokens")
+                self.log(f"Attention mask cache hit for size {full_size} with {num_parallel} parallel tokens (isolated: {isolate_tokens})")
             return self._mask_cache[cache_key]
         
         # Check if we can update an existing mask instead of creating from scratch
-        if ('parallel', full_size, seq_len-1, num_parallel) in self._mask_cache:
+        if ('parallel', full_size, seq_len-1, num_parallel, isolate_tokens) in self._mask_cache:
             self.perf_stats["mask_updates"] += 1
             # Get previous mask and expand it
-            prev_mask = self._mask_cache[('parallel', full_size-1, seq_len-1, num_parallel)]
+            prev_mask = self._mask_cache[('parallel', full_size-1, seq_len-1, num_parallel, isolate_tokens)]
             # Update by adding a new row and column
             mask = torch.ones((1, full_size, full_size), device=self.device)
             mask[:, :full_size-1, :full_size-1] = prev_mask
@@ -285,24 +288,40 @@ class AttentionManager:
         parallel_start = seq_len
         parallel_end = seq_len + num_parallel
         
-        # Allow all tokens in parallel set to attend to each other
+        # Allow all tokens in parallel set to attend to each other if not isolated
         # This is the key modification that makes parallel tokens work as alternatives
         # Vectorized version - replace nested loops with tensor slicing
-        mask[:, parallel_start:parallel_end, parallel_start:parallel_end] = 1.0
+        if not isolate_tokens:
+            mask[:, parallel_start:parallel_end, parallel_start:parallel_end] = 1.0
+            
+            if self.debug_mode:
+                self.log(f"Created parallel attention mask with mutual attention between {num_parallel} parallel tokens")
+        else:
+            # In isolated mode, keep the tril mask which prevents tokens from seeing each other
+            # The default tril mask already creates the right pattern - causal attention only
+            if self.debug_mode:
+                self.log(f"Created parallel attention mask with isolated attention (no cross-attention) for {num_parallel} parallel tokens")
         
         # Skip validation in production for performance
         if self.debug_mode:
-            # 1. Check if all parallel tokens can attend to each other (all 1.0)
-            parallel_block = mask[:, parallel_start:parallel_end, parallel_start:parallel_end]
-            if not torch.all(parallel_block == 1.0):
-                # Find positions that violate the constraint
-                invalid_positions = torch.nonzero(parallel_block != 1.0, as_tuple=True)
-                if len(invalid_positions) >= 3 and len(invalid_positions[0]) > 0:
-                    # Convert to absolute positions for error reporting
-                    i, j = invalid_positions[1][0].item() + parallel_start, invalid_positions[2][0].item() + parallel_start
-                    raise ValueError(f"Invariant violation: Parallel token at position {i} cannot attend to parallel token at position {j}")
-                else:
-                    raise ValueError(f"Invariant violation: Not all parallel tokens can attend to each other")
+            if not isolate_tokens:
+                # 1. Check if all parallel tokens can attend to each other (all 1.0)
+                parallel_block = mask[:, parallel_start:parallel_end, parallel_start:parallel_end]
+                if not torch.all(parallel_block == 1.0):
+                    # Find positions that violate the constraint
+                    invalid_positions = torch.nonzero(parallel_block != 1.0, as_tuple=True)
+                    if len(invalid_positions) >= 3 and len(invalid_positions[0]) > 0:
+                        # Convert to absolute positions for error reporting
+                        i, j = invalid_positions[1][0].item() + parallel_start, invalid_positions[2][0].item() + parallel_start
+                        raise ValueError(f"Invariant violation: Parallel token at position {i} cannot attend to parallel token at position {j}")
+                    else:
+                        raise ValueError(f"Invariant violation: Not all parallel tokens can attend to each other")
+            else:
+                # For isolated mode, ensure we have a lower triangular matrix in the parallel token area
+                parallel_block = mask[:, parallel_start:parallel_end, parallel_start:parallel_end]
+                expected_mask = torch.tril(torch.ones_like(parallel_block))
+                if not torch.all(parallel_block == expected_mask):
+                    raise ValueError(f"Invariant violation: Isolated parallel tokens mask does not maintain causal pattern")
             
             # 2. Check if all parallel tokens can attend to all previous tokens (all 1.0)
             if parallel_start > 0:  # Only check if there are tokens before parallel set
@@ -342,7 +361,8 @@ class AttentionManager:
         attention_mask: torch.Tensor,
         past_key_values: Optional[List[Tuple[torch.Tensor]]],
         new_token_ids: list,
-        is_kv_cache_disabled: bool = False
+        is_kv_cache_disabled: bool = False,
+        isolate_tokens: bool = True
     ) -> Tuple[torch.Tensor, torch.Tensor, Optional[List[Tuple[torch.Tensor]]]]:
         """
         More efficient update for input tensors when using KV caching.
@@ -354,6 +374,7 @@ class AttentionManager:
             past_key_values: Optional KV cache
             new_token_ids: List of token IDs to add
             is_kv_cache_disabled: Flag indicating if KV caching is disabled
+            isolate_tokens: If True, parallel tokens cannot attend to each other
             
         Returns:
             tuple: (updated_input_ids, updated_attention_mask, updated_past_key_values)
@@ -425,7 +446,7 @@ class AttentionManager:
             if len(new_token_ids) > 1:
                 full_size = updated_input_ids.size(1)
                 self.full_attention_mask = self._create_parallel_attention_mask(
-                    current_pos, len(new_token_ids), full_size
+                    current_pos, len(new_token_ids), full_size, isolate_tokens
                 )
             
             # DIAGNOSTIC: Log the result when KV caching is disabled
@@ -519,7 +540,7 @@ class AttentionManager:
                 # Create specialized attention mask for parallel tokens
                 # This allows parallel tokens to attend to each other
                 self.full_attention_mask = self._create_parallel_attention_mask(
-                    past_seq_len, len(new_token_ids), full_size
+                    past_seq_len, len(new_token_ids), full_size, isolate_tokens
                 )
                 
                 # INVARIANT: The full_attention_mask must have the correct shape
@@ -660,7 +681,7 @@ class AttentionManager:
                 
                 # Create parallel attention mask
                 self.full_attention_mask = self._create_parallel_attention_mask(
-                    current_pos, len(new_token_ids), full_size
+                    current_pos, len(new_token_ids), full_size, isolate_tokens
                 )
                 
                 # INVARIANT: The resulting attention mask must have the right shape

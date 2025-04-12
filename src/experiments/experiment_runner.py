@@ -68,6 +68,19 @@ class ExperimentRunner:
         disable_kv_cache_consistency = args.get("disable_kv_cache_consistency", False)
         disable_kv_cache = args.get("disable_kv_cache", False)
         enable_thinking = args.get("enable_thinking", False)
+        allow_parallel_token_visibility = args.get("allow_parallel_token_visibility", False)
+        no_preserve_isolated_tokens = args.get("no_preserve_isolated_tokens", False)
+        
+        # Convert flags for backward compatibility
+        isolate_parallel_tokens = not allow_parallel_token_visibility
+        
+        # Only preserve isolated tokens by default if the user didn't explicitly request pruning
+        if use_pruning and no_preserve_isolated_tokens is False:  # If pruning is requested and preservation wasn't explicitly disabled
+            # Don't automatically preserve - user wants pruning
+            preserve_all_isolated_tokens = False
+        else:
+            # Use default behavior - preserve isolated tokens
+            preserve_all_isolated_tokens = not no_preserve_isolated_tokens if isolate_parallel_tokens else None
         
         # Print initialization progress
         setup_steps = ["Setting up experiment", "Configuring pruning", "Creating generator", "Starting generation"]
@@ -152,6 +165,20 @@ class ExperimentRunner:
         if disable_kv_cache:
             print("KV caching disabled for more consistent attention patterns")
             
+        if allow_parallel_token_visibility:
+            print("Parallel tokens will be able to see each other (visibility enabled)")
+        else:
+            print("Parallel tokens are isolated (default: can't see each other)")
+            
+            # Indicate pruning status based on use_pruning and preserve_all_isolated_tokens
+            if use_pruning:
+                if not preserve_all_isolated_tokens:
+                    print("Pruning will evaluate isolated tokens (explicitly requested)")
+                else:
+                    print("Isolated tokens will be preserved (pruning only evaluates non-isolated tokens)")
+            elif no_preserve_isolated_tokens:
+                print("Warning: No-preserve flag set but pruning is disabled, has no effect")
+        
         # Prepare messages format for Cogito model if thinking is enabled
         system_content = None
         if enable_thinking:
@@ -174,7 +201,9 @@ class ExperimentRunner:
             show_token_ids=show_token_ids,
             debug_mode=debug_mode,
             disable_kv_cache=disable_kv_cache,
-            system_content=system_content
+            system_content=system_content,
+            isolate_parallel_tokens=isolate_parallel_tokens,
+            preserve_all_isolated_tokens=preserve_all_isolated_tokens
         )
         generation_time = time.time() - generation_start
         
@@ -191,6 +220,10 @@ class ExperimentRunner:
         # Add Cogito-specific parameters
         if enable_thinking:
             results["enable_thinking"] = True
+            
+        # Add isolation mode to results
+        if isolate_parallel_tokens:
+            results["isolate_parallel_tokens"] = True
         
         # Add model wrapper information if debug mode is enabled
         if debug_mode:

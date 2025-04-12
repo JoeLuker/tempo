@@ -73,6 +73,10 @@ class ArgumentParser:
         parser.add_argument("--disable-kv-cache", action="store_true",
                             help="Disable KV caching completely for more consistent attention")
         
+        # Parallel token isolation option
+        parser.add_argument("--allow-parallel-token-visibility", action="store_true",
+                            help="Allow parallel tokens to see each other during generation (disabled by default)")
+        
         # Profiling parameters
         parser.add_argument("--profile", action="store_true",
                             help="Enable detailed performance profiling")
@@ -80,6 +84,10 @@ class ArgumentParser:
                             help="Use cProfile for detailed function-level profiling")
         parser.add_argument("--profile-output", type=str, default="tempo_profile.prof",
                             help="Output file for cProfile results")
+        
+        # New parameter
+        parser.add_argument("--no-preserve-isolated-tokens", action="store_true",
+                            help="Allow pruning to evaluate isolated tokens (disabled by default in isolated mode)")
         
         # Parse arguments
         args = parser.parse_args()
