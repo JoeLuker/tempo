@@ -16,7 +16,7 @@ class ExperimentRunner:
     Responsible for running experiments with the parallel generator.
     """
     
-    def __init__(self, model, tokenizer, device: str = "mps"):
+    def __init__(self, model, tokenizer, device: str = "mps", skip_wrapping: bool = False):
         """
         Initialize the experiment runner.
         
@@ -24,9 +24,10 @@ class ExperimentRunner:
             model: The language model (wrapped or unwrapped)
             tokenizer: HuggingFace tokenizer
             device: Device to use for computation
+            skip_wrapping: If True, don't auto-wrap the model in TEMPOModelWrapper
         """
-        # Ensure model is wrapped in TEMPOModelWrapper
-        if not isinstance(model, TEMPOModelWrapper):
+        # Ensure model is wrapped in TEMPOModelWrapper if not skipping wrapping
+        if not skip_wrapping and not isinstance(model, TEMPOModelWrapper):
             print("Warning: Model not wrapped with TEMPOModelWrapper. Wrapping now...")
             self.model = TEMPOModelWrapper(model)
         else:

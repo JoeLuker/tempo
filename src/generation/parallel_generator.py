@@ -153,27 +153,28 @@ class ParallelGenerator:
         show_token_ids: bool = False,
         debug_mode: bool = False,
         disable_kv_cache: bool = False,
-        system_content: Optional[str] = None
+        system_content: Optional[str] = None,
+        optimize_pruning: bool = True
     ) -> Dict[str, Any]:
         """
-        Generate text using parallel threshold decoding.
-        Optimized for batched operations and memory efficiency.
+        Generate text using multiple parallel tokens.
         
         Args:
-            prompt: The text prompt
+            prompt: Text prompt to generate from
             max_tokens: Maximum number of tokens to generate
-            threshold: Probability threshold for token selection
-            return_parallel_sets: Whether to return parallel token sets in result
-            use_pruning: Whether to use pruning to reduce token sets
-            require_custom_attention: Whether to require custom attention masks
-            min_steps: Minimum number of steps to generate before considering EOS
-            show_token_ids: Whether to show token IDs in the output
-            debug_mode: Enable debug mode for detailed logging
-            disable_kv_cache: Disable KV caching for more consistent attention
-            system_content: Optional system message content for chat models
+            threshold: Threshold for token selection
+            return_parallel_sets: Whether to return parallel token sets
+            use_pruning: Whether to use pruning for parallel tokens
+            require_custom_attention: Whether to require custom attention for KV-cache support
+            min_steps: Minimum steps to generate, even if pruning collapses to single tokens
+            show_token_ids: Whether to show token IDs in formatted output
+            debug_mode: Whether to show detailed debug information
+            disable_kv_cache: Whether to disable KV cache for better attention calculations
+            system_content: Optional system content for instruction-following models
+            optimize_pruning: Whether to enable pruning optimizations (skip reapply)
             
         Returns:
-            Dict[str, Any]: Results dictionary with generated text and metadata
+            Dict[str, Any]: Generated text and related information
         """
         # Set debug mode if requested
         if debug_mode:
@@ -462,6 +463,14 @@ class ParallelGenerator:
             # Apply pruning if requested and available
             pruning_start = time.time()
             if use_pruning and self.pruner is not None and len(pruned_token_ids) > 1:
+                # Pass token generator to pruner for attention reuse if not already set
+                if hasattr(self.pruner.strategy, 'token_generator') and self.pruner.strategy.token_generator is None:
+                    self.pruner.strategy.set_token_generator(self.token_generator)
+                
+                # Set the skip_reapply_threshold flag based on the optimize_pruning parameter
+                if hasattr(self.pruner, 'skip_reapply_threshold'):
+                    self.pruner.skip_reapply_threshold = optimize_pruning
+                
                 # Invariant: Pruning must succeed when requested
                 pruned_result = self.pruner.prune_parallel_tokens(
                     input_ids=input_ids,

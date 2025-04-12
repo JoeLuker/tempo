@@ -325,6 +325,9 @@ def main():
     use_cprofile = args.pop("use_cprofile", False)
     profile_output = args.pop("profile_output", "tempo_profile.prof")
     
+    # Get default mode flag
+    default_mode = args.pop("default_mode", False)
+    
     # Setup profiling if enabled
     profiler = None
     if enable_profiling:
@@ -356,7 +359,8 @@ def main():
         model_load_tracker.__enter__()
     
     # Load model and tokenizer with optimized settings
-    model_name = "deepcogito/cogito-v1-preview-qwen-14B"
+    # model_name = "deepcogito/cogito-v1-preview-qwen-14B"
+    model_name = "deepcogito/cogito-v1-preview-llama-3B"
     print(f"Loading model: {model_name}")
     
     # Show progress while loading model components
@@ -420,21 +424,32 @@ def main():
     if model_load_tracker:
         model_load_tracker.__exit__(None, None, None)
     
-    # Wrap the model to capture intermediate values
-    print("Wrapping model with TEMPO wrapper...", end="", flush=True)
-    start_time = time.time()
-    wrapped_model = TEMPOModelWrapper(model)
-    print(f" Done! ({time.time() - start_time:.2f}s)")
-    print("Model wrapped with TEMPO wrapper for intermediate value extraction")
+    # Wrap the model to capture intermediate values if not in default mode
+    if default_mode:
+        print("Running in default mode without TEMPO wrapper")
+        wrapped_model = model  # Use unwrapped model directly
+    else:
+        print("Wrapping model with TEMPO wrapper...", end="", flush=True)
+        start_time = time.time()
+        wrapped_model = TEMPOModelWrapper(model)
+        print(f" Done! ({time.time() - start_time:.2f}s)")
+        print("Model wrapped with TEMPO wrapper for intermediate value extraction")
     
-    # Create experiment runner with wrapped model
-    runner = ExperimentRunner(wrapped_model, tokenizer, device)
+    # Create experiment runner with wrapped or unwrapped model
+    runner = ExperimentRunner(wrapped_model, tokenizer, device, skip_wrapping=default_mode)
     
     # Run experiment
     prompt = args.get('prompt', '')
     threshold = args.get('threshold', 0.1)
     max_tokens = args.get('max_tokens', 100)
-    print(f"Running experiment with threshold: {threshold}, max tokens: {max_tokens}")
+    
+    # Set use_pruning to False in default mode
+    if default_mode:
+        args['use_pruning'] = False
+        print(f"Running in default mode with standard generation (max tokens: {max_tokens})")
+    else:
+        print(f"Running experiment with threshold: {threshold}, max tokens: {max_tokens}")
+        
     print(f"Prompt: {prompt[:100]}{'...' if len(prompt) > 100 else ''}")
     
     # Run with performance monitoring
@@ -444,7 +459,49 @@ def main():
     
     start_time = time.time()
     with torch.inference_mode():
-        results = runner.run_experiment(args)
+        if default_mode:
+            # Use a simple generate function for default mode
+            inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
+            enable_thinking = args.get('enable_thinking', False)
+            
+            # Prepare thinking prompt if needed
+            if enable_thinking:
+                print("Enabling thinking mode")
+                thinking_prompt = prompt
+                if not thinking_prompt.strip().startswith("<think>"):
+                    thinking_prompt = f"{thinking_prompt.rstrip()}\n<think>"
+                inputs = tokenizer(thinking_prompt, return_tensors="pt").to(model.device)
+            
+            # Generate the completion
+            generated_ids = model.generate(
+                **inputs,
+                max_new_tokens=max_tokens,
+                do_sample=False,
+                num_return_sequences=1
+            )
+            
+            # Decode the generated text
+            generated_text = tokenizer.decode(generated_ids[0], skip_special_tokens=True)
+            
+            # Create a results dictionary to match TEMPO output format
+            results = {
+                "generated_text": generated_text,
+                "raw_generated_text": generated_text,
+                "prompt": prompt,
+                "threshold": None,
+                "use_pruning": False,
+                "enable_thinking": enable_thinking
+            }
+            
+            # Print generated text in default mode
+            print("\nGenerated Text:")
+            print("-" * 50)
+            print(results["generated_text"])
+            print("-" * 50)
+        else:
+            # Use TEMPO experiment runner for parallel generation
+            results = runner.run_experiment(args)
+            
     generation_time = time.time() - start_time
     
     if generation_tracker:
@@ -452,7 +509,11 @@ def main():
     
     # Print generation statistics
     print(f"\nGeneration completed in {generation_time:.2f} seconds")
-    print(f"Average tokens/second: {max_tokens/generation_time:.2f}")
+    if default_mode:
+        tokens_generated = max_tokens  # Approximate tokens generated
+    else:
+        tokens_generated = max_tokens  # Use TEMPO max_tokens as approximation
+    print(f"Average tokens/second: {tokens_generated/generation_time:.2f}")
     print("\nExperiment completed successfully!")
     
     # Print profiling reports if enabled

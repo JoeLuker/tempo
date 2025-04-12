@@ -27,7 +27,8 @@ class Pruner:
         max_steps: Optional[int] = None,
         bezier_points: Optional[List[float]] = None,
         final_threshold: float = 1.0,
-        diversity_steps: int = 0
+        diversity_steps: int = 0,
+        skip_reapply_threshold: bool = False
     ):
         """
         Initialize the pruner.
@@ -44,6 +45,7 @@ class Pruner:
             bezier_points: Control points for Bezier curve in dynamic thresholding
             final_threshold: Final threshold for dynamic thresholding
             diversity_steps: Number of initial steps to use diversity pruning before switching to hybrid
+            skip_reapply_threshold: Whether to skip reapplying threshold to all previous steps (faster)
         """
         # Invariant: Model and tokenizer must be provided
         if model is None or tokenizer is None:
@@ -65,6 +67,7 @@ class Pruner:
         self.device = device
         self.use_dynamic_threshold = use_dynamic_threshold
         self.use_numpy_format = True  # Flag to determine data format consistency
+        self.skip_reapply_threshold = skip_reapply_threshold  # New performance flag
         
         # Performance tracking
         self.perf_stats = {
@@ -218,9 +221,31 @@ class Pruner:
             self.threshold_manager.store_token_set(parallel_tuples, token_scores)
             threshold_store_time = time.time() - threshold_store_start
             
-            # Reapply threshold to all previous sets with updated threshold
+            # Only reapply threshold to all previous sets if not skipping
+            # This can significantly reduce computation time
             threshold_reapply_start = time.time()
-            all_pruned_sets = self.threshold_manager.reapply_threshold_to_all_sets()
+            
+            if self.skip_reapply_threshold:
+                # Only handle the current step (much faster)
+                # For the latest step, apply current threshold
+                current_step = self.perf_stats["steps"] - 1
+                current_threshold = self.threshold_manager.get_current_threshold()
+                
+                # Convert pruned tuples to the expected format for consistent return type
+                all_pruned_sets = []
+                for i in range(current_step):
+                    # Use previously pruned sets as is
+                    if i < len(self.threshold_manager.fast_pruned_sets):
+                        all_pruned_sets.append(self.threshold_manager.fast_pruned_sets[i])
+                    else:
+                        all_pruned_sets.append([])
+                    
+                # Add the current step's pruned tokens
+                all_pruned_sets.append(pruned_tuples)
+            else:
+                # Original behavior - reapply threshold to all sets (slower)
+                all_pruned_sets = self.threshold_manager.reapply_threshold_to_all_sets()
+            
             threshold_reapply_time = time.time() - threshold_reapply_start
             self.perf_stats["threshold_time"] += threshold_store_time + threshold_reapply_time
             
@@ -238,7 +263,7 @@ class Pruner:
                       f"reapply={threshold_reapply_time*1000:.1f}ms, "
                       f"total={total_time*1000:.1f}ms")
                 print(f"Tokens: {len(parallel_tuples)}->{len(pruned_tuples)}")
-                
+            
             # Record the current step timing data for analysis
             if not hasattr(self, 'step_timings'):
                 self.step_timings = []

@@ -53,6 +53,10 @@ class ArgumentParser:
         parser.add_argument("--enable-thinking", action="store_true",
                             help="Enable Cogito's deep thinking mode for better reasoning")
         
+        # Default mode option (disables TEMPO)
+        parser.add_argument("--default-mode", action="store_true",
+                            help="Run model in default generation mode without TEMPO (still supports thinking mode)")
+        
         # Other parameters
         parser.add_argument("--save-visualization", action="store_true", default=True,
                             help="Save visualization of token sets")

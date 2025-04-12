@@ -2,6 +2,7 @@ import torch
 import torch.nn.functional as F
 from typing import List, Tuple, Optional
 from .pruning_strategy import PruningStrategy
+import math
 
 class CoherencePruningStrategy(PruningStrategy):
     """
@@ -133,7 +134,7 @@ class CoherencePruningStrategy(PruningStrategy):
         # Extract token IDs from parallel tokens
         token_ids = [t[0] for t in parallel_tokens]
         
-        # Try to use cached attention first (optimization)
+        # Use cached attention for coherence calculation (optimization)
         if self.token_generator is not None:
             cached_attention, cached_seq_len = self.token_generator.get_cached_attention()
             if cached_attention is not None:
@@ -162,19 +163,18 @@ class CoherencePruningStrategy(PruningStrategy):
                     ]
                     
                     return normalized_token_info
-        
-        # Fallback to original implementation with full model forward pass
-        if self.debug_mode:
-            print("Fallback to full model forward pass for coherence calculation")
             
-        # Get attention-based coherence scores using full model forward pass
-        coherence_scores, _ = self._get_attention_scores(input_ids, token_ids)
+            # If we reach here and have no cached attention, log the issue
+            if self.debug_mode:
+                print("WARNING: No cached attention available! Creating fallback coherence scores.")
         
-        # Create list of (token_id, probability, coherence_score)
-        token_info = [
-            (token_id, prob, coherence_scores[i].item())
-            for i, (token_id, prob) in enumerate(parallel_tokens)
-        ]
+        # FALLBACK: If no cached attention, use token probabilities as scores
+        # This avoids the expensive model forward pass while still providing reasonable pruning
+        token_info = []
+        for i, (token_id, prob) in enumerate(parallel_tokens):
+            # Use probability as fallback coherence measure
+            # This way we avoid the expensive forward pass completely
+            token_info.append((token_id, prob, prob))
         
         # Normalize coherence scores to [0, 1]
         max_coherence = max(info[2] for info in token_info)
@@ -206,36 +206,118 @@ class CoherencePruningStrategy(PruningStrategy):
             Optional[torch.Tensor]: Coherence scores for each token or None if incompatible
         """
         try:
-            # Get last layer attention
-            last_layer_attention = cached_attention[-1]  # Shape: [batch_size, num_heads, seq_len, seq_len]
+            # Get the attention patterns from all layers
+            num_layers = len(cached_attention)
+            
+            # Extract attention tensors from the last few layers
+            # Using multiple layers tends to give better coherence signals
+            layers_to_use = min(3, num_layers)  # Use last 3 layers or all if fewer
+            attention_layers = cached_attention[-layers_to_use:]
+            
+            # Average attention patterns across selected layers
+            # Shape: [batch_size, num_heads, seq_len, seq_len]
+            avg_layer_attention = torch.mean(torch.stack([layer for layer in attention_layers]), dim=0)
             
             # Extract attention for the last token position
             # The last token's attention shows how it attends to previous context
-            last_token_attn = last_layer_attention[0, :, -1, :-1]  # [num_heads, seq_len-1]
+            last_token_attn = avg_layer_attention[0, :, -1, :-1]  # [num_heads, seq_len-1]
             
             # Average across attention heads
             avg_attention = last_token_attn.mean(dim=0)  # [seq_len-1]
             
-            # For each candidate token, we'll use the same cached attention
-            # as a proxy for coherence (simplification)
-            # Better coherence = higher attention focus (less uniform distribution)
+            # Calculate entropy of attention distribution as a coherence measure
+            # Lower entropy = more focused attention = better coherence
+            normalized_attn = avg_attention / (torch.sum(avg_attention) + 1e-10)
+            entropy = -torch.sum(normalized_attn * torch.log(normalized_attn + 1e-10))
             
-            # Calculate focus score: use max attention value as proxy for coherence
-            focus_score = avg_attention.max()
+            # We don't need to run a full forward pass for each token
+            # Instead, use token embedding similarity as a proxy for how well each token fits
+            embedding_vectors = self.get_token_embeddings(token_ids)
             
-            # Create a batch of coherence scores, all using the same focus score
-            # This is a simplification - ideally we'd compute token-specific coherence
-            coherence_scores = torch.tensor([focus_score] * len(token_ids), device=self.device)
+            # Get the context representation
+            context_vector = self.get_context_embedding(input_ids)
             
-            # Apply token-specific adjustment based on token identity
-            # In a full implementation, you'd calculate token-specific coherence
+            # Calculate coherence scores using embedding similarity combined with attention entropy
+            similarities = torch.nn.functional.cosine_similarity(embedding_vectors, context_vector.unsqueeze(0), dim=1)
+            
+            # Normalize similarities to [0,1] range
+            min_sim = torch.min(similarities)
+            max_sim = torch.max(similarities)
+            range_sim = max(1e-5, max_sim - min_sim)
+            norm_similarities = (similarities - min_sim) / range_sim
+            
+            # Combine similarity and entropy-based coherence
+            # Lower entropy is better, so use 1 - normalized_entropy
+            normalized_entropy = entropy / math.log(avg_attention.size(0))  # Normalize by max possible entropy
+            coherence_factor = 1.0 - min(1.0, normalized_entropy.item())
+            
+            # Final coherence scores combine token similarity and attention pattern coherence
+            coherence_scores = norm_similarities * coherence_factor
+            
+            if self.debug_mode:
+                print(f"Coherence factor from attention: {coherence_factor:.4f}")
+                print(f"Token similarities range: {min_sim.item():.4f} to {max_sim.item():.4f}")
+                print(f"Resulting coherence scores: {coherence_scores}")
             
             return coherence_scores
         except Exception as e:
             if self.debug_mode:
                 print(f"Error computing coherence from cached attention: {e}")
+                import traceback
+                traceback.print_exc()
             return None
+
+    def get_token_embeddings(self, token_ids: List[int]) -> torch.Tensor:
+        """
+        Get embedding vectors for tokens to calculate similarity.
+        
+        Args:
+            token_ids: List of token IDs
             
+        Returns:
+            torch.Tensor: Embedding vectors [num_tokens, embedding_dim]
+        """
+        # Convert token IDs to tensor
+        tokens_tensor = torch.tensor(token_ids, dtype=torch.long, device=self.device)
+        
+        # Get embedding layer from model
+        if hasattr(self.model, "get_input_embeddings"):
+            embedding_layer = self.model.get_input_embeddings()
+            # Get embedding vectors
+            with torch.no_grad():
+                embeddings = embedding_layer(tokens_tensor)
+            return embeddings
+        
+        # Fallback if model doesn't expose embedding layer
+        return torch.zeros((len(token_ids), 768), device=self.device)
+
+    def get_context_embedding(self, input_ids: torch.Tensor) -> torch.Tensor:
+        """
+        Get a representation of the context for similarity comparison.
+        
+        Args:
+            input_ids: Current input token IDs
+            
+        Returns:
+            torch.Tensor: Context representation vector [embedding_dim]
+        """
+        # Get embedding layer from model
+        if hasattr(self.model, "get_input_embeddings"):
+            embedding_layer = self.model.get_input_embeddings()
+            
+            # Get embeddings for all tokens in the context
+            with torch.no_grad():
+                # Take last few tokens as context (recency bias)
+                context_length = min(20, input_ids.size(1))
+                context_ids = input_ids[0, -context_length:]
+                context_embeddings = embedding_layer(context_ids)
+                
+                # Average the embeddings to get context representation
+                return torch.mean(context_embeddings, dim=0)
+        
+        # Fallback if model doesn't expose embedding layer
+        return torch.zeros(768, device=self.device)
+    
     def _get_attention_scores(
         self, 
         input_ids: torch.Tensor, 
