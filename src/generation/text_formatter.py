@@ -260,3 +260,111 @@ class TextFormatter:
         cleaned = re.sub(r' ([.,;:!?])', r'\1', cleaned)
         
         return cleaned 
+    
+    def format_generated_text_with_pruning(
+        self,
+        prompt: str,
+        position_to_tokens: Dict[int, List[int]],
+        original_parallel_positions: Set[int],
+        prompt_length: int,
+        all_parallel_tokens: Dict[int, List[Tuple[int, float]]],
+        token_indices: Dict[Tuple[int, int], int] = None
+    ) -> str:
+        """
+        Format the generated text with colored annotations for parallel tokens,
+        taking into account retroactively pruned tokens.
+        
+        Args:
+            prompt: Original prompt text
+            position_to_tokens: Mapping from positions to token IDs
+            original_parallel_positions: Set of positions that originally had multiple tokens
+            prompt_length: Length of the prompt in tokens
+            all_parallel_tokens: Mapping from positions to lists of (token_id, prob) tuples,
+                                including retroactively pruned tokens
+            token_indices: Optional mapping from (position, token_id) to original index
+            
+        Returns:
+            str: Formatted text with colored annotations
+        """
+        # Create new position_to_tokens that incorporates retroactively pruned tokens
+        enhanced_position_to_tokens = {}
+        for pos in position_to_tokens:
+            if pos < prompt_length:
+                # Keep prompt tokens as is
+                enhanced_position_to_tokens[pos] = position_to_tokens[pos]
+            else:
+                # For generated tokens, use the pruned list if available
+                rel_pos = pos - prompt_length
+                if rel_pos in all_parallel_tokens:
+                    # Extract token IDs from (token_id, prob) tuples
+                    enhanced_position_to_tokens[pos] = [tid for tid, _ in all_parallel_tokens[rel_pos]]
+                else:
+                    # Fallback to original list
+                    enhanced_position_to_tokens[pos] = position_to_tokens[pos]
+        
+        # Call the standard formatter with the enhanced tokens
+        if token_indices is None:
+            token_indices = {}
+            
+        return self._format_text(prompt, enhanced_position_to_tokens, original_parallel_positions, 
+                                prompt_length, token_indices)
+    
+    def format_with_token_ids_and_pruning(
+        self,
+        prompt: str,
+        position_to_tokens: Dict[int, List[int]],
+        parallel_positions: Set[int],
+        prompt_length: int,
+        all_parallel_tokens: Dict[int, List[Tuple[int, float]]],
+        token_indices: Dict[Tuple[int, int], int] = None
+    ) -> str:
+        """
+        Format the generated text with token IDs, taking into account retroactively pruned tokens.
+        
+        Args:
+            prompt: Original prompt text
+            position_to_tokens: Mapping from positions to token IDs
+            parallel_positions: Set of positions with multiple tokens
+            prompt_length: Length of the prompt in tokens
+            all_parallel_tokens: Mapping from positions to lists of (token_id, prob) tuples,
+                                including retroactively pruned tokens
+            token_indices: Optional mapping from (position, token_id) to original index
+            
+        Returns:
+            str: Formatted text with token IDs
+        """
+        # Get the formatted text
+        formatted_text = self.format_generated_text_with_pruning(
+            prompt, 
+            position_to_tokens, 
+            parallel_positions, 
+            prompt_length, 
+            all_parallel_tokens,
+            token_indices
+        )
+        
+        # Add token IDs and pruning information
+        token_id_info = "\n\nToken IDs (with pruning):\n"
+        
+        # Process only generated tokens (after prompt)
+        generated_positions = sorted([p for p in position_to_tokens.keys() if p >= prompt_length])
+        
+        for pos in generated_positions:
+            # Get tokens that survived pruning
+            rel_pos = pos - prompt_length
+            if rel_pos in all_parallel_tokens:
+                tokens_info = ", ".join([f"{t[0]}" for t in all_parallel_tokens[rel_pos]])
+                pruned_tokens = len(all_parallel_tokens.get(rel_pos, []))
+                original_tokens = len(position_to_tokens.get(pos, []))
+                
+                # Show pruning indicator if tokens were pruned
+                if pruned_tokens < original_tokens:
+                    token_id_info += f"Position {rel_pos}: [{tokens_info}] (pruned from {original_tokens} to {pruned_tokens})\n"
+                else:
+                    token_id_info += f"Position {rel_pos}: [{tokens_info}]\n"
+            else:
+                tokens = position_to_tokens[pos]
+                tokens_info = ", ".join([f"{t}" for t in tokens])
+                token_id_info += f"Position {rel_pos}: [{tokens_info}]\n"
+        
+        return formatted_text + token_id_info 

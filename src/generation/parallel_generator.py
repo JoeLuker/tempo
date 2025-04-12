@@ -156,7 +156,8 @@ class ParallelGenerator:
         system_content: Optional[str] = None,
         optimize_pruning: bool = True,
         isolate_parallel_tokens: bool = True,
-        preserve_all_isolated_tokens: Optional[bool] = None
+        preserve_all_isolated_tokens: Optional[bool] = None,
+        retroactive_pruner = None
     ) -> Dict[str, Any]:
         """
         Generate text using multiple parallel tokens.
@@ -177,6 +178,7 @@ class ParallelGenerator:
             isolate_parallel_tokens: If True, parallel tokens cannot attend to each other
             preserve_all_isolated_tokens: If True, skip pruning when tokens are isolated.
                                          When None (default), automatically set to match isolate_parallel_tokens
+            retroactive_pruner: Optional RetroactivePruner instance for retroactive pruning
             
         Returns:
             Dict[str, Any]: Generated text and related information
@@ -313,6 +315,9 @@ class ParallelGenerator:
         # More efficient position_to_tokens mapping using direct indices
         position_to_tokens = {}
         prompt_length = len(input_ids[0])
+        
+        # Store ALL parallel tokens for retroactive pruning
+        all_parallel_tokens = {}  # position -> list of (token_id, prob) pairs
         
         # Add prompt tokens to the position mapping with efficient batch processing
         # Vectorized with dictionary comprehension
@@ -555,6 +560,10 @@ class ParallelGenerator:
             # Add pruned tokens to position_to_tokens mapping
             position_to_tokens[prompt_length + i] = pruned_token_ids.tolist()
             
+            # Store all tokens for this position for retroactive pruning
+            current_position = len(position_to_tokens) - prompt_length
+            all_parallel_tokens[current_position] = [(tid, prob) for tid, prob in zip(original_token_ids, original_token_probs)]
+            
             # Create new input representation with the pruned tokens - more efficient approach
             # Invariant: Attention update must succeed
             # Pass disable_kv_cache flag to ensure proper context handling
@@ -586,6 +595,21 @@ class ParallelGenerator:
                 i >= min_steps):
                 self.log(f"Stopping because all tokens are EOS after {i+1} steps (min_steps={min_steps})")
                 break
+            
+            # Apply retroactive pruning if available
+            if retroactive_pruner is not None and i > 0:  # Skip first token
+                # Set token generator if not already set
+                if retroactive_pruner.token_generator is None:
+                    retroactive_pruner.set_token_generator(self.token_generator)
+                
+                # Retroactively prune previous positions based on newest token's attention
+                pruned_parallel_tokens = retroactive_pruner.retroactively_prune(
+                    prompt_length=prompt_length,
+                    all_parallel_tokens=all_parallel_tokens
+                )
+                
+                # Update all_parallel_tokens with pruned results
+                all_parallel_tokens = pruned_parallel_tokens
         
         # Close progress bar
         progress_bar.close()
@@ -640,20 +664,20 @@ class ParallelGenerator:
         
         # Format the generated text - only decode tokens once
         if show_token_ids:
-            formatted_text = self.text_formatter.format_with_token_ids(
+            formatted_text = self.text_formatter.format_with_token_ids_and_pruning(
                 prompt,
                 position_to_tokens, 
                 original_parallel_positions, 
                 prompt_length,
-                {}  # Add empty token_indices if not tracking them
+                all_parallel_tokens  # Pass pruned parallel sets for improved display
             )
         else:
-            formatted_text = self.text_formatter.format_generated_text(
+            formatted_text = self.text_formatter.format_generated_text_with_pruning(
                 prompt,
                 position_to_tokens, 
                 original_parallel_positions, 
                 prompt_length,
-                {}  # Add empty token_indices if not tracking them
+                all_parallel_tokens  # Pass pruned parallel sets for improved display
             )
         
         # Generate raw text efficiently - single decoding operation

@@ -98,41 +98,55 @@ class ExperimentRunner:
         
         setup_progress.update(1)  # First step complete
         
-        # Initialize pruner if using pruning
+        # Modify pruning setup
         pruner = None
+        retroactive_pruner = None
         
         if use_pruning:
-            pruning_strategy = args.get("pruning_strategy", "coherence")
-            coherence_threshold = args.get("coherence_threshold", 0.3)
-            diversity_clusters = args.get("diversity_clusters", 3)
-            dynamic_threshold = args.get("dynamic_threshold", False)
-            diversity_steps = args.get("diversity_steps", 0)
+            attention_threshold = args.get("attention_threshold", 0.01)
             
-            # Create the pruner
-            pruner = Pruner(
+            # Create retroactive pruner for pruning previous parallel sets
+            from src.pruning import RetroactivePruner
+            retroactive_pruner = RetroactivePruner(
                 model=self.model,
                 tokenizer=self.tokenizer,
-                strategy=pruning_strategy,
-                coherence_threshold=coherence_threshold,
-                diversity_clusters=diversity_clusters,
+                attention_threshold=attention_threshold,
                 device=self.device,
-                use_dynamic_threshold=dynamic_threshold,
-                max_steps=max_tokens,
-                bezier_points=bezier_points,
-                diversity_steps=diversity_steps
+                debug_mode=debug_mode
             )
             
-            # Add pruning parameters to results
-            if pruning_strategy == "coherence":
-                print(f"Using coherence pruning with threshold {coherence_threshold}")
-            elif pruning_strategy == "diversity":
-                print(f"Using diversity pruning with {diversity_clusters} clusters")
+            # Also create regular pruner if strategy is specified
+            pruning_strategy = args.get("pruning_strategy", "attention")
+            if pruning_strategy == "diversity":
+                diversity_clusters = args.get("diversity_clusters", 3)
+                from src.pruning import Pruner
+                pruner = Pruner(
+                    model=self.model,
+                    tokenizer=self.tokenizer,
+                    strategy="diversity",  # Use diversity for initial selection
+                    diversity_clusters=diversity_clusters,
+                    device=self.device
+                )
+                
+                print(f"Using diversity selection with {diversity_clusters} clusters")
             elif pruning_strategy == "hybrid":
-                print(f"Using hybrid pruning: diversity for {diversity_steps} steps, then coherence")
+                diversity_clusters = args.get("diversity_clusters", 3)
+                diversity_steps = args.get("diversity_steps", 5)
+                from src.pruning import Pruner
+                pruner = Pruner(
+                    model=self.model,
+                    tokenizer=self.tokenizer,
+                    strategy="hybrid",
+                    diversity_clusters=diversity_clusters,
+                    device=self.device,
+                    diversity_steps=diversity_steps
+                )
                 
-            if dynamic_threshold:
-                print(f"Using dynamic threshold with bezier points {bezier_points}")
-                
+                print(f"Using hybrid selection: diversity for {diversity_steps} steps, then attention")
+            else:
+                # Just use retroactive pruning
+                print(f"Using retroactive pruning with attention threshold {attention_threshold}")
+        
         setup_progress.update(1)  # Pruning setup complete
         
         # Create the generator
@@ -203,7 +217,8 @@ class ExperimentRunner:
             disable_kv_cache=disable_kv_cache,
             system_content=system_content,
             isolate_parallel_tokens=isolate_parallel_tokens,
-            preserve_all_isolated_tokens=preserve_all_isolated_tokens
+            preserve_all_isolated_tokens=preserve_all_isolated_tokens,
+            retroactive_pruner=retroactive_pruner
         )
         generation_time = time.time() - generation_start
         

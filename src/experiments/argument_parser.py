@@ -30,16 +30,16 @@ class ArgumentParser:
         
         # Pruning parameters
         parser.add_argument("--use-pruning", action="store_true",
-                            help="Use pruning to reduce token sets")
-        parser.add_argument("--pruning-strategy", type=str, default="coherence",
-                            choices=["coherence", "diversity", "hybrid"],
+                            help="Use retroactive pruning to refine token sets based on future token attention")
+        parser.add_argument("--pruning-strategy", type=str, default="attention",
+                            choices=["attention", "diversity", "hybrid"],
                             help="Pruning strategy to use")
-        parser.add_argument("--coherence-threshold", type=float, default=0.7,
-                            help="Threshold for coherence pruning")
+        parser.add_argument("--attention-threshold", type=float, default=0.01,
+                            help="Attention threshold for retroactive pruning (lower means more tokens kept)")
         parser.add_argument("--diversity-clusters", type=int, default=3,
-                            help="Number of clusters for diversity pruning")
+                            help="Number of clusters for diversity selection")
         parser.add_argument("--diversity-steps", type=int, default=5,
-                            help="Number of steps to use diversity pruning before switching to coherence")
+                            help="Number of steps to use diversity selection before switching to attention")
         
         # Dynamic threshold parameters
         parser.add_argument("--dynamic-threshold", action="store_true",
