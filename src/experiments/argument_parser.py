@@ -69,6 +69,14 @@ class ArgumentParser:
         parser.add_argument("--disable-kv-cache", action="store_true",
                             help="Disable KV caching completely for more consistent attention")
         
+        # Profiling parameters
+        parser.add_argument("--profile", action="store_true",
+                            help="Enable detailed performance profiling")
+        parser.add_argument("--use-cprofile", action="store_true",
+                            help="Use cProfile for detailed function-level profiling")
+        parser.add_argument("--profile-output", type=str, default="tempo_profile.prof",
+                            help="Output file for cProfile results")
+        
         # Parse arguments
         args = parser.parse_args()
         

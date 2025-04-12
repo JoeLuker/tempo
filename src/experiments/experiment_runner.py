@@ -8,6 +8,8 @@ from ..pruning.pruner import Pruner
 from ..visualization.token_visualizer import TokenVisualizer
 from ..visualization.position_visualizer import PositionVisualizer
 from ..modeling.model_wrapper import TEMPOModelWrapper
+import time
+from tqdm import tqdm
 
 class ExperimentRunner:
     """
@@ -66,6 +68,10 @@ class ExperimentRunner:
         disable_kv_cache = args.get("disable_kv_cache", False)
         enable_thinking = args.get("enable_thinking", False)
         
+        # Print initialization progress
+        setup_steps = ["Setting up experiment", "Configuring pruning", "Creating generator", "Starting generation"]
+        setup_progress = tqdm(setup_steps, desc="Experiment setup", unit="step")
+        
         # Set debug mode
         self.debug_mode = debug_mode
         if debug_mode:
@@ -75,6 +81,8 @@ class ExperimentRunner:
         # Create output directory if needed
         output_path = Path(output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
+        
+        setup_progress.update(1)  # First step complete
         
         # Initialize pruner if using pruning
         pruner = None
@@ -110,6 +118,8 @@ class ExperimentRunner:
                 
             if dynamic_threshold:
                 print(f"Using dynamic threshold with bezier points {bezier_points}")
+                
+        setup_progress.update(1)  # Pruning setup complete
         
         # Create the generator
         generator = ParallelGenerator(
@@ -122,8 +132,9 @@ class ExperimentRunner:
             debug_mode=debug_mode
         )
         
-        # Run generation
-        print(f"Generating with threshold {threshold}...")
+        setup_progress.update(1)  # Generator created
+        
+        # Configure generator
         if use_custom_rope:
             print("Using custom RoPE modifications for parallel token positioning")
             
@@ -146,6 +157,12 @@ class ExperimentRunner:
             print("Enabling Cogito's deep thinking mode")
             system_content = "Enable deep thinking subroutine."
         
+        setup_progress.update(1)  # Setup complete, starting generation
+        setup_progress.close()
+        
+        # Run generation with timing
+        generation_start = time.time()
+        print(f"Starting token generation with threshold={threshold}...")
         results = generator.generate(
             prompt=prompt,
             max_tokens=max_tokens,
@@ -158,6 +175,7 @@ class ExperimentRunner:
             disable_kv_cache=disable_kv_cache,
             system_content=system_content
         )
+        generation_time = time.time() - generation_start
         
         # Add experiment parameters to results
         if use_pruning:

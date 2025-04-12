@@ -2,6 +2,7 @@ import torch
 import logging
 import os
 from typing import List, Tuple, Optional, Any, Set
+import numpy as np
 
 class TokenSelector:
     """
@@ -101,12 +102,12 @@ class TokenSelector:
         Optimized for performance with batched tensor operations.
         
         Args:
-            next_token_logits: Logits tensor for next token [batch_size, vocab_size]
+            next_token_logits: Logits tensor for next token [batch_size, vocab_size] or [batch_size, seq_len, vocab_size]
             threshold: Probability threshold
             max_tokens: Maximum number of tokens to return
             
         Returns:
-            tuple: (token_ids, token_probs)
+            tuple: (token_ids, token_probs) as NumPy arrays
         """
         # DIAGNOSTIC: Show logits shape and values
         is_first_token = next_token_logits.size(0) == 1 and hasattr(self, '_first_token_processed') == False
@@ -117,38 +118,72 @@ class TokenSelector:
             self.log(f"  Logits min: {next_token_logits.min().item():.4f}, max: {next_token_logits.max().item():.4f}")
             self.log(f"  Threshold: {threshold}")
             
+        # Ensure we're working with the right tensor shape
+        # If we have a 3D tensor [batch_size, seq_len, vocab_size]
+        # We want to focus on the last position of the sequence
+        if len(next_token_logits.shape) == 3:
+            # Get logits for the last position in the sequence
+            next_token_logits = next_token_logits[:, -1, :]
+            
         # Apply softmax to logits efficiently using torch.softmax
         next_token_probs = torch.softmax(next_token_logits, dim=-1)
         
         # Invariant: Probabilities must sum to approximately 1.0 after softmax
         prob_sum = next_token_probs.sum().item()
         if not (0.99 <= prob_sum <= 1.01):
-            raise ValueError(f"Invariant violation: Token probabilities sum to {prob_sum}, not approximately 1.0 after softmax")
+            # If next_token_logits has a batch dimension (e.g., [batch_size, vocab_size])
+            # summing all values will give batch_size * 1.0 instead of just 1.0
+            # We need to sum only across the vocabulary dimension (dim=-1)
+            if len(next_token_logits.shape) > 1:
+                prob_sum_per_batch = next_token_probs.sum(dim=-1)
+                # Check if each batch row sums to approximately 1.0
+                if not torch.all((0.99 <= prob_sum_per_batch) & (prob_sum_per_batch <= 1.01)):
+                    raise ValueError(f"Invariant violation: Token probabilities sum to {prob_sum}, not approximately 1.0 after softmax")
+            else:
+                raise ValueError(f"Invariant violation: Token probabilities sum to {prob_sum}, not approximately 1.0 after softmax")
         
         # DIAGNOSTIC: Show probability distribution
         if is_first_token:
             self.log(f"\nDIAGNOSTIC - Token probability distribution:")
             self.log(f"  Probability sum: {prob_sum:.6f}")
             top_k = 10
-            top_probs, top_indices = torch.topk(next_token_probs.squeeze(), top_k)
+            # Ensure we're getting the right probabilities for multi-dimensional tensors
+            if next_token_probs.dim() > 1:
+                # For multi-dimensional tensor, get first batch only for diagnostic
+                top_probs, top_indices = torch.topk(next_token_probs[0], top_k)
+            else:
+                top_probs, top_indices = torch.topk(next_token_probs, top_k)
             self.log(f"  Top {top_k} token probabilities:")
             
             # Get token strings for top 10
             top_tokens = []
             for i in range(top_k):
-                token_id = top_indices[i].item()
+                # Handle possible multi-dimensional indices by flattening or accessing properly
+                if top_indices.dim() > 1:
+                    # For multi-dimensional tensor, get the i-th element correctly
+                    token_id = top_indices[0, i].item() if top_indices.size(0) > 0 else top_indices[i, 0].item()
+                else:
+                    # For 1D tensor
+                    token_id = top_indices[i].item()
                 token_text = self.tokenizer.decode([token_id])
                 top_tokens.append(token_text)
                 
-            for i, (token_text, token_id, prob) in enumerate(zip(top_tokens, top_indices.tolist(), top_probs.tolist())):
+            for i, (token_text, token_id, prob) in enumerate(zip(top_tokens, top_indices.reshape(-1).tolist()[:top_k], top_probs.reshape(-1).tolist()[:top_k])):
                 self.log(f"    {i+1}. '{token_text}' (ID: {token_id}): {prob:.6f}")
                 
             # Also show sum of top 100 probabilities
-            top_100_probs, _ = torch.topk(next_token_probs.squeeze(), 100)
+            if next_token_probs.dim() > 1:
+                top_100_probs, _ = torch.topk(next_token_probs[0], 100)
+            else:
+                top_100_probs, _ = torch.topk(next_token_probs, 100)
             self.log(f"  Sum of top 100 token probabilities: {top_100_probs.sum().item():.6f}")
         
-        # Convert to numpy or CPU tensors only when needed
-        next_token_probs = next_token_probs.squeeze().cpu()
+        # Convert to CPU and ensure we have the right shape
+        # If we have a batch dimension [batch_size, vocab_size], take the first batch
+        if next_token_probs.dim() > 1:
+            next_token_probs = next_token_probs[0].cpu()
+        else:
+            next_token_probs = next_token_probs.cpu()
         
         # Find all probabilities above threshold efficiently
         indices_above_threshold = torch.nonzero(next_token_probs >= threshold).squeeze(-1)
@@ -157,33 +192,56 @@ class TokenSelector:
         if is_first_token:
             self.log(f"\nDIAGNOSTIC - Found {indices_above_threshold.numel()} tokens above threshold {threshold}")
         
-        # If no tokens are above threshold, return empty lists
+        # If no tokens are above threshold, return empty arrays
         if indices_above_threshold.numel() == 0:
             if is_first_token:
-                self.log("DIAGNOSTIC - No tokens above threshold! Returning empty list.")
-            return [], []
+                self.log("DIAGNOSTIC - No tokens above threshold! Showing top tokens anyway.")
+                
+                # Select top-k tokens for debugging
+                if next_token_probs.dim() > 1:
+                    top_k_probs, top_k_indices = torch.topk(next_token_probs[0], min(5, next_token_probs.size(-1)))
+                else:
+                    top_k_probs, top_k_indices = torch.topk(next_token_probs, min(5, next_token_probs.size(-1)))
+                
+                # Show token info
+                tokens_info = []
+                for i, (idx, prob) in enumerate(zip(top_k_indices.tolist(), top_k_probs.tolist())):
+                    token_text = self.tokenizer.decode([idx])
+                    tokens_info.append(f"    {i+1}. '{token_text}' (ID: {idx}): {prob:.6f}")
+                
+                self.log("\nTop 5 tokens (all below threshold):")
+                self.log("\n".join(tokens_info))
+                self.log(f"Current threshold: {threshold}")
+                
+            return np.array([], dtype=np.int32), np.array([], dtype=np.float32)
         
-        # Sort by probability (highest first)
-        indices_and_probs = [
-            (idx.item(), next_token_probs[idx].item()) 
-            for idx in indices_above_threshold
-        ]
-        sorted_indices_and_probs = sorted(indices_and_probs, key=lambda x: x[1], reverse=True)
+        # Get filtered probabilities for tokens above threshold
+        probs_above_threshold = next_token_probs[indices_above_threshold]
         
-        # Limit to max_tokens
-        sorted_indices_and_probs = sorted_indices_and_probs[:max_tokens]
+        # Use torch.topk to sort in a vectorized way (highest probabilities first)
+        # This handles both sorting and limiting to max_tokens in one operation
+        if indices_above_threshold.numel() <= max_tokens:
+            # If we have fewer tokens than max_tokens, just sort them all
+            sorted_probs, sorted_indices = torch.sort(probs_above_threshold, descending=True)
+        else:
+            # If we have more tokens than max_tokens, get the top max_tokens
+            sorted_probs, sorted_indices = torch.topk(probs_above_threshold, max_tokens)
         
-        # Extract token IDs and probabilities
-        token_ids = [idx for idx, _ in sorted_indices_and_probs]
-        token_probs = [prob for _, prob in sorted_indices_and_probs]
+        # Map sorted_indices back to original token indices
+        # sorted_indices are positions in indices_above_threshold, not the actual token IDs
+        token_indices = indices_above_threshold[sorted_indices]
+        
+        # Convert tensors to NumPy arrays (more efficient than lists for large data)
+        token_ids = token_indices.numpy().astype(np.int32)
+        token_probs = sorted_probs.numpy().astype(np.float32)
         
         # DIAGNOSTIC: Show selected tokens
         if is_first_token:
             self.log(f"\nDIAGNOSTIC - Selected {len(token_ids)} tokens above threshold {threshold}:")
             token_info = []
             for i, (tid, prob) in enumerate(zip(token_ids, token_probs)):
-                token_text = self.tokenizer.decode([tid])
-                token_info.append(f"    {i+1}. '{token_text}' (ID: {tid}): {prob:.6f}")
+                token_text = self.tokenizer.decode([int(tid)])
+                token_info.append(f"    {i+1}. '{token_text}' (ID: {int(tid)}): {prob:.6f}")
             self.log("\n".join(token_info))
             
         return token_ids, token_probs
@@ -200,24 +258,44 @@ class TokenSelector:
         Useful for avoiding repetition loops.
         
         Args:
-            next_token_logits: Logits tensor for next token [batch_size, vocab_size]
+            next_token_logits: Logits tensor for next token [batch_size, vocab_size] or [batch_size, seq_len, vocab_size]
             threshold: Probability threshold
             exclude_tokens: List of token IDs to exclude
             max_tokens: Maximum number of tokens to return
             
         Returns:
-            tuple: (token_ids, token_probs)
+            tuple: (token_ids, token_probs) as NumPy arrays
         """
+        # Ensure we're working with the right tensor shape
+        # If we have a 3D tensor [batch_size, seq_len, vocab_size]
+        # We want to focus on the last position of the sequence
+        if len(next_token_logits.shape) == 3:
+            # Get logits for the last position in the sequence
+            next_token_logits = next_token_logits[:, -1, :]
+            
         # Apply softmax to logits efficiently
         next_token_probs = torch.softmax(next_token_logits, dim=-1)
         
         # Invariant: Probabilities must sum to approximately 1.0 after softmax
         prob_sum = next_token_probs.sum().item()
         if not (0.99 <= prob_sum <= 1.01):
-            raise ValueError(f"Invariant violation: Token probabilities sum to {prob_sum}, not approximately 1.0 after softmax")
+            # If next_token_logits has a batch dimension (e.g., [batch_size, vocab_size])
+            # summing all values will give batch_size * 1.0 instead of just 1.0
+            # We need to sum only across the vocabulary dimension (dim=-1)
+            if len(next_token_logits.shape) > 1:
+                prob_sum_per_batch = next_token_probs.sum(dim=-1)
+                # Check if each batch row sums to approximately 1.0
+                if not torch.all((0.99 <= prob_sum_per_batch) & (prob_sum_per_batch <= 1.01)):
+                    raise ValueError(f"Invariant violation: Token probabilities sum to {prob_sum}, not approximately 1.0 after softmax")
+            else:
+                raise ValueError(f"Invariant violation: Token probabilities sum to {prob_sum}, not approximately 1.0 after softmax")
         
-        # Convert to CPU tensors 
-        next_token_probs = next_token_probs.squeeze().cpu()
+        # Convert to CPU and ensure we have the right shape
+        # If we have a batch dimension [batch_size, vocab_size], take the first batch
+        if next_token_probs.dim() > 1:
+            next_token_probs = next_token_probs[0].cpu()
+        else:
+            next_token_probs = next_token_probs.cpu()
         
         # Create a mask for excluded tokens
         if exclude_tokens:
@@ -232,7 +310,7 @@ class TokenSelector:
         # Find all probabilities above threshold
         indices_above_threshold = torch.nonzero(masked_probs >= threshold).squeeze(-1)
         
-        # If no tokens are above threshold, return empty lists
+        # If no tokens are above threshold, return empty arrays
         if indices_above_threshold.numel() == 0:
             return self.select_top_tokens(next_token_logits, 5, exclude_tokens)
         
@@ -240,19 +318,25 @@ class TokenSelector:
         if indices_above_threshold.numel() == 0:
             raise ValueError("No tokens above threshold after exclusion. Cannot proceed with generation.")
         
-        # Sort by probability (highest first)
-        indices_and_probs = [
-            (idx.item(), masked_probs[idx].item()) 
-            for idx in indices_above_threshold
-        ]
-        sorted_indices_and_probs = sorted(indices_and_probs, key=lambda x: x[1], reverse=True)
+        # Get filtered probabilities for tokens above threshold
+        probs_above_threshold = masked_probs[indices_above_threshold]
         
-        # Limit to max_tokens
-        sorted_indices_and_probs = sorted_indices_and_probs[:max_tokens]
+        # Use torch.topk to sort in a vectorized way (highest probabilities first)
+        # This handles both sorting and limiting to max_tokens in one operation
+        if indices_above_threshold.numel() <= max_tokens:
+            # If we have fewer tokens than max_tokens, just sort them all
+            sorted_probs, sorted_indices = torch.sort(probs_above_threshold, descending=True)
+        else:
+            # If we have more tokens than max_tokens, get the top max_tokens
+            sorted_probs, sorted_indices = torch.topk(probs_above_threshold, max_tokens)
         
-        # Extract token IDs and probabilities
-        token_ids = [idx for idx, _ in sorted_indices_and_probs]
-        token_probs = [prob for _, prob in sorted_indices_and_probs]
+        # Map sorted_indices back to original token indices
+        # sorted_indices are positions in indices_above_threshold, not the actual token IDs
+        token_indices = indices_above_threshold[sorted_indices]
+        
+        # Convert tensors to NumPy arrays (more efficient than lists for large data)
+        token_ids = token_indices.numpy().astype(np.int32)
+        token_probs = sorted_probs.numpy().astype(np.float32)
         
         return token_ids, token_probs
     
@@ -267,23 +351,43 @@ class TokenSelector:
         Useful as a fallback when threshold-based selection returns nothing.
         
         Args:
-            next_token_logits: Logits tensor for next token
+            next_token_logits: Logits tensor for next token [batch_size, vocab_size] or [batch_size, seq_len, vocab_size]
             top_k: Number of top tokens to select
             exclude_tokens: Optional list of token IDs to exclude
             
         Returns:
-            tuple: (token_ids, token_probs)
+            tuple: (token_ids, token_probs) as NumPy arrays
         """
+        # Ensure we're working with the right tensor shape
+        # If we have a 3D tensor [batch_size, seq_len, vocab_size]
+        # We want to focus on the last position of the sequence
+        if len(next_token_logits.shape) == 3:
+            # Get logits for the last position in the sequence
+            next_token_logits = next_token_logits[:, -1, :]
+            
         # Apply softmax to get probabilities
         next_token_probs = torch.softmax(next_token_logits, dim=-1)
         
         # Invariant: Probabilities must sum to approximately 1.0 after softmax
         prob_sum = next_token_probs.sum().item()
         if not (0.99 <= prob_sum <= 1.01):
-            raise ValueError(f"Invariant violation: Token probabilities sum to {prob_sum}, not approximately 1.0 after softmax")
+            # If next_token_logits has a batch dimension (e.g., [batch_size, vocab_size])
+            # summing all values will give batch_size * 1.0 instead of just 1.0
+            # We need to sum only across the vocabulary dimension (dim=-1)
+            if len(next_token_logits.shape) > 1:
+                prob_sum_per_batch = next_token_probs.sum(dim=-1)
+                # Check if each batch row sums to approximately 1.0
+                if not torch.all((0.99 <= prob_sum_per_batch) & (prob_sum_per_batch <= 1.01)):
+                    raise ValueError(f"Invariant violation: Token probabilities sum to {prob_sum}, not approximately 1.0 after softmax")
+            else:
+                raise ValueError(f"Invariant violation: Token probabilities sum to {prob_sum}, not approximately 1.0 after softmax")
         
-        # Convert to CPU tensors
-        next_token_probs = next_token_probs.squeeze().cpu()
+        # Convert to CPU and ensure we have the right shape
+        # If we have a batch dimension [batch_size, vocab_size], take the first batch
+        if next_token_probs.dim() > 1:
+            next_token_probs = next_token_probs[0].cpu()
+        else:
+            next_token_probs = next_token_probs.cpu()
         
         # Apply exclusion mask if needed
         if exclude_tokens:
@@ -297,9 +401,9 @@ class TokenSelector:
         # Get top-k token indices and probabilities
         top_k_probs, top_k_indices = torch.topk(masked_probs, min(top_k, masked_probs.size(0)))
         
-        # Convert to Python lists
-        token_ids = top_k_indices.tolist()
-        token_probs = top_k_probs.tolist()
+        # Convert tensors to NumPy arrays (more efficient than lists for large data)
+        token_ids = top_k_indices.numpy().astype(np.int32)
+        token_probs = top_k_probs.numpy().astype(np.float32)
         
         return token_ids, token_probs
     
@@ -315,6 +419,28 @@ class TokenSelector:
         """
         return token_id == self.eos_token_id
     
+    def all_are_eos_tokens(self, token_ids: List[int]) -> bool:
+        """
+        Vectorized check if all tokens in a list are EOS tokens.
+        
+        Args:
+            token_ids: NumPy array or list of token IDs to check
+            
+        Returns:
+            bool: True if all tokens are EOS, False otherwise
+        """
+        if not isinstance(token_ids, (list, np.ndarray)) or len(token_ids) == 0:
+            return False
+            
+        # Convert to tensor for vectorized comparison
+        if isinstance(token_ids, np.ndarray):
+            # If already a NumPy array, use directly
+            return bool(np.all(token_ids == self.eos_token_id))
+        else:
+            # Convert list to tensor
+            tokens_tensor = torch.tensor(token_ids, dtype=torch.long)
+            return bool(torch.all(tokens_tensor == self.eos_token_id).item())
+    
     def filter_repetitive_tokens(
         self,
         token_ids: List[int],
@@ -326,13 +452,13 @@ class TokenSelector:
         Filter out tokens that would create repetitive sequences.
         
         Args:
-            token_ids: List of candidate token IDs
-            token_probs: Corresponding probabilities
-            last_n_tokens: Last N tokens generated
+            token_ids: NumPy array of candidate token IDs
+            token_probs: NumPy array of corresponding probabilities
+            last_n_tokens: List of last N tokens generated
             repetition_penalty: Penalty factor for repetitive tokens
             
         Returns:
-            tuple: (filtered_token_ids, filtered_token_probs)
+            tuple: (filtered_token_ids, filtered_token_probs) as NumPy arrays
         """
         if not last_n_tokens or len(last_n_tokens) < 2:
             return token_ids, token_probs
@@ -350,29 +476,30 @@ class TokenSelector:
             # Identify the repeating token
             repeating_token = last_n_tokens[-1]
             
-            # Filter out the repeating token completely
-            filtered_indices = [i for i, token in enumerate(token_ids) if token != repeating_token]
+            # Create a mask for non-repeating tokens
+            non_repeating_mask = token_ids != repeating_token
             
-            # If no tokens left after filtering, return original set with penalties
-            if not filtered_indices:
-                # Apply repetition penalty to probabilities
-                penalized_probs = [prob * repetition_penalty if token == repeating_token else prob
-                                  for token, prob in zip(token_ids, token_probs)]
+            # If all tokens would be filtered out, apply penalty instead
+            if not np.any(non_repeating_mask):
+                # Create penalty mask (1.0 for non-repeating, penalty for repeating)
+                penalty_mask = np.where(token_ids == repeating_token, repetition_penalty, 1.0)
+                
+                # Apply penalty to probabilities
+                penalized_probs = token_probs * penalty_mask
                 
                 # Sort by penalized probabilities
-                paired = list(zip(token_ids, penalized_probs))
-                paired.sort(key=lambda x: x[1], reverse=True)
+                sorted_indices = np.argsort(-penalized_probs)  # Descending order
                 
-                # Unpack
-                return [t for t, _ in paired], [p for _, p in paired]
+                # Return sorted arrays
+                return token_ids[sorted_indices], penalized_probs[sorted_indices]
             
-            # Extract filtered tokens and probabilities
-            filtered_token_ids = [token_ids[i] for i in filtered_indices]
-            filtered_token_probs = [token_probs[i] for i in filtered_indices]
+            # Filter using the mask
+            filtered_token_ids = token_ids[non_repeating_mask]
+            filtered_token_probs = token_probs[non_repeating_mask]
             
             return filtered_token_ids, filtered_token_probs
         
-        # No repetition detected, return original tokens
+        # No repetition detected, return original arrays
         return token_ids, token_probs
     
     def decode_tokens(self, token_ids: List[int]) -> List[str]:
@@ -380,9 +507,13 @@ class TokenSelector:
         Decode token IDs to human-readable strings.
         
         Args:
-            token_ids: List of token IDs
+            token_ids: NumPy array or list of token IDs
             
         Returns:
             List[str]: Decoded token texts
         """
+        # Ensure we're working with Python integers for tokenizer compatibility
+        if isinstance(token_ids, np.ndarray):
+            token_ids = token_ids.tolist()
+            
         return [self.tokenizer.decode([tid], skip_special_tokens=False) for tid in token_ids] 

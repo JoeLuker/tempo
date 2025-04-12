@@ -10,3 +10,8 @@ protobuf
 colorama
 seaborn
 scikit-learn
+fastapi
+uvicorn
+pydantic
+python-multipart
+cors

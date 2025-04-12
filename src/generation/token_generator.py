@@ -29,6 +29,9 @@ class TokenGenerator:
         # Cache for tokenized prompts
         self.prompt_cache = {}
         
+        # Cache for token decoding
+        self.token_decode_cache = {}
+        
         # Optional detailed performance tracking
         self.detailed_perf = False
         
@@ -42,7 +45,10 @@ class TokenGenerator:
             "model_calls": 0,
             "model_time": 0,
             "cache_hits": 0,
-            "cache_misses": 0
+            "cache_misses": 0,
+            "decode_calls": 0,
+            "decode_cache_hits": 0,
+            "decode_time": 0
         }
     
     def _setup_logger(self):
@@ -370,7 +376,8 @@ class TokenGenerator:
                 model_args = {
                     "input_ids": input_ids,
                     "attention_mask": attention_mask,
-                    "use_cache": True  # Always use cache when possible for efficiency
+                    "use_cache": True,  # Always use cache when possible for efficiency
+                    "output_attentions": True  # Always request attention patterns for reuse in pruning
                 }
                 
                 # Only include past_key_values if they are provided
@@ -409,6 +416,24 @@ class TokenGenerator:
                 # INVARIANT: Ensure logits has the right shape
                 if outputs.logits.dim() < 3:
                     raise ValueError(f"Invariant violation: outputs.logits has wrong dimensionality, expected at least 3, got {outputs.logits.dim()}")
+                
+                # Store attention patterns for later use in pruning
+                if hasattr(outputs, 'attentions') and outputs.attentions:
+                    # Store the entire attention tensor stack as a class attribute
+                    self.cached_attention = outputs.attentions
+                    
+                    # Store sequence length for verification
+                    if not hasattr(self, 'cached_attention_seq_len'):
+                        self.cached_attention_seq_len = []
+                    current_seq_len = input_ids.size(1)
+                    if past_key_values is not None:
+                        # When using KV cache, add the past sequence length
+                        if len(past_key_values) > 0 and hasattr(past_key_values[0][0], 'size'):
+                            current_seq_len += past_key_values[0][0].size(2)
+                    self.cached_attention_seq_len.append(current_seq_len)
+                    
+                    if self.debug_mode:
+                        self.log(f"Cached attention for sequence length {current_seq_len}")
                 
             except Exception as e:
                 # No fallbacks - fail with explicit error
@@ -506,6 +531,7 @@ class TokenGenerator:
     def batch_decode_tokens(self, token_ids: List[int]) -> List[str]:
         """
         Efficiently decode multiple tokens in a single call.
+        Uses caching to avoid redundant decoding operations.
         
         Args:
             token_ids: List of token IDs
@@ -515,24 +541,64 @@ class TokenGenerator:
         """
         # Performance tracking
         start_time = time.time()
+        self.perf_stats["decode_calls"] += 1
         
         # Process tokens in batches for efficiency
         if not token_ids:
             return []
+        
+        # Use cached decoding results when available
+        cached_results = []
+        uncached_tokens = []
+        token_to_position = {}  # Track original positions
+        
+        # Check cache for each token
+        for i, token_id in enumerate(token_ids):
+            token_key = int(token_id)  # Ensure consistent key type
+            if token_key in self.token_decode_cache:
+                self.perf_stats["decode_cache_hits"] += 1
+                cached_results.append((i, self.token_decode_cache[token_key]))
+            else:
+                uncached_tokens.append(token_id)
+                token_to_position[len(uncached_tokens) - 1] = i
+        
+        # Only decode uncached tokens
+        decoded_tokens = []
+        if uncached_tokens:
+            # Convert to tensors for efficient batch processing
+            tokens_tensor = torch.tensor([uncached_tokens], device="cpu")
             
-        # Convert to tensors for efficient batch processing
-        tokens_tensor = torch.tensor([token_ids], device="cpu")
+            # Get token strings using batch processing
+            batch_decoded = self.tokenizer.batch_decode(
+                tokens_tensor, 
+                skip_special_tokens=False,
+                clean_up_tokenization_spaces=False
+            )
+            
+            # Split the decoded strings
+            decoded_tokens = batch_decoded[0].split(' ')
+            
+            # Cache the newly decoded tokens
+            for i, token_id in enumerate(uncached_tokens):
+                if i < len(decoded_tokens):
+                    token_key = int(token_id)
+                    self.token_decode_cache[token_key] = decoded_tokens[i]
         
-        # Get token strings using batch processing
-        token_strings = self.tokenizer.batch_decode(
-            tokens_tensor, 
-            skip_special_tokens=False,
-            clean_up_tokenization_spaces=False
-        )
+        # Combine cached and newly decoded results
+        result = [""] * len(token_ids)  # Pre-allocate result list
         
-        self.perf_stats["tokenization_time"] += time.time() - start_time
-        # Return the processed strings
-        return token_strings[0].split(' ')
+        # Insert cached results
+        for pos, text in cached_results:
+            result[pos] = text
+            
+        # Insert newly decoded results
+        for i, text in enumerate(decoded_tokens):
+            orig_pos = token_to_position.get(i)
+            if orig_pos is not None:
+                result[orig_pos] = text
+                
+        self.perf_stats["decode_time"] += time.time() - start_time
+        return result
     
     def print_performance_stats(self):
         """Print performance statistics."""
@@ -544,6 +610,15 @@ class TokenGenerator:
         print(f"  Cache hits: {self.perf_stats['cache_hits']}")
         print(f"  Cache misses: {self.perf_stats['cache_misses']}")
         
+        # Token decoding stats
+        decode_calls = self.perf_stats['decode_calls']
+        if decode_calls > 0:
+            cache_hits = self.perf_stats['decode_cache_hits']
+            hit_rate = (cache_hits / decode_calls) * 100 if decode_calls > 0 else 0
+            print(f"  Token decode calls: {decode_calls}")
+            print(f"  Token decode cache hits: {cache_hits} ({hit_rate:.1f}%)")
+            print(f"  Token decode time: {self.perf_stats['decode_time']:.4f}s")
+        
         if self.perf_stats['model_calls'] > 0:
             avg_time = self.perf_stats['model_time'] / self.perf_stats['model_calls']
             print(f"  Average model call time: {avg_time:.4f}s")
@@ -551,3 +626,15 @@ class TokenGenerator:
     def enable_detailed_perf(self, enabled=True):
         """Enable or disable detailed per-call performance logging."""
         self.detailed_perf = enabled
+    
+    def get_cached_attention(self):
+        """
+        Get the cached attention patterns from the most recent model forward pass.
+        
+        Returns:
+            tuple: (cached_attention, seq_length) or (None, None) if no cached attention
+        """
+        if hasattr(self, 'cached_attention') and self.cached_attention:
+            seq_len = self.cached_attention_seq_len[-1] if hasattr(self, 'cached_attention_seq_len') and self.cached_attention_seq_len else None
+            return self.cached_attention, seq_len
+        return None, None

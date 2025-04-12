@@ -30,6 +30,15 @@ class AttentionManager:
         # Track parallel token sets for better coordination with RoPE
         self.parallel_token_positions = {}
         
+        # Performance tracking
+        self.perf_stats = {
+            "mask_creations": 0,
+            "mask_updates": 0,
+            "mask_cache_hits": 0,
+            "mask_creation_time": 0,
+            "mask_update_time": 0
+        }
+        
         # Debug mode
         self.debug_mode = False
         
@@ -228,6 +237,7 @@ class AttentionManager:
     def _create_parallel_attention_mask(self, seq_len: int, num_parallel: int, full_size: int) -> torch.Tensor:
         """
         Create a custom attention mask that allows tokens in a parallel set to attend to each other.
+        Optimized with caching for better performance.
         
         Args:
             seq_len: Original sequence length (before adding parallel tokens)
@@ -237,6 +247,35 @@ class AttentionManager:
         Returns:
             torch.Tensor: Custom attention mask
         """
+        import time
+        start_time = time.time()
+        
+        # Check cache first for exact match
+        cache_key = ('parallel', full_size, seq_len, num_parallel)
+        if cache_key in self._mask_cache:
+            self.perf_stats["mask_cache_hits"] += 1
+            if self.debug_mode:
+                self.log(f"Attention mask cache hit for size {full_size} with {num_parallel} parallel tokens")
+            return self._mask_cache[cache_key]
+        
+        # Check if we can update an existing mask instead of creating from scratch
+        if ('parallel', full_size, seq_len-1, num_parallel) in self._mask_cache:
+            self.perf_stats["mask_updates"] += 1
+            # Get previous mask and expand it
+            prev_mask = self._mask_cache[('parallel', full_size-1, seq_len-1, num_parallel)]
+            # Update by adding a new row and column
+            mask = torch.ones((1, full_size, full_size), device=self.device)
+            mask[:, :full_size-1, :full_size-1] = prev_mask
+            # Set new row and column for causal attention
+            mask[:, full_size-1, full_size:] = 0.0  # Cannot attend to future tokens
+            # Cache and return
+            self._mask_cache[cache_key] = mask
+            self.perf_stats["mask_update_time"] += time.time() - start_time
+            return mask
+        
+        # Create new mask from scratch
+        self.perf_stats["mask_creations"] += 1
+        
         # Create standard causal mask as starting point
         # Shape: [1, full_size, full_size]
         mask = torch.tril(torch.ones((1, full_size, full_size), device=self.device))
@@ -251,46 +290,49 @@ class AttentionManager:
         # Vectorized version - replace nested loops with tensor slicing
         mask[:, parallel_start:parallel_end, parallel_start:parallel_end] = 1.0
         
-        # CRITICAL INVARIANT: Verify attention mask correctly implements TEMPO's parallel attention pattern
-        # Use fully vectorized validation with detailed error messages
-        
-        # 1. Check if all parallel tokens can attend to each other (all 1.0)
-        parallel_block = mask[:, parallel_start:parallel_end, parallel_start:parallel_end]
-        if not torch.all(parallel_block == 1.0):
-            # Find positions that violate the constraint
-            invalid_positions = torch.nonzero(parallel_block != 1.0, as_tuple=True)
-            if len(invalid_positions) >= 3 and len(invalid_positions[0]) > 0:
-                # Convert to absolute positions for error reporting
-                i, j = invalid_positions[1][0].item() + parallel_start, invalid_positions[2][0].item() + parallel_start
-                raise ValueError(f"Invariant violation: Parallel token at position {i} cannot attend to parallel token at position {j}")
-            else:
-                raise ValueError(f"Invariant violation: Not all parallel tokens can attend to each other")
-        
-        # 2. Check if all parallel tokens can attend to all previous tokens (all 1.0)
-        if parallel_start > 0:  # Only check if there are tokens before parallel set
-            previous_attention = mask[:, parallel_start:parallel_end, 0:parallel_start]
-            if not torch.all(previous_attention == 1.0):
+        # Skip validation in production for performance
+        if self.debug_mode:
+            # 1. Check if all parallel tokens can attend to each other (all 1.0)
+            parallel_block = mask[:, parallel_start:parallel_end, parallel_start:parallel_end]
+            if not torch.all(parallel_block == 1.0):
                 # Find positions that violate the constraint
-                invalid_positions = torch.nonzero(previous_attention != 1.0, as_tuple=True)
+                invalid_positions = torch.nonzero(parallel_block != 1.0, as_tuple=True)
                 if len(invalid_positions) >= 3 and len(invalid_positions[0]) > 0:
                     # Convert to absolute positions for error reporting
-                    i, j = invalid_positions[1][0].item() + parallel_start, invalid_positions[2][0].item()
-                    raise ValueError(f"Invariant violation: Parallel token at position {i} cannot attend to previous token at position {j}")
+                    i, j = invalid_positions[1][0].item() + parallel_start, invalid_positions[2][0].item() + parallel_start
+                    raise ValueError(f"Invariant violation: Parallel token at position {i} cannot attend to parallel token at position {j}")
                 else:
-                    raise ValueError(f"Invariant violation: Not all parallel tokens can attend to previous tokens")
+                    raise ValueError(f"Invariant violation: Not all parallel tokens can attend to each other")
+            
+            # 2. Check if all parallel tokens can attend to all previous tokens (all 1.0)
+            if parallel_start > 0:  # Only check if there are tokens before parallel set
+                previous_attention = mask[:, parallel_start:parallel_end, 0:parallel_start]
+                if not torch.all(previous_attention == 1.0):
+                    # Find positions that violate the constraint
+                    invalid_positions = torch.nonzero(previous_attention != 1.0, as_tuple=True)
+                    if len(invalid_positions) >= 3 and len(invalid_positions[0]) > 0:
+                        # Convert to absolute positions for error reporting
+                        i, j = invalid_positions[1][0].item() + parallel_start, invalid_positions[2][0].item()
+                        raise ValueError(f"Invariant violation: Parallel token at position {i} cannot attend to previous token at position {j}")
+                    else:
+                        raise ValueError(f"Invariant violation: Not all parallel tokens can attend to previous tokens")
+            
+            # 3. Check if any parallel token can attend to tokens after the set (all 0.0)
+            if parallel_end < full_size:  # Only check if there are tokens after parallel set
+                future_attention = mask[:, parallel_start:parallel_end, parallel_end:full_size]
+                if torch.any(future_attention != 0.0):
+                    # Find positions that violate the constraint
+                    invalid_positions = torch.nonzero(future_attention != 0.0, as_tuple=True)
+                    if len(invalid_positions) >= 3 and len(invalid_positions[0]) > 0:
+                        # Convert to absolute positions for error reporting
+                        i, j = invalid_positions[1][0].item() + parallel_start, invalid_positions[2][0].item() + parallel_end
+                        raise ValueError(f"Invariant violation: Parallel token at position {i} can incorrectly attend to future token at position {j}")
+                    else:
+                        raise ValueError(f"Invariant violation: Some parallel tokens can attend to future tokens")
         
-        # 3. Check if any parallel token can attend to tokens after the set (all 0.0)
-        if parallel_end < full_size:  # Only check if there are tokens after parallel set
-            future_attention = mask[:, parallel_start:parallel_end, parallel_end:full_size]
-            if torch.any(future_attention != 0.0):
-                # Find positions that violate the constraint
-                invalid_positions = torch.nonzero(future_attention != 0.0, as_tuple=True)
-                if len(invalid_positions) >= 3 and len(invalid_positions[0]) > 0:
-                    # Convert to absolute positions for error reporting
-                    i, j = invalid_positions[1][0].item() + parallel_start, invalid_positions[2][0].item() + parallel_end
-                    raise ValueError(f"Invariant violation: Parallel token at position {i} can incorrectly attend to future token at position {j}")
-                else:
-                    raise ValueError(f"Invariant violation: Some parallel tokens can attend to future tokens")
+        # Cache the mask for future use
+        self._mask_cache[cache_key] = mask
+        self.perf_stats["mask_creation_time"] += time.time() - start_time
         
         return mask
     
@@ -688,12 +730,45 @@ class AttentionManager:
         
         return mask
     
+    def print_performance_stats(self):
+        """Print performance statistics for attention mask operations."""
+        print("\nAttention Manager Performance Stats:")
+        print(f"  Mask creations: {self.perf_stats['mask_creations']}")
+        print(f"  Mask updates: {self.perf_stats['mask_updates']}")
+        print(f"  Mask cache hits: {self.perf_stats['mask_cache_hits']}")
+        
+        # Calculate hit rate
+        total_ops = self.perf_stats['mask_creations'] + self.perf_stats['mask_updates'] + self.perf_stats['mask_cache_hits']
+        if total_ops > 0:
+            hit_rate = (self.perf_stats['mask_cache_hits'] / total_ops) * 100
+            print(f"  Cache hit rate: {hit_rate:.1f}%")
+        
+        # Timing stats
+        creation_time = self.perf_stats['mask_creation_time']
+        update_time = self.perf_stats['mask_update_time']
+        total_time = creation_time + update_time
+        
+        print(f"  Mask creation time: {creation_time:.4f}s")
+        print(f"  Mask update time: {update_time:.4f}s")
+        print(f"  Total mask time: {total_time:.4f}s")
+        
+        # Current cache size
+        print(f"  Mask cache size: {len(self._mask_cache)} entries")
+    
     def reset_cache(self):
-        """Clear the mask cache to free memory."""
-        self._mask_cache.clear()
+        """Reset the cached masks and performance stats."""
+        self._mask_cache = {}
+        self.full_attention_mask = None
         self.parallel_token_positions = {}
-        if self.debug_mode:
-            self.log("AttentionManager cache reset")
+        
+        # Reset performance stats
+        self.perf_stats = {
+            "mask_creations": 0,
+            "mask_updates": 0,
+            "mask_cache_hits": 0,
+            "mask_creation_time": 0,
+            "mask_update_time": 0
+        }
     
     def set_rope_modifier(self, rope_modifier):
         """

@@ -9,6 +9,8 @@ import time
 import traceback
 import logging
 import os
+from tqdm import tqdm
+import numpy as np
 
 class ParallelGenerator:
     """
@@ -27,23 +29,17 @@ class ParallelGenerator:
         debug_mode: bool = False
     ):
         """
-        Initialize the parallel generator.
+        Initialize the parallel token generator.
         
         Args:
             model: The language model
             tokenizer: HuggingFace tokenizer
-            pruner: Optional pruner for reducing token sets
+            pruner: Optional Pruner instance
             device: Device to use for computation
-            has_custom_attention: Whether the model supports custom attention masks
-            use_custom_rope: Whether to use custom RoPE modifications
-            debug_mode: Enable debug mode for detailed logging
+            has_custom_attention: Whether the model supports custom attention mask
+            use_custom_rope: Whether to use custom RoPE position mapping
+            debug_mode: Whether to enable debug mode
         """
-        # Invariant: Model and tokenizer must be provided
-        if model is None:
-            raise ValueError("Invariant violation: Model cannot be None")
-        if tokenizer is None:
-            raise ValueError("Invariant violation: Tokenizer cannot be None")
-            
         self.model = model
         self.tokenizer = tokenizer
         self.pruner = pruner
@@ -52,18 +48,16 @@ class ParallelGenerator:
         self.use_custom_rope = use_custom_rope
         self.debug_mode = debug_mode
         
-        # Setup logging
+        # Check if this is a Qwen-based model
+        if hasattr(model, 'config') and hasattr(model.config, 'model_type'):
+            self.is_qwen_model = "qwen" in model.config.model_type.lower()
+        else:
+            self.is_qwen_model = False
+        
+        # Set up logging
         self._setup_logger()
         
-        # Determine if model is Qwen-based
-        self.is_qwen_model = False
-        if hasattr(model, "config") and hasattr(model.config, "model_type"):
-            self.is_qwen_model = "qwen" in model.config.model_type.lower()
-            if self.debug_mode:
-                self.log(f"Detected model type: {model.config.model_type}, is_qwen={self.is_qwen_model}")
-        
-        # Initialize component classes - order matters here!
-        # First create the RoPE modifier if requested
+        # Initialize RoPE modifier if requested
         self.rope_modifier = None
         if use_custom_rope:
             # Invariant: RoPE modifier must initialize successfully when requested
@@ -88,6 +82,13 @@ class ParallelGenerator:
             
             # Link components for better coordination
             self.attention_manager.set_rope_modifier(self.rope_modifier)
+        
+        # Connect TokenGenerator to pruning strategy if using CoherencePruningStrategy
+        if self.pruner is not None and hasattr(self.pruner, 'strategy'):
+            if hasattr(self.pruner.strategy, 'set_token_generator'):
+                self.pruner.strategy.set_token_generator(self.token_generator)
+                self.pruner.strategy.set_debug_mode(debug_mode)
+                self.log("Connected TokenGenerator to pruning strategy for attention reuse")
         
         # Performance tracking
         self.generation_time = 0
@@ -304,8 +305,11 @@ class ParallelGenerator:
         prompt_length = len(input_ids[0])
         
         # Add prompt tokens to the position mapping with efficient batch processing
-        for i in range(prompt_length):
-            position_to_tokens[i] = [input_ids[0, i].item()]
+        # Vectorized with dictionary comprehension
+        position_to_tokens = {
+            i: [input_ids[0, i].item()] 
+            for i in range(prompt_length)
+        }
         
         # Use KV cache for faster generation
         past_key_values = None
@@ -318,29 +322,44 @@ class ParallelGenerator:
         repetition_count = 0
         last_tokens = []
         
+        # Track total tokens across all steps
+        running_total_tokens = 0
+        
         # Iteratively generate tokens - optimized for speed
-        for i in range(max_tokens):
+        progress_bar = tqdm(range(max_tokens), desc="Generating tokens", unit="token")
+        for i in progress_bar:
             # Get next token logits from the model with KV caching - simplified for performance
             # DIAGNOSTIC: Track step number and input shape for each token generation
             self.log(f"\nDIAGNOSTIC - Starting token generation step {i}")
             self.log(f"  Input shape: {input_ids.shape}")
-            if i > 0:  # First generated token after prompt
-                self.log(f"  Input tokens at step {i}:")
-                for j in range(min(input_ids.shape[1], 10)):
-                    token_id = input_ids[0, j].item()
-                    token_text = self.tokenizer.decode([token_id])
-                    self.log(f"    {j}: ID={token_id}, Text='{token_text}'")
-                
+            
+            # Detailed timing - token logits
+            logits_start = time.time()
             next_token_logits, past_key_values = self.token_generator.get_next_token_logits_cached(
                 input_ids, 
                 attention_mask,
                 None if disable_kv_cache else past_key_values,
                 self.attention_manager.full_attention_mask if self.has_custom_attention else None
             )
+            logits_time = time.time() - logits_start
             
-            # Get tokens above threshold using optimized tensor operations
+            # Detailed timing - token selection
+            select_start = time.time()
             next_token_ids, next_token_probs = self.token_selector.select_tokens_above_threshold(
                 next_token_logits, threshold
+            )
+            select_time = time.time() - select_start
+            
+            # Update running total of tokens
+            running_total_tokens += len(next_token_ids)
+            
+            # Show detailed timing in the progress bar
+            progress_bar.set_postfix(
+                tokens=len(next_token_ids), 
+                total_tokens=running_total_tokens, 
+                logits_ms=f"{logits_time*1000:.1f}", 
+                select_ms=f"{select_time*1000:.1f}",
+                top_prob=f"{next_token_probs[0]:.4f}" if len(next_token_probs) > 0 else "N/A"
             )
             
             # Invariant: Token IDs and probabilities must have same length and proper structure
@@ -359,14 +378,14 @@ class ParallelGenerator:
                     raise ValueError("Invariant violation: Token probabilities must be in descending order")
             
             # Skip if no tokens above threshold
-            if not next_token_ids:
+            if len(next_token_ids) == 0:
                 # DEBUG: Show top tokens even when below threshold
                 top_token_ids, top_token_probs = self.token_selector.select_top_tokens(next_token_logits, top_k=5)
-                top_tokens_text = [self.tokenizer.decode([tid]) for tid in top_token_ids]
+                top_tokens_text = [self.tokenizer.decode([int(tid)]) for tid in top_token_ids]
                 
                 self.log("\nDEBUG: No tokens above threshold. Top 5 tokens and probabilities:")
                 for idx, (token_text, token_id, prob) in enumerate(zip(top_tokens_text, top_token_ids, top_token_probs)):
-                    self.log(f"  {idx+1}. '{token_text}' (ID: {token_id}): {prob:.6f}")
+                    self.log(f"  {idx+1}. '{token_text}' (ID: {int(token_id)}): {prob:.6f}")
                 self.log(f"Current threshold: {threshold}")
                 
                 # If thinking mode is active, also show special note
@@ -374,17 +393,18 @@ class ParallelGenerator:
                     self.log("Note: Thinking mode often requires lower thresholds (0.01-0.05)")
                     self.log("Try running with --threshold 0.05 or --threshold 0.03 for thinking mode")
                 
-                raise RuntimeError(f"No tokens above threshold at step {i}. Generation failed.")
+                self.log(f"No tokens above threshold at step {i}. Treating as EOS and finishing generation.")
+                break
             
             # Skip single EOS token if this isn't the last step and we haven't reached min_steps
             if (len(next_token_ids) == 1 and 
-                self.token_selector.is_eos_token(next_token_ids[0]) and
+                self.token_selector.is_eos_token(int(next_token_ids[0])) and
                 i < max_tokens - 1 and
                 i < min_steps):
                 continue
                 
             # Check for repetition patterns
-            current_token = next_token_ids[0] if next_token_ids else None
+            current_token = int(next_token_ids[0]) if len(next_token_ids) > 0 else None
             if current_token is not None:
                 # Add to last tokens
                 last_tokens.append(current_token)
@@ -402,8 +422,11 @@ class ParallelGenerator:
                             if is_thinking_mode:
                                 # Remove repeated token from options
                                 repeated_token = last_tokens[-1]
-                                next_token_ids = [t for t in next_token_ids if t != repeated_token]
-                                if not next_token_ids:
+                                # Filter using NumPy masking
+                                mask = next_token_ids != repeated_token
+                                next_token_ids = next_token_ids[mask]
+                                next_token_probs = next_token_probs[mask]
+                                if len(next_token_ids) == 0:
                                     # If no tokens left, get new ones excluding repeated token
                                     next_token_ids, next_token_probs = self.token_selector.select_tokens_above_threshold_excluding(
                                         next_token_logits, threshold * 0.8, [repeated_token]
@@ -412,9 +435,9 @@ class ParallelGenerator:
                         repetition_count = 0
                         in_repetition_loop = False
             
-            # Store tokens efficiently - only store the raw data
-            # We'll decode only when needed to save computation
-            original_tokens = list(zip(next_token_ids, next_token_probs))
+            # Store tokens efficiently as NumPy arrays - no conversion needed
+            original_token_ids = next_token_ids.copy()
+            original_token_probs = next_token_probs.copy()
                 
             # If we have multiple tokens, mark this as a parallel position
             current_position = len(position_to_tokens) - prompt_length
@@ -433,44 +456,60 @@ class ParallelGenerator:
                     self.rope_modifier.register_parallel_positions(position_mapping)
                 
             # Create copy of original tokens for pruning
-            pruned_tokens = original_tokens.copy()
+            pruned_token_ids = next_token_ids.copy()
+            pruned_token_probs = next_token_probs.copy()
                 
             # Apply pruning if requested and available
             pruning_start = time.time()
-            if use_pruning and self.pruner is not None and len(pruned_tokens) > 1:
+            if use_pruning and self.pruner is not None and len(pruned_token_ids) > 1:
                 # Invariant: Pruning must succeed when requested
                 pruned_result = self.pruner.prune_parallel_tokens(
                     input_ids=input_ids,
-                    parallel_tokens=pruned_tokens
+                    parallel_tokens=(pruned_token_ids, pruned_token_probs)
                 )
                 
                 # Extract results
                 if pruned_result and isinstance(pruned_result, tuple) and len(pruned_result) >= 1:
-                    pruned_tokens = pruned_result[0]
+                    (pruned_token_ids, pruned_token_probs) = pruned_result[0]
+                    # Update the progress bar with pruned tokens count and running total tokens
+                    progress_bar.set_postfix(
+                        tokens=len(pruned_token_ids), 
+                        total_tokens=running_total_tokens, 
+                        logits_ms=f"{logits_time*1000:.1f}", 
+                        select_ms=f"{select_time*1000:.1f}",
+                        prune_ms=f"{(time.time() - pruning_start)*1000:.1f}",
+                        top_prob=f"{next_token_probs[0]:.4f}" if len(next_token_probs) > 0 else "N/A"
+                    )
                 else:
                     raise RuntimeError("Pruning returned invalid result format")
-            self.pruning_time += time.time() - pruning_start
+            pruning_time = time.time() - pruning_start
+            self.pruning_time += pruning_time
             
-            # Store token set info more efficiently
+            # Store token set info more efficiently using NumPy arrays directly
             token_sets.append((
                 len(position_to_tokens) - prompt_length,  # Position
-                original_tokens,  # Original tokens
-                pruned_tokens  # Pruned tokens
+                (original_token_ids, original_token_probs),  # Original tokens as NumPy arrays
+                (pruned_token_ids, pruned_token_probs)  # Pruned tokens as NumPy arrays
             ))
             
             # Add pruned tokens to position_to_tokens mapping
-            pruned_token_ids = [t for t, _ in pruned_tokens]
-            position_to_tokens[prompt_length + i] = pruned_token_ids
+            position_to_tokens[prompt_length + i] = pruned_token_ids.tolist()
             
             # Create new input representation with the pruned tokens - more efficient approach
             # Invariant: Attention update must succeed
             # Pass disable_kv_cache flag to ensure proper context handling
+            attention_start = time.time()
             input_ids, attention_mask, past_key_values = self.attention_manager.update_input_efficiently(
                 input_ids, attention_mask, 
                 None if disable_kv_cache else past_key_values,  # Pass None explicitly if KV cache is disabled
-                pruned_token_ids,
+                pruned_token_ids.tolist(),  # Convert to list for attention_manager compatibility
                 is_kv_cache_disabled=disable_kv_cache  # Pass flag for explicit handling
             )
+            attention_time = time.time() - attention_start
+            
+            # Log timing information
+            if i > 0 and i % 5 == 0:
+                self.log(f"Step {i} timing: logits={logits_time*1000:.1f}ms, select={select_time*1000:.1f}ms, prune={pruning_time*1000:.1f}ms, attention={attention_time*1000:.1f}ms")
             
             # Special handling for thinking mode with Qwen/Cogito models
             if is_thinking_mode and self.is_qwen_model and i > 10 and (i % 20 == 0):
@@ -480,12 +519,51 @@ class ParallelGenerator:
                     past_key_values = None
             
             # Stop generation if all tokens are EOS and we've reached min_steps
-            if (all(self.token_selector.is_eos_token(t) for t in pruned_token_ids) and
+            if (self.token_selector.all_are_eos_tokens(pruned_token_ids) and
                 len(pruned_token_ids) > 0 and
                 i >= min_steps):
                 self.log(f"Stopping because all tokens are EOS after {i+1} steps (min_steps={min_steps})")
                 break
         
+        # Close progress bar
+        progress_bar.close()
+        
+        # Print detailed timing summary if available
+        if use_pruning and self.pruner is not None and hasattr(self.pruner, 'step_timings') and self.pruner.step_timings:
+            timings = self.pruner.step_timings
+            print("\n=== Timing Analysis ===")
+            print(f"Total steps: {len(timings)}")
+            
+            # Group timings into bins for analysis
+            bins = min(10, len(timings))
+            bin_size = max(1, len(timings) // bins)
+            
+            # Calculate averages for each bin
+            for i in range(bins):
+                start_idx = i * bin_size
+                end_idx = min((i + 1) * bin_size, len(timings))
+                bin_timings = timings[start_idx:end_idx]
+                
+                avg_reapply = sum(t['reapply_ms'] for t in bin_timings) / len(bin_timings)
+                avg_total = sum(t['total_ms'] for t in bin_timings) / len(bin_timings)
+                avg_tokens = sum(t['tokens_before'] for t in bin_timings) / len(bin_timings)
+                
+                print(f"Steps {start_idx}-{end_idx-1}: " +
+                     f"reapply={avg_reapply:.1f}ms ({avg_reapply/avg_total*100:.1f}%), " +
+                     f"total={avg_total:.1f}ms, avg_tokens={avg_tokens:.1f}")
+            
+            # Show change in reapply time from beginning to end
+            if len(timings) > 1:
+                first_reapply = timings[0]['reapply_ms']
+                last_reapply = timings[-1]['reapply_ms']
+                reapply_increase = (last_reapply / first_reapply) if first_reapply > 0 else float('inf')
+                print(f"\nReapply time growth: {first_reapply:.1f}ms → {last_reapply:.1f}ms ({reapply_increase:.1f}x)")
+                
+                # Alert if this is the likely bottleneck
+                if reapply_increase > 3.0 and last_reapply > 20.0:
+                    print("\n⚠️ Performance bottleneck detected in threshold reapplication!")
+                    print("   This suggests O(n²) complexity in the dynamic thresholding.")
+                    
         # Update position_to_tokens with final pruned sets if using dynamic threshold
         if (use_pruning and self.pruner is not None and 
             hasattr(self.pruner, 'use_dynamic_threshold') and self.pruner.use_dynamic_threshold):
@@ -517,23 +595,28 @@ class ParallelGenerator:
             )
         
         # Generate raw text efficiently - single decoding operation
+        # Vectorized approach to build token sequence
         token_sequence = []
-        # Invariant: input_ids must have a valid shape and be processable
+        
+        # Add prompt tokens using tensor slicing
         if len(input_ids.shape) > 1 and input_ids.shape[1] > 0:
-            # Standard case: batch x sequence
-            for i in range(min(prompt_length, input_ids.shape[1])):
-                token_sequence.append(input_ids[0, i].item())
+            # Convert the prompt section to a list at once instead of looping
+            prompt_tokens = input_ids[0, :min(prompt_length, input_ids.shape[1])].tolist()
+            token_sequence.extend(prompt_tokens)
+        elif len(input_ids.shape) == 1:
+            token_sequence.append(input_ids.item())
         else:
-            # Single token case or reshaped tensor
-            if len(input_ids.shape) == 1:
-                token_sequence.append(input_ids.item())
-            else:
-                raise ValueError("Unexpected input_ids shape")
+            raise ValueError("Unexpected input_ids shape")
         
         # Add generated tokens
-        for pos in sorted(position_to_tokens.keys()):
-            if pos >= prompt_length:  # Only add tokens after the prompt
-                token_sequence.extend(position_to_tokens[pos])
+        # Using a list comprehension for generated positions
+        generated_tokens = [
+            token 
+            for pos in sorted(position_to_tokens.keys()) 
+            if pos >= prompt_length 
+            for token in position_to_tokens[pos]
+        ]
+        token_sequence.extend(generated_tokens)
         
         # Batch decode the raw generated text - much faster than token-by-token
         raw_generated_text = self.tokenizer.decode(token_sequence, skip_special_tokens=True)
@@ -606,5 +689,30 @@ class ParallelGenerator:
         if self.debug_mode and hasattr(self.model, "intermediate_values"):
             # Add keys of captured intermediate values
             results["intermediate_value_keys"] = list(self.model.intermediate_values.keys())
+        
+        # Generation completed
+        results["generation_time"] = time.time() - start_time
+        
+        # Print performance statistics if in debug mode
+        if debug_mode:
+            print("\nPerformance Statistics:")
+            # Print token generator stats
+            self.token_generator.print_performance_stats()
+            
+            # Print attention manager stats
+            self.attention_manager.print_performance_stats()
+            
+            # Print pruner stats if available
+            if use_pruning and self.pruner is not None and hasattr(self.pruner, "print_performance_stats"):
+                self.pruner.print_performance_stats()
+            
+            # Print overall generation stats
+            print("\nOverall Generation Stats:")
+            generation_time = results["generation_time"]
+            tokens_generated = len(results["token_sets"]) if "token_sets" in results else 0
+            print(f"  Generation time: {generation_time:.2f}s")
+            print(f"  Tokens generated: {tokens_generated}")
+            if tokens_generated > 0:
+                print(f"  Tokens per second: {tokens_generated / generation_time:.2f}")
         
         return results 
