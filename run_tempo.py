@@ -329,7 +329,7 @@ def main():
     default_mode = args.pop("default_mode", False)
     
     # Get parallel token visibility flag (false means tokens are isolated)
-    allow_parallel_token_visibility = args.pop("allow_parallel_token_visibility", False)
+    allow_intraset_token_visibility = args.pop("allow_intraset_token_visibility", False)
     
     # Get preserving isolated tokens flag (true means don't preserve by default)
     no_preserve_isolated_tokens = args.pop("no_preserve_isolated_tokens", False)
@@ -442,7 +442,8 @@ def main():
         print("Model wrapped with TEMPO wrapper for intermediate value extraction")
     
     # Create experiment runner with wrapped or unwrapped model
-    runner = ExperimentRunner(wrapped_model, tokenizer, device, skip_wrapping=default_mode)
+    if not default_mode:
+        runner = ExperimentRunner(wrapped_model, tokenizer, device, skip_wrapping=default_mode)
     
     # Run experiment
     prompt = args.get('prompt', '')
@@ -456,17 +457,24 @@ def main():
     else:
         print(f"Running experiment with threshold: {threshold}, max tokens: {max_tokens}")
         
+        # Check if MCTS is enabled
+        if args.get('use_mcts', False):
+            print(f"Using Monte Carlo Tree Search (MCTS) with {args.get('mcts_simulations', 10)} simulations per step")
+            print(f"MCTS exploration constant (c_puct): {args.get('mcts_c_puct', 1.0)}")
+            if args.get('use_pruning', False):
+                print(f"MCTS will use retroactive pruning with attention threshold: {args.get('attention_threshold', 0.01)}")
+        
         # Print parallel token visibility status if not in default mode
-        if allow_parallel_token_visibility:
-            print(f"Parallel tokens visibility mode enabled (tokens can see each other)")
-            args['allow_parallel_token_visibility'] = allow_parallel_token_visibility
+        if allow_intraset_token_visibility:
+            print(f"Parallel tokens visibility mode enabled (tokens can see each other within the same set)")
+            args['allow_intraset_token_visibility'] = allow_intraset_token_visibility
         
         # Only add this parameter to args when explicitly enabled
         if no_preserve_isolated_tokens:
             args['no_preserve_isolated_tokens'] = no_preserve_isolated_tokens
             
             # Show warning when isolation is on but preservation is disabled
-            if not allow_parallel_token_visibility:
+            if not allow_intraset_token_visibility:
                 print(f"Warning: Pruning will evaluate isolated tokens (overriding default preservation)")
         
         print(f"Prompt: {prompt[:100]}{'...' if len(prompt) > 100 else ''}")
@@ -479,7 +487,10 @@ def main():
     start_time = time.time()
     with torch.inference_mode():
         if default_mode:
-            # Use a simple generate function for default mode
+            # Prepare optimized generation parameters for default mode
+            print("Using optimized HuggingFace generation pipeline")
+            
+            # Use a direct generate function with optimizations for default mode
             inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
             enable_thinking = args.get('enable_thinking', False)
             
@@ -491,12 +502,16 @@ def main():
                     thinking_prompt = f"{thinking_prompt.rstrip()}\n<think>"
                 inputs = tokenizer(thinking_prompt, return_tensors="pt").to(model.device)
             
-            # Generate the completion
+            # Generate the completion with optimized parameters
             generated_ids = model.generate(
                 **inputs,
                 max_new_tokens=max_tokens,
-                do_sample=False,
-                num_return_sequences=1
+                do_sample=True,  # Enable sampling for more natural text
+                top_p=0.9,       # Nucleus sampling
+                temperature=0.7,  # Temperature for more varied output
+                num_return_sequences=1,
+                use_cache=True,   # Enable KV caching
+                pad_token_id=tokenizer.eos_token_id
             )
             
             # Decode the generated text

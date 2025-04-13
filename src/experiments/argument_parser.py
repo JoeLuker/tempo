@@ -41,6 +41,16 @@ class ArgumentParser:
         parser.add_argument("--diversity-steps", type=int, default=5,
                             help="Number of steps to use diversity selection before switching to attention")
         
+        # MCTS parameters
+        parser.add_argument("--use-mcts", action="store_true",
+                            help="Use Monte Carlo Tree Search for text generation")
+        parser.add_argument("--mcts-simulations", type=int, default=10,
+                            help="Number of MCTS simulations per step")
+        parser.add_argument("--mcts-c-puct", type=float, default=1.0,
+                            help="Exploration constant for MCTS")
+        parser.add_argument("--mcts-depth", type=int, default=5,
+                            help="Maximum depth for MCTS simulations")
+        
         # Dynamic threshold parameters
         parser.add_argument("--dynamic-threshold", action="store_true",
                             help="Use dynamic threshold that increases over steps")
@@ -74,8 +84,8 @@ class ArgumentParser:
                             help="Disable KV caching completely for more consistent attention")
         
         # Parallel token isolation option
-        parser.add_argument("--allow-parallel-token-visibility", action="store_true",
-                            help="Allow parallel tokens to see each other during generation (disabled by default)")
+        parser.add_argument("--allow-intraset-token-visibility", action="store_true",
+                            help="Allow tokens within the same parallel set to see each other during generation (disabled by default)")
         
         # Profiling parameters
         parser.add_argument("--profile", action="store_true",

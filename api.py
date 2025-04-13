@@ -15,7 +15,9 @@ import numpy as np
 from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig
 from src.modeling.model_wrapper import TEMPOModelWrapper
 from src.generation.parallel_generator import ParallelGenerator
-from src.pruning.pruner import Pruner
+from src.search.mcts_generator import MCTSGenerator
+from src.pruning.diversity_pruner import DiversityPruner
+from src.pruning.retroactive_pruner import RetroactivePruner
 from src.visualization.token_visualizer import TokenVisualizer
 from src.visualization.position_visualizer import PositionVisualizer
 
@@ -58,8 +60,9 @@ class ModelSingleton:
             
             logger.info(f"Using device: {device} with {dtype}")
             
-            # Load Cogito model
-            model_name = "deepcogito/cogito-v1-preview-qwen-14B"
+            # Load model
+            # model_name = "deepcogito/cogito-v1-preview-qwen-14B"
+            model_name = "deepcogito/cogito-v1-preview-llama-3B"
             
             logger.info(f"Loading model {model_name} on {device}...")
             
@@ -102,28 +105,35 @@ class ModelSingleton:
             assert hasattr(cls.model, "forward"), "Model missing forward method"
             assert hasattr(cls.model, "config"), "Model missing config attribute"
             
-            # Create Pruner with default settings
-            pruner = Pruner(
+            # Create diversity pruner
+            diversity_pruner = DiversityPruner(
                 model=wrapped_model,
                 tokenizer=cls.tokenizer,
-                strategy="hybrid",
-                coherence_threshold=0.3,
                 diversity_clusters=3,
                 device=device,
-                use_dynamic_threshold=True,
-                max_steps=20,
-                final_threshold=1.0,
-                diversity_steps=5
+                debug_mode=False
+            )
+            
+            # Create retroactive pruner
+            retroactive_pruner = RetroactivePruner(
+                model=wrapped_model,
+                tokenizer=cls.tokenizer,
+                attention_threshold=0.01,
+                device=device,
+                debug_mode=False
             )
             
             # Create ParallelGenerator
             cls.generator = ParallelGenerator(
                 model=wrapped_model,
                 tokenizer=cls.tokenizer,
-                pruner=pruner,
+                pruner=diversity_pruner,  # Use diversity pruner as the default
                 device=device,
                 has_custom_attention=True
             )
+            
+            # Make retroactive pruner available to the generator
+            cls.retroactive_pruner = retroactive_pruner
             
             # INVARIANT: Generator must be properly initialized
             assert hasattr(cls.generator, "generate"), "Generator missing generate method"
@@ -187,14 +197,36 @@ class GenerationRequest(BaseModel):
         description="Enable Cogito's deep thinking mode for more thoughtful responses"
     )
     
+    # MCTS parameters
+    use_mcts: bool = Field(
+        default=False,
+        description="Use Monte Carlo Tree Search for text generation"
+    )
+    mcts_simulations: int = Field(
+        default=10, ge=1, le=50,
+        description="Number of MCTS simulations per step"
+    )
+    mcts_c_puct: float = Field(
+        default=1.0, ge=0.1, le=5.0,
+        description="Exploration constant for MCTS"
+    )
+    mcts_depth: int = Field(
+        default=5, ge=1, le=10,
+        description="Maximum depth for MCTS simulations"
+    )
+    
     # Pruning options
     use_pruning: bool = Field(
         default=True,
         description="Use pruning to reduce token sets for more coherent generation"
     )
-    pruning_strategy: str = Field(
-        default="hybrid",
-        description="Strategy for pruning parallel tokens: coherence focuses on text quality, diversity on exploration"
+    use_diversity_pruning: bool = Field(
+        default=True,
+        description="Use diversity pruning to reduce token sets for more diverse generation"
+    )
+    use_retroactive_pruning: bool = Field(
+        default=True,
+        description="Use retroactive pruning to reduce token sets for more coherent generation"
     )
     coherence_threshold: float = Field(
         default=0.3, ge=0.0, le=1.0,
@@ -216,6 +248,10 @@ class GenerationRequest(BaseModel):
         default=True,
         description="Use dynamic thresholding that starts with diverse completions and gradually increases coherence"
     )
+    attention_threshold: float = Field(
+        default=0.01, ge=0.0, le=1.0,
+        description="Attention threshold for retroactive pruning (lower means more tokens kept)"
+    )
     
     # Validator for prompt
     @field_validator('prompt')
@@ -223,14 +259,6 @@ class GenerationRequest(BaseModel):
         if not v or not v.strip():
             raise ValueError("Prompt cannot be empty")
         return v.strip()
-    
-    # Validator for pruning strategy
-    @field_validator('pruning_strategy')
-    def validate_pruning_strategy(cls, v):
-        valid_strategies = ["coherence", "diversity", "hybrid"]
-        if v not in valid_strategies:
-            raise ValueError(f"Pruning strategy must be one of: {', '.join(valid_strategies)}")
-        return v
     
     # Validator for bezier points
     @field_validator('bezier_points')
@@ -341,7 +369,7 @@ async def health_check():
         return {
             "status": "healthy",
             "model_loaded": True,
-            "model_name": "deepcogito/cogito-v1-preview-qwen-14B",
+            "model_name": "deepcogito/cogito-v1-preview-llama-3B",
             "device": generator.device if hasattr(generator, "device") else "unknown"
         }
     except Exception as e:
@@ -355,7 +383,7 @@ async def generate_text(
 ):
     """Generate text using TEMPO with invariant guarantees"""
     start_time = time.time()
-    model, tokenizer, generator = components
+    model, tokenizer, default_generator = components
     
     try:
         logger.info(f"Processing generation request with threshold={request.threshold}, tokens={request.max_tokens}")
@@ -366,38 +394,76 @@ async def generate_text(
         
         if request.max_tokens < 1:
             raise ValueError(f"Max tokens must be positive, got {request.max_tokens}")
+        
+        # Determine which generator to use
+        if request.use_mcts:
+            logger.info(f"Using MCTS generator with {request.mcts_simulations} simulations")
             
-        # Create pruner with requested settings if needed
-        if request.use_pruning:
-            pruner = Pruner(
+            # Create MCTSGenerator
+            generator = MCTSGenerator(
                 model=model,
                 tokenizer=tokenizer,
-                strategy=request.pruning_strategy,
-                coherence_threshold=request.coherence_threshold,
-                diversity_clusters=request.diversity_clusters,
+                pruner=default_generator.pruner,  # Reuse the pruner from default generator
                 device="mps",
-                use_dynamic_threshold=request.dynamic_threshold,
-                max_steps=request.max_tokens,
-                final_threshold=1.0,
-                diversity_steps=request.diversity_steps,
-                bezier_points=request.bezier_points
+                c_puct=request.mcts_c_puct,
+                num_simulations=request.mcts_simulations,
+                max_depth=request.mcts_depth,
+                debug_mode=False
             )
-            generator.pruner = pruner
+        else:
+            # Use default ParallelGenerator but update its pruner
+            generator = default_generator
+        
+        # Configure pruning based on request
+        if request.use_pruning:
+            # Create pruners as needed
+            if request.use_diversity_pruning:
+                diversity_pruner = DiversityPruner(
+                    model=model,
+                    tokenizer=tokenizer,
+                    diversity_clusters=request.diversity_clusters,
+                    device="mps",
+                    debug_mode=False
+                )
+                generator.pruner = diversity_pruner
+            
+            # Configure retroactive pruning if requested
+            if request.use_retroactive_pruning:
+                retroactive_pruner = RetroactivePruner(
+                    model=model,
+                    tokenizer=tokenizer,
+                    attention_threshold=request.attention_threshold,
+                    device="mps",
+                    debug_mode=False
+                )
+                generator.retroactive_pruner = retroactive_pruner
         
         try:
             # Run TEMPO generation
-            results = generator.generate(
-                prompt=request.prompt,
-                max_tokens=request.max_tokens,
-                threshold=request.threshold,
-                return_parallel_sets=True,
-                use_pruning=request.use_pruning,
-                min_steps=request.min_steps,
-                show_token_ids=request.show_token_ids,
-                debug_mode=False,  # We don't expose debug mode in the API
-                disable_kv_cache=request.disable_kv_cache,
-                system_content=request.system_content if request.enable_thinking else None
-            )
+            generate_params = {
+                "prompt": request.prompt,
+                "max_tokens": request.max_tokens,
+                "threshold": request.threshold,
+                "return_parallel_sets": True,
+                "use_pruning": request.use_pruning,
+                "min_steps": request.min_steps,
+                "show_token_ids": request.show_token_ids,
+                "debug_mode": False,  # We don't expose debug mode in the API
+                "disable_kv_cache": request.disable_kv_cache,
+                "system_content": request.system_content if request.enable_thinking else None,
+            }
+            
+            # Add MCTS-specific parameters only if using MCTS
+            if request.use_mcts and isinstance(generator, MCTSGenerator):
+                generate_params.update({
+                    "mcts_simulations": request.mcts_simulations,
+                    "mcts_c_puct": request.mcts_c_puct,
+                    "mcts_depth": request.mcts_depth,
+                    "attention_threshold": request.attention_threshold
+                })
+            
+            # Run generation with appropriate parameters
+            results = generator.generate(**generate_params)
             # Debug log to see the structure of results
             logger.info(f"Generator returned keys: {list(results.keys())}")
             
@@ -670,7 +736,7 @@ async def generate_text(
         pruning_info = None
         if request.use_pruning:
             pruning_info = PruningInfo(
-                strategy=request.pruning_strategy,
+                strategy="hybrid",
                 coherence_threshold=request.coherence_threshold,
                 diversity_clusters=request.diversity_clusters,
                 use_dynamic_threshold=True,  # This is hardcoded in the API
@@ -706,8 +772,8 @@ async def generate_text(
             
             # Model information
             model_info=ModelInfo(
-                model_name="deepcogito/cogito-v1-preview-qwen-14B",
-                is_qwen_model=results.get("is_qwen_model", True),
+                model_name="deepcogito/cogito-v1-preview-llama-3B",
+                is_qwen_model=results.get("is_qwen_model", False),
                 use_custom_rope=results.get("use_custom_rope", True)
             ),
             
