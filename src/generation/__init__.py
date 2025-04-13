@@ -6,10 +6,10 @@ from .parallel_generator import ParallelGenerator
 from .rope_modifier import RoPEModifier
 
 __all__ = [
-    'TokenGenerator', 
-    'TokenSelector', 
-    'TextFormatter', 
-    'AttentionManager', 
-    'ParallelGenerator',
-    'RoPEModifier'
-] 
+    "TokenGenerator",
+    "TokenSelector",
+    "TextFormatter",
+    "AttentionManager",
+    "ParallelGenerator",
+    "RoPEModifier",
+]

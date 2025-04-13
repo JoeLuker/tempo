@@ -7,11 +7,11 @@ from .pruner import Pruner
 from .retroactive_pruner import RetroactivePruner
 
 __all__ = [
-    'PruningStrategy',
-    'CoherencePruningStrategy',
-    'DiversityPruningStrategy',
-    'HybridPruningStrategy',
-    'DynamicThresholdManager',
-    'Pruner',
-    'RetroactivePruner'
-] 
+    "PruningStrategy",
+    "CoherencePruningStrategy",
+    "DiversityPruningStrategy",
+    "HybridPruningStrategy",
+    "DynamicThresholdManager",
+    "Pruner",
+    "RetroactivePruner",
+]

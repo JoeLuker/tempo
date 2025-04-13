@@ -12,15 +12,18 @@ from ..modeling.model_wrapper import TEMPOModelWrapper
 import time
 from tqdm import tqdm
 
+
 class ExperimentRunner:
     """
     Responsible for running experiments with the parallel generator.
     """
-    
-    def __init__(self, model, tokenizer, device: str = "mps", skip_wrapping: bool = False):
+
+    def __init__(
+        self, model, tokenizer, device: str = "mps", skip_wrapping: bool = False
+    ):
         """
         Initialize the experiment runner.
-        
+
         Args:
             model: The language model (wrapped or unwrapped)
             tokenizer: HuggingFace tokenizer
@@ -33,24 +36,24 @@ class ExperimentRunner:
             self.model = TEMPOModelWrapper(model)
         else:
             self.model = model
-            
+
         self.tokenizer = tokenizer
         self.device = device
-        
+
         # Initialize visualizers
         self.token_visualizer = TokenVisualizer()
         self.position_visualizer = PositionVisualizer()
-        
+
         # Debug mode flag
         self.debug_mode = False
-    
+
     def run_experiment(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """
         Run a generation experiment with the given parameters.
-        
+
         Args:
             args: Dictionary of experiment parameters
-            
+
         Returns:
             Dict[str, Any]: Results dictionary
         """
@@ -69,123 +72,141 @@ class ExperimentRunner:
         disable_kv_cache_consistency = args.get("disable_kv_cache_consistency", False)
         disable_kv_cache = args.get("disable_kv_cache", False)
         enable_thinking = args.get("enable_thinking", False)
-        allow_intraset_token_visibility = args.get("allow_intraset_token_visibility", False)
+        allow_intraset_token_visibility = args.get(
+            "allow_intraset_token_visibility", False
+        )
         no_preserve_isolated_tokens = args.get("no_preserve_isolated_tokens", False)
         use_mcts = args.get("use_mcts", False)
-        
+
         # Convert flags for backward compatibility
         isolate_parallel_tokens = not allow_intraset_token_visibility
-        
+
         # Only preserve isolated tokens by default if the user didn't explicitly request pruning
-        if use_pruning and no_preserve_isolated_tokens is False:  # If pruning is requested and preservation wasn't explicitly disabled
+        if (
+            use_pruning and no_preserve_isolated_tokens is False
+        ):  # If pruning is requested and preservation wasn't explicitly disabled
             # Don't automatically preserve - user wants pruning
             preserve_all_isolated_tokens = False
         else:
             # Use default behavior - preserve isolated tokens
-            preserve_all_isolated_tokens = not no_preserve_isolated_tokens if isolate_parallel_tokens else None
-        
+            preserve_all_isolated_tokens = (
+                not no_preserve_isolated_tokens if isolate_parallel_tokens else None
+            )
+
         # Print initialization progress
-        setup_steps = ["Setting up experiment", "Configuring pruning", "Creating generator", "Starting generation"]
+        setup_steps = [
+            "Setting up experiment",
+            "Configuring pruning",
+            "Creating generator",
+            "Starting generation",
+        ]
         setup_progress = tqdm(setup_steps, desc="Experiment setup", unit="step")
-        
+
         # Set debug mode
         self.debug_mode = debug_mode
         if debug_mode:
             print("Debug mode enabled for experiment runner")
             self.model.set_debug_mode(True)
-        
+
         # Create output directory if needed
         output_path = Path(output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
-        
+
         setup_progress.update(1)  # First step complete
-        
+
         # Modify pruning setup
         pruner = None
         retroactive_pruner = None
-        
+
         if use_pruning:
             attention_threshold = args.get("attention_threshold", 0.01)
-            
+
             # Create retroactive pruner for pruning previous parallel sets
             from src.pruning import RetroactivePruner
+
             retroactive_pruner = RetroactivePruner(
                 model=self.model,
                 tokenizer=self.tokenizer,
                 attention_threshold=attention_threshold,
                 device=self.device,
-                debug_mode=debug_mode
+                debug_mode=debug_mode,
             )
-            
+
             # Also create regular pruner if strategy is specified
             pruning_strategy = args.get("pruning_strategy", "attention")
             if pruning_strategy == "diversity":
                 diversity_clusters = args.get("diversity_clusters", 3)
                 from src.pruning import Pruner
+
                 pruner = Pruner(
                     model=self.model,
                     tokenizer=self.tokenizer,
                     strategy="diversity",  # Use diversity for initial selection
                     diversity_clusters=diversity_clusters,
-                    device=self.device
+                    device=self.device,
                 )
-                
+
                 print(f"Using diversity selection with {diversity_clusters} clusters")
             elif pruning_strategy == "hybrid":
                 diversity_clusters = args.get("diversity_clusters", 3)
                 diversity_steps = args.get("diversity_steps", 5)
                 from src.pruning import Pruner
+
                 pruner = Pruner(
                     model=self.model,
                     tokenizer=self.tokenizer,
                     strategy="hybrid",
                     diversity_clusters=diversity_clusters,
                     device=self.device,
-                    diversity_steps=diversity_steps
+                    diversity_steps=diversity_steps,
                 )
-                
-                print(f"Using hybrid selection: diversity for {diversity_steps} steps, then attention")
+
+                print(
+                    f"Using hybrid selection: diversity for {diversity_steps} steps, then attention"
+                )
             else:
                 # Just use retroactive pruning
-                print(f"Using retroactive pruning with attention threshold {attention_threshold}")
-        
+                print(
+                    f"Using retroactive pruning with attention threshold {attention_threshold}"
+                )
+
         setup_progress.update(1)  # Pruning setup complete
-        
+
         # Create token generator for MCTS (if needed)
         token_generator = None
         if use_mcts:
             token_generator = TokenGenerator(
-                model=self.model,
-                tokenizer=self.tokenizer,
-                device=self.device
+                model=self.model, tokenizer=self.tokenizer, device=self.device
             )
-            
+
             # Set debug mode after creation if needed
             if debug_mode:
                 token_generator.set_debug_mode(True)
-        
+
         # Create the appropriate generator based on the mode
         if use_mcts:
             # Get MCTS parameters
             mcts_simulations = args.get("mcts_simulations", 10)
             mcts_c_puct = args.get("mcts_c_puct", 1.0)
             mcts_depth = args.get("mcts_depth", 5)
-            
-            print(f"Using Monte Carlo Tree Search with {mcts_simulations} simulations per step")
-            
+
+            print(
+                f"Using Monte Carlo Tree Search with {mcts_simulations} simulations per step"
+            )
+
             # Import the MCTS generator
             from src.search import MCTSGenerator
-            
+
             generator = MCTSGenerator(
                 model=self.model,
-                tokenizer=self.tokenizer, 
+                tokenizer=self.tokenizer,
                 token_generator=token_generator,
                 retroactive_pruner=retroactive_pruner,
                 c_puct=mcts_c_puct,
                 num_simulations=mcts_simulations,
                 attention_threshold=args.get("attention_threshold", 0.01),
                 device=self.device,
-                debug_mode=debug_mode
+                debug_mode=debug_mode,
             )
         else:
             # Use the standard ParallelGenerator
@@ -196,65 +217,74 @@ class ExperimentRunner:
                 device=self.device,
                 has_custom_attention=True,  # Assuming model supports custom attention
                 use_custom_rope=use_custom_rope,
-                debug_mode=debug_mode
+                debug_mode=debug_mode,
             )
-        
+
         setup_progress.update(1)  # Generator created
-        
+
         # Configure generator (for ParallelGenerator)
         if not use_mcts:
             if use_custom_rope:
                 print("Using custom RoPE modifications for parallel token positioning")
-                
+
             # Configure RoPE modifier if available and debug options are set
-            if use_custom_rope and hasattr(generator, 'rope_modifier') and generator.rope_modifier is not None:
+            if (
+                use_custom_rope
+                and hasattr(generator, "rope_modifier")
+                and generator.rope_modifier is not None
+            ):
                 if debug_mode:
                     generator.rope_modifier.set_debug_mode(True)
                     print("RoPE modifier debug mode enabled")
-                    
+
                 if disable_kv_cache_consistency:
                     generator.rope_modifier.enable_kv_cache_consistency(False)
                     print("RoPE modifier KV cache consistency disabled")
-            
+
             if disable_kv_cache:
                 print("KV caching disabled for more consistent attention patterns")
-                
+
             if allow_intraset_token_visibility:
-                print(f"Parallel tokens visibility mode enabled (tokens can see each other within the same set)")
+                print(
+                    f"Parallel tokens visibility mode enabled (tokens can see each other within the same set)"
+                )
             else:
                 print("Parallel tokens are isolated (default: can't see each other)")
-                
+
                 # Indicate pruning status based on use_pruning and preserve_all_isolated_tokens
                 if use_pruning:
                     if not preserve_all_isolated_tokens:
-                        print("Pruning will evaluate isolated tokens (explicitly requested)")
+                        print(
+                            "Pruning will evaluate isolated tokens (explicitly requested)"
+                        )
                     else:
-                        print("Isolated tokens will be preserved (pruning only evaluates non-isolated tokens)")
+                        print(
+                            "Isolated tokens will be preserved (pruning only evaluates non-isolated tokens)"
+                        )
                 elif no_preserve_isolated_tokens:
-                    print("Warning: No-preserve flag set but pruning is disabled, has no effect")
-        
+                    print(
+                        "Warning: No-preserve flag set but pruning is disabled, has no effect"
+                    )
+
         # Prepare messages format for Cogito model if thinking is enabled
         system_content = None
         if enable_thinking:
             print("Enabling Cogito's deep thinking mode")
             system_content = "Enable deep thinking subroutine."
-        
+
         setup_progress.update(1)  # Setup complete, starting generation
         setup_progress.close()
-        
+
         # Run generation with timing
         generation_start = time.time()
         print(f"Starting token generation with threshold={threshold}...")
-        
+
         if use_mcts:
             # Generate with MCTS generator
             generated_text = generator.generate(
-                prompt=prompt,
-                max_tokens=max_tokens,
-                temperature=1.0,
-                top_p=0.9
+                prompt=prompt, max_tokens=max_tokens, temperature=1.0, top_p=0.9
             )
-            
+
             # Create results structure similar to ParallelGenerator
             results = {
                 "generated_text": generated_text,
@@ -266,7 +296,7 @@ class ExperimentRunner:
                 "generation_time": time.time() - generation_start,
                 "use_mcts": True,
                 "mcts_simulations": mcts_simulations,
-                "mcts_c_puct": mcts_c_puct
+                "mcts_c_puct": mcts_c_puct,
             }
         else:
             # Generate with ParallelGenerator
@@ -283,11 +313,11 @@ class ExperimentRunner:
                 system_content=system_content,
                 isolate_parallel_tokens=isolate_parallel_tokens,
                 preserve_all_isolated_tokens=preserve_all_isolated_tokens,
-                retroactive_pruner=retroactive_pruner
+                retroactive_pruner=retroactive_pruner,
             )
-        
+
         generation_time = time.time() - generation_start
-        
+
         # Add experiment parameters to results
         if use_pruning:
             results["pruning_strategy"] = args.get("pruning_strategy", "coherence")
@@ -297,82 +327,86 @@ class ExperimentRunner:
                 results["bezier_points"] = bezier_points
             if args.get("pruning_strategy", "") == "hybrid":
                 results["diversity_steps"] = args.get("diversity_steps", 0)
-                
+
         # Add Cogito-specific parameters
         if enable_thinking:
             results["enable_thinking"] = True
-            
+
         # Add isolation mode to results
         if not use_mcts and isolate_parallel_tokens:
             results["isolate_parallel_tokens"] = True
-        
+
         # Add MCTS parameters to results
         if use_mcts:
             results["use_mcts"] = True
             results["mcts_simulations"] = mcts_simulations
             results["mcts_c_puct"] = mcts_c_puct
             results["mcts_depth"] = mcts_depth
-        
+
         # Add model wrapper information if debug mode is enabled
         if debug_mode:
             intermediate_values = getattr(self.model, "intermediate_values", {})
             results["captured_intermediate_values"] = list(intermediate_values.keys())
-        
+
         # Save visualizations if requested and if not using MCTS
         if save_visualization and not use_mcts and "parallel_sets" in results:
             # Visualize token sets
             visualization_path = output_path / "token_sets.png"
             self.token_visualizer.visualize_token_sets(results, visualization_path)
-            
+
             # Visualize positions
             self.position_visualizer.visualize_position_tokens(results, output_path)
             self.position_visualizer.visualize_token_probabilities(results, output_path)
             self.position_visualizer.visualize_parallel_sets(results, output_path)
-        
+
         # Print generated text and statistics
         print("\nGenerated Text:")
         print("-" * 50)
         print(results["generated_text"])
         print("-" * 50)
-        
+
         # Print statistics if not using MCTS
         if not use_mcts:
             self.token_visualizer.print_statistics(results)
         else:
             print(f"Generation completed in {generation_time:.2f} seconds")
             print(f"Average tokens/second: {max_tokens/generation_time:.2f}")
-        
+
         # Save results to JSON - invariant: results must be savable
         with open(output_path / "results.json", "w") as f:
             # Create a copy of results with only serializable data
             serializable_results = {
                 "generated_text": results["generated_text"],
-                "raw_generated_text": results.get("raw_generated_text", results["generated_text"]),
+                "raw_generated_text": results.get(
+                    "raw_generated_text", results["generated_text"]
+                ),
                 "prompt": results["prompt"],
                 "threshold": results["threshold"],
                 "use_pruning": results["use_pruning"],
                 "enable_thinking": enable_thinking,
-                "use_mcts": use_mcts
+                "use_mcts": use_mcts,
             }
-            
+
             # Add MCTS params if available
             if use_mcts:
                 serializable_results["mcts_simulations"] = mcts_simulations
                 serializable_results["mcts_c_puct"] = mcts_c_puct
                 serializable_results["mcts_depth"] = mcts_depth
-            
+
             # Add pruning params if available
             if "pruning_strategy" in results:
                 serializable_results["pruning_strategy"] = results["pruning_strategy"]
             if "coherence_threshold" in results:
-                serializable_results["coherence_threshold"] = results["coherence_threshold"]
+                serializable_results["coherence_threshold"] = results[
+                    "coherence_threshold"
+                ]
             if "dynamic_threshold" in results:
                 serializable_results["dynamic_threshold"] = results["dynamic_threshold"]
             if "bezier_points" in results:
                 serializable_results["bezier_points"] = results["bezier_points"]
             if "diversity_steps" in results:
                 serializable_results["diversity_steps"] = results["diversity_steps"]
-            
+
             json.dump(serializable_results, f, indent=2)
-        
-        return results 
+
+        return results
