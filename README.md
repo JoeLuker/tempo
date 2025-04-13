@@ -1,6 +1,6 @@
 # TEMPO: Threshold-Enabled Multiple Parallel Outputs
 
-This project implements and evaluates a non-autoregressive text generation mechanism called "TEMPO" (Threshold-Enabled Multiple Parallel Outputs) using Mistral-7B on Apple Silicon with MPS.
+This project implements and evaluates a non-autoregressive text generation mechanism called "TEMPO" (Threshold-Enabled Multiple Parallel Outputs) using Mistral-7B on Apple Silicon with MPS. It includes both a command-line interface and a modern web interface for interactive exploration.
 
 ## Overview
 
@@ -12,7 +12,23 @@ Standard autoregressive text generation may constrain a model's ability to expre
 - Implementing a **Parallel** generation process
 - Producing **Outputs** that demonstrate model uncertainty
 
-The experiment tests generating multiple tokens simultaneously based on a probability threshold.
+The experiment tests generating multiple tokens simultaneously based on a probability threshold, with advanced features like Monte Carlo Tree Search (MCTS) and deep thinking mode.
+
+## Features
+
+- **Web Interface**: Modern Svelte-based UI for interactive exploration
+- **Multiple Generation Strategies**:
+  - Basic parallel generation with threshold control
+  - Monte Carlo Tree Search (MCTS) for optimized path selection
+  - Deep thinking mode for more thoughtful responses
+- **Advanced Pruning**:
+  - Coherence-based pruning for focused outputs
+  - Diversity-based pruning for exploring alternatives
+  - Dynamic thresholding with customizable Bezier curves
+- **Visualization Tools**:
+  - Token distribution analysis
+  - Position-based visualization
+  - Interactive exploration of parallel paths
 
 ## Example Output
 
@@ -105,108 +121,103 @@ In the example above, tokens in colored text were initially part of a parallel s
 
 ## Setup
 
+### Backend Setup
+
 ```bash
+# Create and activate virtual environment
+python -m venv .venv
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+
 # Install dependencies
 pip install -r requirements.txt
 
-# Run the generator
-python src/generate.py --prompt "Your prompt here" --threshold 0.1
-
-# Run the generator with a prompt from a text file
-python src/generate.py --prompt-file "your_prompt.txt" --threshold 0.1
-
-# Run with coherence-based pruning (maximizes coherence)
-python src/generate.py --prompt "Your prompt here" --threshold 0.1 --use-pruning --pruning-strategy coherence --coherence-threshold 0.7
-
-# Run with direct RoPE modification disabled
-python src/generate.py --prompt "Your prompt here" --threshold 0.1 --no-use-custom-rope
-
-# Enable debug mode for detailed logging
-python src/generate.py --prompt "Your prompt here" --threshold 0.1 --debug-mode
-
-# Disable KV cache consistency checks if having issues
-python src/generate.py --prompt "Your prompt here" --threshold 0.1 --disable-kv-cache-consistency
-
-# Disable KV caching entirely for more consistent attention patterns
-python src/generate.py --prompt "Your prompt here" --threshold 0.1 --disable-kv-cache
-
-# Run with dynamic coherence threshold (gradually increases to 1.0)
-python src/generate.py --prompt "Your prompt here" --threshold 0.1 --use-pruning --pruning-strategy coherence --coherence-threshold 0.3 --dynamic-threshold
-
-# Run with dynamic threshold using a custom final value (won't force collapse)
-python src/generate.py --prompt "Your prompt here" --threshold 0.1 --use-pruning --pruning-strategy coherence --dynamic-threshold --final-threshold 0.8
-
-# Run with dynamic threshold using a fast-start Bezier curve
-python src/generate.py --prompt "Your prompt here" --threshold 0.1 --use-pruning --pruning-strategy coherence --dynamic-threshold --bezier-preset fast-start
-
-# Run with dynamic threshold using custom Bezier control points
-python src/generate.py --prompt "Your prompt here" --threshold 0.1 --use-pruning --pruning-strategy coherence --dynamic-threshold --bezier-points 0.3,0.7
-
-# Run with diversity-optimized pruning (preserves alternative paths)
-python src/generate.py --prompt "Your prompt here" --threshold 0.1 --use-pruning --pruning-strategy diversity --diversity-clusters 3
-
-# Run threshold sweep experiments
-python src/generate.py --prompt "Your prompt here" --threshold-sweep --thresholds "0.05,0.1,0.2,0.3"
-
-# Run threshold sweep with a prompt from file
-python src/generate.py --prompt-file "your_prompt.txt" --threshold-sweep --thresholds "0.05,0.1,0.2,0.3"
-
-# Basic model testing (no parallel generation)
-python src/test_model.py
+# Start the FastAPI server
+uvicorn api:app --reload
 ```
 
-## Comparing Pruning Strategies
-
-To compare the effect of different pruning strategies on the same prompt:
+### Frontend Setup
 
 ```bash
-# Generate with coherence pruning
-python src/generate.py --prompt "Your prompt here" --threshold 0.1 --use-pruning --pruning-strategy coherence --output-dir results/coherence
+# Navigate to frontend directory
+cd frontend
 
-# Generate with coherence pruning using a prompt from file
-python src/generate.py --prompt-file "your_prompt.txt" --threshold 0.1 --use-pruning --pruning-strategy coherence --output-dir results/coherence
+# Install dependencies
+npm install
 
-# Generate with dynamic coherence pruning (slow-start Bezier curve)
-python src/generate.py --prompt "Your prompt here" --threshold 0.1 --use-pruning --pruning-strategy coherence --dynamic-threshold --bezier-preset slow-start --output-dir results/dynamic-slow
-
-# Generate with dynamic coherence pruning (fast-start Bezier curve)
-python src/generate.py --prompt "Your prompt here" --threshold 0.1 --use-pruning --pruning-strategy coherence --dynamic-threshold --bezier-preset fast-start --output-dir results/dynamic-fast
-
-# Generate with diversity pruning
-python src/generate.py --prompt "Your prompt here" --threshold 0.1 --use-pruning --pruning-strategy diversity --output-dir results/diversity
-
-# Visualize and compare
-python src/visualize_parallel.py --results-file results/coherence/results_coherence_thresh0.1.json --output-dir visualizations/coherence
-python src/visualize_parallel.py --results-file results/dynamic-slow/results_coherence_thresh0.1.json --output-dir visualizations/dynamic-slow
-python src/visualize_parallel.py --results-file results/dynamic-fast/results_coherence_thresh0.1.json --output-dir visualizations/dynamic-fast
-python src/visualize_parallel.py --results-file results/diversity/results_diversity_thresh0.1.json --output-dir visualizations/diversity
+# Start the development server
+npm run dev
 ```
 
-This allows for examining how different pruning strategies affect the model's representational dynamics.
+The web interface will be available at `http://localhost:5173` and the API at `http://localhost:8000`.
 
-## Visualization
-
-To visualize the parallel token sets and analyze the results:
+## Command Line Usage
 
 ```bash
-# Generate visualizations from results
-python src/visualize_parallel.py --results-file results/results_thresh0.1.json
+# Basic generation
+python run_tempo.py --prompt "Your prompt here" --threshold 0.1
 
-# Specify custom output directory
-python src/visualize_parallel.py --results-file results/results_thresh0.1.json --output-dir my_visualizations
+# With MCTS enabled
+python run_tempo.py --prompt "Your prompt here" --threshold 0.1 --use-mcts --mcts-simulations 10
+
+# With deep thinking mode
+python run_tempo.py --prompt "Your prompt here" --threshold 0.1 --enable-thinking
+
+# With custom pruning strategy
+python run_tempo.py --prompt "Your prompt here" --threshold 0.1 --use-pruning --coherence-threshold 0.7 --diversity-clusters 3
 ```
 
-The visualizations include:
-- Token distribution across positions
-- Probability distribution analysis
-- Parallel token sets visualization
-- Pruning effectiveness (when pruning is enabled)
+## API Endpoints
 
+The FastAPI backend provides the following endpoints:
+
+- `GET /`: API documentation
+- `GET /health`: Health check endpoint
+- `POST /generate`: Main generation endpoint with extensive configuration options
+
+See the API documentation at `http://localhost:8000/docs` for detailed information about available parameters and response formats.
 
 ## Project Structure
 
-- `src/parallel_generator.py`: Implementation of the Parallel Threshold Output mechanism
-- `src/model_loader.py`: Utilities for loading the Mistral-7B model on MPS
-- `src/retroactive_pruning.py`: Implementation of the coherence-based token pruning
-- `src/generate.py`: CLI for running generation experiments
-- `src/visualize_parallel.py`: Visualization tools for analyzing results
+```
+.
+├── api.py                 # FastAPI backend implementation
+├── run_tempo.py          # Command-line interface
+├── requirements.txt      # Python dependencies
+├── frontend/            # Svelte frontend
+│   ├── src/            # Frontend source code
+│   ├── static/         # Static assets
+│   └── package.json    # Frontend dependencies
+├── src/                # Core implementation
+│   ├── modeling/       # Model wrapper and utilities
+│   ├── generation/     # Generation strategies
+│   ├── search/         # MCTS implementation
+│   ├── pruning/        # Pruning strategies
+│   └── visualization/  # Visualization tools
+├── output/            # Generated outputs
+└── images/            # Project images and visualizations
+```
+
+## Visualization
+
+The project includes several visualization tools:
+
+- **Token Visualizer**: Shows token distributions and probabilities
+- **Position Visualizer**: Analyzes position-based patterns
+- **Interactive Web Interface**: Explore parallel paths and generation options
+
+To generate visualizations:
+
+```bash
+# Generate visualizations from results
+python src/visualization/token_visualizer.py --results-file output/results.json
+
+# Or use the web interface for interactive exploration
+```
+
+## Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request.
+
+## License
+
+[Add your license information here]
