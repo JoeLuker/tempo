@@ -21,6 +21,8 @@ class RetroactivePruner:
         device: str = "mps",
         debug_mode: bool = False,
         dynamic_threshold_manager: Optional[DynamicThresholdManager] = None,
+        use_relative_attention: bool = True,
+        relative_threshold: float = 0.5,
     ):
         """
         Initialize the retroactive pruner.
@@ -32,6 +34,8 @@ class RetroactivePruner:
             device: Device to use for computation
             debug_mode: Enable detailed logging
             dynamic_threshold_manager: Optional DynamicThresholdManager for dynamic thresholding
+            use_relative_attention: Whether to use relative attention thresholds
+            relative_threshold: Threshold for relative attention-based pruning (0-1)
         """
         self.model = model
         self.tokenizer = tokenizer
@@ -42,6 +46,8 @@ class RetroactivePruner:
         self.token_generator = None
         self.dynamic_threshold_manager = dynamic_threshold_manager
         self.current_step = 0
+        self.use_relative_attention = use_relative_attention
+        self.relative_threshold = relative_threshold
 
         # For logging and debugging
         self.pruning_stats = {
@@ -52,7 +58,7 @@ class RetroactivePruner:
         }
         
         if self.debug_mode:
-            print(f"RetroactivePruner initialized with threshold={attention_threshold}, debug_mode={debug_mode}")
+            print(f"RetroactivePruner initialized with threshold={attention_threshold}, relative_threshold={relative_threshold}, use_relative_attention={use_relative_attention}, debug_mode={debug_mode}")
 
     def set_token_generator(self, token_generator):
         """
@@ -200,7 +206,7 @@ class RetroactivePruner:
                 print(f"Final max attention: {normalized_attn.max().item():.4f}")
                 print(f"Final min attention: {normalized_attn.min().item():.4f}")
                 print(f"Final mean attention: {normalized_attn.mean().item():.4f}")
-                print(f"Current threshold: {self.attention_threshold:.4f}")
+                print(f"Current threshold: {self.attention_threshold}")
                 print(f"Threshold progression: {self.current_step}/{self.dynamic_threshold_manager.max_steps} steps")
         except Exception as e:
             if self.debug_mode:
@@ -244,10 +250,19 @@ class RetroactivePruner:
                     print(f"  Number of tokens before pruning: {tokens_before}")
 
                 # If below threshold, skip this position entirely
-                if (
-                    attention_score < self.attention_threshold
-                    and len(pruned_tokens[pos]) > 1
-                ):
+                if self.use_relative_attention:
+                    # Calculate relative attention score
+                    abs_pos_rel = min(abs_pos, len(relative_attention) - 1)
+                    relative_score = relative_attention[abs_pos_rel].item()
+                    
+                    if self.debug_mode:
+                        print(f"  Relative attention score: {relative_score:.4f}, threshold: {self.relative_threshold}")
+                    
+                    should_prune = relative_score < self.relative_threshold and len(pruned_tokens[pos]) > 1
+                else:
+                    should_prune = attention_score < self.attention_threshold and len(pruned_tokens[pos]) > 1
+                
+                if should_prune:
                     # Find the highest probability token to keep
                     best_token = max(pruned_tokens[pos], key=lambda x: x[1])
                     pruned_tokens[pos] = [best_token]  # Keep only the best token
@@ -289,3 +304,5 @@ class RetroactivePruner:
             print(f"  Pruning rate: {prune_rate:.1f}%")
 
         print(f"  Current attention threshold: {self.attention_threshold}")
+        if self.use_relative_attention:
+            print(f"  Using relative attention with threshold: {self.relative_threshold}")
