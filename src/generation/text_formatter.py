@@ -1,5 +1,6 @@
 import re
 from typing import Dict, List, Set, Tuple, Any, Optional
+import numpy as np
 
 
 class TextFormatter:
@@ -121,7 +122,7 @@ class TextFormatter:
                 # Get all token texts first
                 token_texts = []
                 for token_id in tokens:
-                    text = self.tokenizer.decode([token_id], skip_special_tokens=False)
+                    text = self.tokenizer.decode([int(token_id)], skip_special_tokens=False)
                     token_texts.append(text)
 
                 # Now color them in order with direct ANSI codes
@@ -160,7 +161,7 @@ class TextFormatter:
                 # This position originally had multiple tokens but was pruned to one
                 token_id = tokens[0]
                 token_text = self.tokenizer.decode(
-                    [token_id], skip_special_tokens=False
+                    [int(token_id)], skip_special_tokens=False
                 )
                 position_texts[pos] = (
                     f"{RED}{token_text}{RESET}"  # Always RED for single token
@@ -168,7 +169,7 @@ class TextFormatter:
             else:
                 # Single token that was never part of a parallel set
                 token_text = self.tokenizer.decode(
-                    [tokens[0]], skip_special_tokens=False
+                    [int(tokens[0])], skip_special_tokens=False
                 )
                 position_texts[pos] = token_text
 
@@ -180,7 +181,7 @@ class TextFormatter:
         for pos_idx, pos in enumerate(generated_positions):
             # Get the token we want to find in the base text
             token = position_to_tokens[pos][0]
-            token_text = self.tokenizer.decode([token], skip_special_tokens=True)
+            token_text = self.tokenizer.decode([int(token)], skip_special_tokens=True)
 
             # Single tokens might be subwords that are hard to find, so we need to be smarter
             # If this is not the first token, use the preceding text as context
@@ -345,13 +346,20 @@ class TextFormatter:
                 # For generated tokens, use the pruned list if available
                 rel_pos = pos - prompt_length
                 if rel_pos in all_parallel_tokens:
-                    # Extract token IDs from (token_id, prob) tuples
+                    # Extract token IDs from (token_id, prob) tuples and ensure they are integers
                     enhanced_position_to_tokens[pos] = [
-                        tid for tid, _ in all_parallel_tokens[rel_pos]
+                        int(tid) for tid, _ in all_parallel_tokens[rel_pos]
                     ]
                 else:
-                    # Fallback to original list
-                    enhanced_position_to_tokens[pos] = position_to_tokens[pos]
+                    # Fallback to original list, ensuring integers
+                    enhanced_position_to_tokens[pos] = [int(tid) for tid in position_to_tokens[pos]]
+
+        # Invariant: All token IDs must be integers
+        for pos, tokens in enhanced_position_to_tokens.items():
+            if not all(isinstance(tid, (int, np.integer)) for tid in tokens):
+                raise ValueError(
+                    f"Invariant violation: Token IDs at position {pos} must be integers, got {[type(tid) for tid in tokens]}"
+                )
 
         # Call the standard formatter with the enhanced tokens
         if token_indices is None:
@@ -412,7 +420,7 @@ class TextFormatter:
             rel_pos = pos - prompt_length
             if rel_pos in all_parallel_tokens:
                 tokens_info = ", ".join(
-                    [f"{t[0]}" for t in all_parallel_tokens[rel_pos]]
+                    [f"{int(t[0])}" for t in all_parallel_tokens[rel_pos]]
                 )
                 pruned_tokens = len(all_parallel_tokens.get(rel_pos, []))
                 original_tokens = len(position_to_tokens.get(pos, []))
@@ -424,7 +432,7 @@ class TextFormatter:
                     token_id_info += f"Position {rel_pos}: [{tokens_info}]\n"
             else:
                 tokens = position_to_tokens[pos]
-                tokens_info = ", ".join([f"{t}" for t in tokens])
+                tokens_info = ", ".join([f"{int(t)}" for t in tokens])
                 token_id_info += f"Position {rel_pos}: [{tokens_info}]\n"
 
         return formatted_text + token_id_info

@@ -419,36 +419,52 @@ def get_device():
     return "cpu"
 
 
+def get_device_dtype():
+    """
+    Determine the appropriate dtype based on the available device.
+    Returns torch.float32 for CUDA, torch.float16 for MPS, and torch.float32 for CPU.
+    """
+    if torch.cuda.is_available():
+        return torch.float32  # Use float32 for CUDA
+    elif torch.backends.mps.is_available():
+        return torch.float16  # Use float16 for MPS
+    return torch.float32  # Use float32 for CPU
+
+
 def load_model(model_name_or_path, device=None):
     """
     Load the model and tokenizer, placing them on the appropriate device.
     """
     if device is None:
         device = get_device()
-
+    
     print(f"Loading model on device: {device}")
-
+    
+    # Determine the appropriate dtype
+    dtype = get_device_dtype()
+    print(f"Using dtype: {dtype}")
+    
     # Load tokenizer
     tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
-
+    
     # Load model configuration
     config = AutoConfig.from_pretrained(model_name_or_path)
-
-    # Load model with appropriate device placement
+    
+    # Load model with appropriate device placement and dtype
     model = AutoModelForCausalLM.from_pretrained(
         model_name_or_path,
         config=config,
-        torch_dtype=torch.float16 if device == "cuda" else torch.float32,
-        device_map="auto" if device == "cuda" else None,
+        torch_dtype=dtype,
+        device_map='auto' if device == 'cuda' else None
     )
-
+    
     # Move model to device if not using device_map
-    if device != "cuda" or not hasattr(model, "device_map"):
+    if device != 'cuda' or not hasattr(model, 'device_map'):
         model = model.to(device)
-
+    
     # Wrap the model
     model = TEMPOModelWrapper(model)
-
+    
     return model, tokenizer
 
 
@@ -492,16 +508,8 @@ def main():
         torch.cuda.manual_seed_all(random_seed)
 
     # Determine device and precision
-    device = (
-        "cuda"
-        if torch.cuda.is_available()
-        else "mps" if torch.backends.mps.is_available() else "cpu"
-    )
-    dtype = (
-        torch.bfloat16
-        if torch.cuda.is_available() and torch.cuda.is_bf16_supported()
-        else torch.float16 if device != "cpu" else torch.float32
-    )
+    device = get_device()
+    dtype = get_device_dtype()
     print(f"Using device: {device} with {dtype}")
 
     # Track model loading time if profiling

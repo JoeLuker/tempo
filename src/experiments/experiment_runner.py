@@ -121,60 +121,41 @@ class ExperimentRunner:
         if use_pruning:
             attention_threshold = args.get("attention_threshold", 0.01)
 
-            # Create retroactive pruner for pruning previous parallel sets
-            from src.pruning import RetroactivePruner
+            # Create regular pruner with coherence strategy
+            from src.pruning import Pruner, RetroactivePruner
 
+            pruner = Pruner(
+                model=self.model,
+                tokenizer=self.tokenizer,
+                strategy="coherence",  # Use coherence strategy
+                coherence_threshold=0.1,  # Lower base threshold
+                device=self.device,
+                use_dynamic_threshold=args.get("dynamic_threshold", False),
+                max_steps=args.get("max_tokens", None),
+                bezier_points=args.get("bezier_points", [0.2, 0.8]),
+                final_threshold=args.get("final_threshold", 1.0),
+            )
+
+            # Create retroactive pruner
             retroactive_pruner = RetroactivePruner(
                 model=self.model,
                 tokenizer=self.tokenizer,
                 attention_threshold=attention_threshold,
                 device=self.device,
-                debug_mode=debug_mode,
+                debug_mode=True,  # Enable debug mode
+                dynamic_threshold_manager=pruner.threshold_manager if args.get("dynamic_threshold", False) else None
             )
 
-            # Also create regular pruner if strategy is specified
-            pruning_strategy = args.get("pruning_strategy", "attention")
-            if pruning_strategy == "diversity":
-                diversity_clusters = args.get("diversity_clusters", 3)
-                from src.pruning import Pruner
-
-                pruner = Pruner(
-                    model=self.model,
-                    tokenizer=self.tokenizer,
-                    strategy="diversity",  # Use diversity for initial selection
-                    diversity_clusters=diversity_clusters,
-                    device=self.device,
-                )
-
-                print(f"Using diversity selection with {diversity_clusters} clusters")
-            elif pruning_strategy == "hybrid":
-                diversity_clusters = args.get("diversity_clusters", 3)
-                diversity_steps = args.get("diversity_steps", 5)
-                from src.pruning import Pruner
-
-                pruner = Pruner(
-                    model=self.model,
-                    tokenizer=self.tokenizer,
-                    strategy="hybrid",
-                    diversity_clusters=diversity_clusters,
-                    device=self.device,
-                    diversity_steps=diversity_steps,
-                )
-
-                print(
-                    f"Using hybrid selection: diversity for {diversity_steps} steps, then attention"
-                )
-            else:
-                # Just use retroactive pruning
-                print(
-                    f"Using retroactive pruning with attention threshold {attention_threshold}"
-                )
+            print(
+                f"Using coherence-based pruning with retroactive pruning (attention threshold: {attention_threshold})"
+                + (", dynamic threshold enabled" if args.get("dynamic_threshold", False) else "")
+            )
 
         setup_progress.update(1)  # Pruning setup complete
 
         # Create token generator for MCTS (if needed)
         token_generator = None
-        if use_mcts:
+        if use_mcts or use_pruning:  # Create token generator for both MCTS and pruning
             token_generator = TokenGenerator(
                 model=self.model, tokenizer=self.tokenizer, device=self.device
             )
@@ -182,6 +163,25 @@ class ExperimentRunner:
             # Set debug mode after creation if needed
             if debug_mode:
                 token_generator.set_debug_mode(True)
+
+            # Initialize token generator with the prompt to ensure it has cached attention
+            if use_pruning and pruner is not None:
+                # Get input tensors from the prompt
+                input_ids, attention_mask = token_generator.prepare_input_from_prompt(prompt)
+                
+                # Run the model once to get cached attention
+                with torch.inference_mode():
+                    outputs = self.model(
+                        input_ids=input_ids,
+                        attention_mask=attention_mask,
+                        output_attentions=True,
+                    )
+                    if hasattr(outputs, "attentions") and outputs.attentions:
+                        token_generator.cached_attention = outputs.attentions
+                        token_generator.cached_attention_seq_len = [input_ids.size(1)]
+
+                # Set token generator for pruning
+                pruner.strategy.set_token_generator(token_generator)
 
         # Create the appropriate generator based on the mode
         if use_mcts:
@@ -219,6 +219,10 @@ class ExperimentRunner:
                 use_custom_rope=use_custom_rope,
                 debug_mode=debug_mode,
             )
+
+            # Set token generator for pruning if available
+            if token_generator is not None and pruner is not None:
+                pruner.strategy.set_token_generator(token_generator)
 
         setup_progress.update(1)  # Generator created
 

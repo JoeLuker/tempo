@@ -115,6 +115,12 @@ class ArgumentParser:
             help="Use dynamic threshold that increases over steps",
         )
         parser.add_argument(
+            "--final-threshold",
+            type=float,
+            default=1.0,
+            help="Final threshold value for dynamic thresholding (default: 1.0)",
+        )
+        parser.add_argument(
             "--bezier-p1",
             type=float,
             default=0.2,

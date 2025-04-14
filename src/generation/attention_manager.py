@@ -560,7 +560,7 @@ class AttentionManager:
             for i in range(min(updated_input_ids.size(1), 10)):
                 token_id = updated_input_ids[0, i].item()
                 try:
-                    token_text = self.tokenizer.decode([token_id])
+                    token_text = self.tokenizer.decode([int(token_id)])
                     token_texts.append(f"{i}: ID={token_id}, Text='{token_text}'")
                 except:
                     token_texts.append(f"{i}: ID={token_id}, Text='<error decoding>'")
@@ -652,7 +652,7 @@ class AttentionManager:
                     f"Parallel token processing - handling {len(new_token_ids)} tokens efficiently:"
                 )
                 self.log(
-                    f"  First token: ID={first_token}, Text='{self.tokenizer.decode([first_token])}'"
+                    f"  First token: ID={first_token}, Text='{self.tokenizer.decode([int(first_token)])}'"
                 )
                 self.log(f"  All parallel tokens: {new_token_ids}")
                 self.log(f"  KV cache preserved: Yes (using position mapping)")
@@ -757,7 +757,7 @@ class AttentionManager:
                 self.log(f"  New attention mask shape: {new_attn.shape}")
                 self.log(f"  KV cache preserved: Yes")
                 self.log(
-                    f"  New token: ID={new_token_ids[0]}, Text='{self.tokenizer.decode([new_token_ids[0]])}'"
+                    f"  New token: ID={new_token_ids[0]}, Text='{self.tokenizer.decode([int(new_token_ids[0])])}'"
                 )
 
                 return new_input, new_attn, past_key_values

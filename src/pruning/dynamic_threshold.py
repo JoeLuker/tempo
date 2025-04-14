@@ -14,7 +14,6 @@ class DynamicThresholdManager:
         bezier_points: Optional[List[float]] = None,
         final_threshold: float = 1.0,
         max_tokens_per_step: int = 20,
-        fast_mode: bool = True,
     ):
         """
         Initialize the dynamic threshold manager.
@@ -25,7 +24,6 @@ class DynamicThresholdManager:
             bezier_points: Control points for Bezier curve [p1, p2] between 0-1
             final_threshold: Final threshold value for dynamic threshold
             max_tokens_per_step: Maximum number of tokens expected per step
-            fast_mode: If True, use O(1) fast path instead of O(n²) path
         """
         # Invariant: Thresholds must be valid values between 0 and 1
         if not (0 <= base_threshold <= 1):
@@ -59,7 +57,6 @@ class DynamicThresholdManager:
         self.max_tokens_per_step = max_tokens_per_step
         self.current_step = 0
         self.final_threshold = final_threshold
-        self.fast_mode = fast_mode
 
         # Default Bezier control points for exponential-like curve
         self.bezier_points = bezier_points if bezier_points is not None else [0.2, 0.8]
@@ -95,12 +92,7 @@ class DynamicThresholdManager:
 
         # Cache for optimized recomputation
         self.cached_threshold = None
-        self.threshold_epsilon = (
-            0.01  # Only recompute when threshold changes by more than this
-        )
-
-        # For fast mode, maintain a list of pruned sets directly
-        self.fast_pruned_sets = []
+        self.threshold_epsilon = 0.01  # Only recompute when threshold changes by more than this
 
     def get_current_threshold(self) -> float:
         """
@@ -231,7 +223,6 @@ class DynamicThresholdManager:
     def reapply_threshold_to_all_sets(self) -> List[List[Tuple[int, float]]]:
         """
         Reapply the current threshold to all previously processed token sets.
-        Fully vectorized implementation using masks.
 
         Returns:
             List[List[Tuple[int, float]]]: Updated list of pruned token sets
@@ -241,215 +232,37 @@ class DynamicThresholdManager:
 
         current_threshold = self.get_current_threshold()
 
-        # FAST PATH - O(1) complexity regardless of steps
-        # Only process the latest step and avoid reprocessing all previous steps
-        if self.fast_mode:
-            # Only process the newest step (current_step - 1)
-            step = self.current_step - 1
-
-            # Determine tokens above threshold in a vectorized way
-            is_final = (
-                step == self.current_step - 1 and self.current_step >= self.max_steps
-            )
-
-            # Get valid tokens for this step
-            step_valid_mask = self.valid_mask[step]
-
-            if is_final and self.final_threshold >= 0.999:
-                # For the final step with high threshold, force to single token
-                if np.any(step_valid_mask):
-                    # Find max score among valid tokens
-                    masked_scores = np.where(
-                        step_valid_mask, self.token_scores[step], -np.inf
-                    )
-                    max_idx = np.argmax(masked_scores)
-                    # Create mask with only the max token
-                    pruned_mask = np.zeros_like(step_valid_mask)
-                    pruned_mask[max_idx] = True
-                else:
-                    pruned_mask = np.zeros_like(step_valid_mask)
-            else:
-                # For other steps, apply threshold normally
-                above_threshold = self.token_scores[step] >= current_threshold
-                # Only consider tokens that are both valid and above threshold
-                pruned_mask = np.logical_and(step_valid_mask, above_threshold)
-
-                # If more than max_tokens_per_step tokens are above threshold, keep only the top ones
-                if np.sum(pruned_mask) > self.max_tokens_per_step:
-                    # Get scores of tokens above threshold
-                    above_threshold_scores = np.where(
-                        pruned_mask, self.token_scores[step], -np.inf
-                    )
-                    # Get indices of top max_tokens_per_step tokens
-                    top_indices = np.argsort(above_threshold_scores)[
-                        -self.max_tokens_per_step :
-                    ]
-                    # Create new mask with only top tokens
-                    new_mask = np.zeros_like(pruned_mask)
-                    new_mask[top_indices] = True
-                    pruned_mask = new_mask
-
-                # If all tokens were pruned, keep the highest scoring one
-                if not np.any(pruned_mask) and np.any(step_valid_mask):
-                    masked_scores = np.where(
-                        step_valid_mask, self.token_scores[step], -np.inf
-                    )
-                    max_idx = np.argmax(masked_scores)
-                    pruned_mask = np.zeros_like(step_valid_mask)
-                    pruned_mask[max_idx] = True
-
-            # Convert the latest step to list format
-            step_result = []
-            for i in range(self.tokens_per_step[step]):
-                if pruned_mask[i]:
-                    token_id = int(self.token_ids[step, i])
-                    token_prob = float(self.token_probs[step, i])
-                    step_result.append((token_id, token_prob))
-
-            # Update only the latest step in our fast result cache
-            if len(self.fast_pruned_sets) < self.current_step:
-                self.fast_pruned_sets.append(step_result)
-            else:
-                # Replace the latest step
-                self.fast_pruned_sets[step] = step_result
-
-            # Update the cached threshold
-            self.cached_threshold = current_threshold
-
-            return self.fast_pruned_sets
-
-        # REGULAR PATH - O(n²) complexity with steps
-        # This is the original implementation that reprocesses all steps
-        # Check if threshold has changed significantly since last computation
-        recompute_all = (
-            self.cached_threshold is None
-            or abs(current_threshold - self.cached_threshold) >= self.threshold_epsilon
-        )
-
-        # If only adding a new step without significant threshold change,
-        # we can just compute the mask for the new step
-        if not recompute_all:
-            # Only process the newest step (current_step - 1)
-            step = self.current_step - 1
-
-            # Determine tokens above threshold in a vectorized way
-            is_final = (
-                step == self.current_step - 1 and self.current_step >= self.max_steps
-            )
-
-            # Get valid tokens for this step
-            step_valid_mask = self.valid_mask[step]
-
-            if is_final and self.final_threshold >= 0.999:
-                # For the final step with high threshold, force to single token
-                if np.any(step_valid_mask):
-                    # Find max score among valid tokens
-                    masked_scores = np.where(
-                        step_valid_mask, self.token_scores[step], -np.inf
-                    )
-                    max_idx = np.argmax(masked_scores)
-                    # Create a mask with only the max token
-                    self.pruned_mask[step] = False
-                    self.pruned_mask[step, max_idx] = True
-            else:
-                # For other steps, apply threshold normally
-                above_threshold = self.token_scores[step] >= current_threshold
-                # Only consider tokens that are both valid and above threshold
-                self.pruned_mask[step] = np.logical_and(
-                    step_valid_mask, above_threshold
-                )
-
-                # If more than max_tokens_per_step tokens are above threshold, keep only the top ones
-                if np.sum(self.pruned_mask[step]) > self.max_tokens_per_step:
-                    # Get scores of tokens above threshold
-                    above_threshold_scores = np.where(
-                        self.pruned_mask[step], self.token_scores[step], -np.inf
-                    )
-                    # Get indices of top max_tokens_per_step tokens
-                    top_indices = np.argsort(above_threshold_scores)[
-                        -self.max_tokens_per_step :
-                    ]
-                    # Create new mask with only top tokens
-                    new_mask = np.zeros_like(self.pruned_mask[step])
-                    new_mask[top_indices] = True
-                    self.pruned_mask[step] = new_mask
-
-                # If all tokens were pruned, keep the highest scoring one
-                if not np.any(self.pruned_mask[step]) and np.any(step_valid_mask):
-                    masked_scores = np.where(
-                        step_valid_mask, self.token_scores[step], -np.inf
-                    )
-                    max_idx = np.argmax(masked_scores)
-                    self.pruned_mask[step, max_idx] = True
-        else:
-            # Recompute pruning masks for all steps
-            for step in range(self.current_step):
-                # Determine if this is the final step
-                is_final = (
-                    step == self.current_step - 1
-                    and self.current_step >= self.max_steps
-                )
-
-                # Get valid tokens for this step
-                step_valid_mask = self.valid_mask[step]
-
-                if is_final and self.final_threshold >= 0.999:
-                    # For the final step with high threshold, force to single token
-                    if np.any(step_valid_mask):
-                        # Find max score among valid tokens
-                        masked_scores = np.where(
-                            step_valid_mask, self.token_scores[step], -np.inf
-                        )
-                        max_idx = np.argmax(masked_scores)
-                        # Create a mask with only the max token
-                        self.pruned_mask[step] = False
-                        self.pruned_mask[step, max_idx] = True
-                else:
-                    # For other steps, apply threshold normally
-                    above_threshold = self.token_scores[step] >= current_threshold
-                    # Only consider tokens that are both valid and above threshold
-                    self.pruned_mask[step] = np.logical_and(
-                        step_valid_mask, above_threshold
-                    )
-
-                    # If more than max_tokens_per_step tokens are above threshold, keep only the top ones
-                    if np.sum(self.pruned_mask[step]) > self.max_tokens_per_step:
-                        # Get scores of tokens above threshold
-                        above_threshold_scores = np.where(
-                            self.pruned_mask[step], self.token_scores[step], -np.inf
-                        )
-                        # Get indices of top max_tokens_per_step tokens
-                        top_indices = np.argsort(above_threshold_scores)[
-                            -self.max_tokens_per_step :
-                        ]
-                        # Create new mask with only top tokens
-                        new_mask = np.zeros_like(self.pruned_mask[step])
-                        new_mask[top_indices] = True
-                        self.pruned_mask[step] = new_mask
-
-                    # If all tokens were pruned, keep the highest scoring one
-                    if not np.any(self.pruned_mask[step]) and np.any(step_valid_mask):
-                        masked_scores = np.where(
-                            step_valid_mask, self.token_scores[step], -np.inf
-                        )
-                        max_idx = np.argmax(masked_scores)
-                        self.pruned_mask[step, max_idx] = True
-
-        # Update cached threshold
-        self.cached_threshold = current_threshold
-
-        # Convert to list format for compatibility with existing code
-        result = []
+        # Process all steps up to current_step
+        pruned_sets = []
         for step in range(self.current_step):
-            step_result = []
-            for i in range(self.tokens_per_step[step]):
-                if self.pruned_mask[step, i]:
-                    token_id = int(self.token_ids[step, i])
-                    token_prob = float(self.token_probs[step, i])
-                    step_result.append((token_id, token_prob))
-            result.append(step_result)
+            # Get valid tokens for this step
+            step_valid_mask = self.valid_mask[step]
+            num_tokens = self.tokens_per_step[step]
 
-        return result
+            # Get token IDs and scores for this step
+            step_token_ids = self.token_ids[step, :num_tokens]
+            step_token_scores = self.token_scores[step, :num_tokens]
+            step_token_probs = self.token_probs[step, :num_tokens]
+
+            # Create mask for tokens above threshold
+            above_threshold = step_token_scores >= current_threshold
+
+            # If no tokens would be kept, keep the highest probability token
+            if not np.any(above_threshold):
+                max_prob_idx = np.argmax(step_token_probs)
+                above_threshold[max_prob_idx] = True
+
+            # Create pruned set for this step
+            step_pruned = []
+            for i in range(num_tokens):
+                if above_threshold[i]:
+                    step_pruned.append(
+                        (int(step_token_ids[i]), float(step_token_probs[i]))
+                    )
+
+            pruned_sets.append(step_pruned)
+
+        return pruned_sets
 
     def reset(self):
         """Reset the dynamic threshold for a new generation."""
@@ -460,5 +273,3 @@ class DynamicThresholdManager:
         self.tokens_per_step.fill(0)
         # Reset caching mechanism
         self.cached_threshold = None
-        # Reset fast mode cache
-        self.fast_pruned_sets = []

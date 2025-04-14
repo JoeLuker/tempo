@@ -182,7 +182,7 @@ class TokenSelector:
                 else:
                     # For 1D tensor
                     token_id = top_indices[i].item()
-                token_text = self.tokenizer.decode([token_id])
+                token_text = self.tokenizer.decode([int(token_id)])
                 top_tokens.append(token_text)
 
             for i, (token_text, token_id, prob) in enumerate(
@@ -243,7 +243,7 @@ class TokenSelector:
                 for i, (idx, prob) in enumerate(
                     zip(top_k_indices.tolist(), top_k_probs.tolist())
                 ):
-                    token_text = self.tokenizer.decode([idx])
+                    token_text = self.tokenizer.decode([int(idx)])
                     tokens_info.append(
                         f"    {i+1}. '{token_text}' (ID: {idx}): {prob:.6f}"
                     )
@@ -273,8 +273,9 @@ class TokenSelector:
         token_indices = indices_above_threshold[sorted_indices]
 
         # Convert tensors to NumPy arrays (more efficient than lists for large data)
+        # Convert BFloat16 to float32 before converting to NumPy
         token_ids = token_indices.numpy().astype(np.int32)
-        token_probs = sorted_probs.numpy().astype(np.float32)
+        token_probs = sorted_probs.to(torch.float32).numpy().astype(np.float32)
 
         # DIAGNOSTIC: Show selected tokens
         if is_first_token:
@@ -283,7 +284,7 @@ class TokenSelector:
             )
             token_info = []
             for i, (tid, prob) in enumerate(zip(token_ids, token_probs)):
-                token_text = self.tokenizer.decode([int(tid)])
+                token_text = self.tokenizer.decode([int(tid)], skip_special_tokens=False)
                 token_info.append(
                     f"    {i+1}. '{token_text}' (ID: {int(tid)}): {prob:.6f}"
                 )
@@ -390,8 +391,9 @@ class TokenSelector:
         token_indices = indices_above_threshold[sorted_indices]
 
         # Convert tensors to NumPy arrays (more efficient than lists for large data)
+        # Convert BFloat16 to float32 before converting to NumPy
         token_ids = token_indices.numpy().astype(np.int32)
-        token_probs = sorted_probs.numpy().astype(np.float32)
+        token_probs = sorted_probs.to(torch.float32).numpy().astype(np.float32)
 
         return token_ids, token_probs
 
@@ -465,8 +467,9 @@ class TokenSelector:
         )
 
         # Convert tensors to NumPy arrays (more efficient than lists for large data)
+        # Convert BFloat16 to float32 before converting to NumPy
         token_ids = top_k_indices.numpy().astype(np.int32)
-        token_probs = top_k_probs.numpy().astype(np.float32)
+        token_probs = top_k_probs.to(torch.float32).numpy().astype(np.float32)
 
         return token_ids, token_probs
 
@@ -581,6 +584,12 @@ class TokenSelector:
         if isinstance(token_ids, np.ndarray):
             token_ids = token_ids.tolist()
 
+        # Invariant: All token IDs must be integers
+        if not all(isinstance(tid, (int, np.integer)) for tid in token_ids):
+            raise ValueError(
+                f"Invariant violation: Token IDs must be integers, got {[type(tid) for tid in token_ids]}"
+            )
+
         return [
-            self.tokenizer.decode([tid], skip_special_tokens=False) for tid in token_ids
+            self.tokenizer.decode([int(tid)], skip_special_tokens=False) for tid in token_ids
         ]

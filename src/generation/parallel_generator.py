@@ -188,6 +188,9 @@ class ParallelGenerator:
         Returns:
             Dict[str, Any]: Generated text and related information
         """
+        # Initialize pruning_time at the start
+        pruning_time = 0.0
+
         # Set default for preserve_all_isolated_tokens based on isolation mode
         if preserve_all_isolated_tokens is None:
             preserve_all_isolated_tokens = isolate_parallel_tokens
@@ -463,6 +466,7 @@ class ParallelGenerator:
                 total_tokens=running_total_tokens,
                 logits_ms=f"{logits_time*1000:.1f}",
                 select_ms=f"{select_time*1000:.1f}",
+                prune_ms=f"{pruning_time*1000:.1f}" if use_pruning and self.pruner else "N/A",
                 top_prob=(
                     f"{next_token_probs[0]:.4f}" if len(next_token_probs) > 0 else "N/A"
                 ),
@@ -629,21 +633,6 @@ class ParallelGenerator:
                         and len(pruned_result) >= 1
                     ):
                         (pruned_token_ids, pruned_token_probs) = pruned_result[0]
-                        # Update the progress bar with pruned tokens count and running total tokens
-                        progress_bar.set_postfix(
-                            tokens=len(pruned_token_ids),
-                            total_tokens=running_total_tokens,
-                            logits_ms=f"{logits_time*1000:.1f}",
-                            select_ms=f"{select_time*1000:.1f}",
-                            prune_ms=f"{(time.time() - pruning_start)*1000:.1f}",
-                            top_prob=(
-                                f"{next_token_probs[0]:.4f}"
-                                if len(next_token_probs) > 0
-                                else "N/A"
-                            ),
-                        )
-                    else:
-                        raise RuntimeError("Pruning returned invalid result format")
             pruning_time = time.time() - pruning_start
             self.pruning_time += pruning_time
 
@@ -718,16 +707,34 @@ class ParallelGenerator:
 
             # Apply retroactive pruning if available
             if retroactive_pruner is not None and i > 0:  # Skip first token
+                if self.debug_mode:
+                    print(f"\nApplying retroactive pruning at step {i}")
+                    print(f"Retroactive pruner available: {retroactive_pruner is not None}")
+                    print(f"Token generator available: {self.token_generator is not None}")
+                    print(f"Number of parallel positions: {len(all_parallel_tokens)}")
+
                 # Set token generator if not already set
                 if retroactive_pruner.token_generator is None:
+                    if self.debug_mode:
+                        print("Setting token generator for retroactive pruner")
                     retroactive_pruner.set_token_generator(self.token_generator)
 
+                # Update step for dynamic thresholding
+                if hasattr(retroactive_pruner, 'update_step'):
+                    if self.debug_mode:
+                        print(f"Updating retroactive pruner step to {i}")
+                    retroactive_pruner.update_step(i)
+
                 # Retroactively prune previous positions based on newest token's attention
+                if self.debug_mode:
+                    print("Calling retroactive_prune...")
                 pruned_parallel_tokens = retroactive_pruner.retroactively_prune(
                     prompt_length=prompt_length, all_parallel_tokens=all_parallel_tokens
                 )
 
                 # Update all_parallel_tokens with pruned results
+                if self.debug_mode:
+                    print(f"Pruning complete. Original positions: {len(all_parallel_tokens)}, Pruned positions: {len(pruned_parallel_tokens)}")
                 all_parallel_tokens = pruned_parallel_tokens
 
         # Close progress bar
@@ -843,7 +850,7 @@ class ParallelGenerator:
         # Add generated tokens
         # Using a list comprehension for generated positions
         generated_tokens = [
-            token
+            int(token)  # Ensure token IDs are integers
             for pos in sorted(position_to_tokens.keys())
             if pos >= prompt_length
             for token in position_to_tokens[pos]
@@ -932,12 +939,33 @@ class ParallelGenerator:
             # Efficiently convert to human-readable format only when needed
             token_id_map = {}
 
-            def get_token_text(token_id):
-                # Cache token decoding to avoid repeated calls
-                if token_id not in token_id_map:
-                    token_id_map[token_id] = self.tokenizer.decode(
-                        [token_id], skip_special_tokens=False
+            def get_token_text(token_id: int) -> str:
+                """
+                Get the text representation of a token ID, with caching.
+
+                Args:
+                    token_id: Token ID to decode
+
+                Returns:
+                    str: Decoded token text
+                """
+                # Invariant: Token ID must be a numeric type that can be converted to integer
+                if not isinstance(token_id, (int, np.integer, np.floating)):
+                    raise ValueError(
+                        f"Invariant violation: Token ID must be a numeric type, got {type(token_id)}"
                     )
+
+                # Convert to integer to ensure type safety
+                token_id = int(token_id)
+
+                # Check cache first
+                if token_id in token_id_map:
+                    return token_id_map[token_id]
+
+                # Decode and cache
+                token_id_map[token_id] = self.tokenizer.decode(
+                    [token_id], skip_special_tokens=False
+                )
                 return token_id_map[token_id]
 
             # Only include the minimal necessary data for visualization

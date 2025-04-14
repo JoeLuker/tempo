@@ -70,14 +70,14 @@ class TEMPOModelWrapper(nn.Module):
             self.intermediate_values[name] = outputs
 
             # Print debug info if in debug mode
-            if self.debug_mode:
-                if isinstance(outputs, tuple):
-                    shapes = [
-                        o.shape if hasattr(o, "shape") else "N/A" for o in outputs
-                    ]
-                    print(f"Module {name} output shapes: {shapes}")
-                elif hasattr(outputs, "shape"):
-                    print(f"Module {name} output shape: {outputs.shape}")
+            # if self.debug_mode:
+            #     if isinstance(outputs, tuple):
+            #         shapes = [
+            #             o.shape if hasattr(o, "shape") else "N/A" for o in outputs
+            #         ]
+            #         print(f"Module {name} output shapes: {shapes}")
+            #     elif hasattr(outputs, "shape"):
+            #         print(f"Module {name} output shape: {outputs.shape}")
 
             return outputs
 
