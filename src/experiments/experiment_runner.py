@@ -77,6 +77,23 @@ class ExperimentRunner:
         )
         no_preserve_isolated_tokens = args.get("no_preserve_isolated_tokens", False)
         use_mcts = args.get("use_mcts", False)
+        
+        # Process dynamic thresholding parameters
+        if args.get("dynamic_threshold", False):
+            # Process bezier points if they were supplied as individual p1, p2 values
+            if "bezier_p1" in args and "bezier_p2" in args:
+                bezier_p1 = args.get("bezier_p1", 0.2)
+                bezier_p2 = args.get("bezier_p2", 0.8)
+                bezier_points = [bezier_p1, bezier_p2]
+                args["bezier_points"] = bezier_points
+                
+            # Add ReLU configuration to results if enabled
+            use_relu = args.get("use_relu", False)
+            if use_relu:
+                relu_activation = args.get("relu_activation_point", 0.5)
+                print(f"Using dynamic thresholding with ReLU transition (activation point: {relu_activation})")
+            elif args.get("dynamic_threshold", False):
+                print(f"Using dynamic thresholding with Bezier curve (control points: {bezier_points[0]}, {bezier_points[1]})")
 
         # Convert flags for backward compatibility
         isolate_parallel_tokens = not allow_intraset_token_visibility
@@ -134,6 +151,8 @@ class ExperimentRunner:
                 max_steps=args.get("max_tokens", None),
                 bezier_points=args.get("bezier_points", [0.2, 0.8]),
                 final_threshold=args.get("final_threshold", 1.0),
+                use_relu=args.get("use_relu", False),
+                relu_activation_point=args.get("relu_activation_point", 0.5),
             )
 
             # Create retroactive pruner
@@ -142,7 +161,7 @@ class ExperimentRunner:
                 tokenizer=self.tokenizer,
                 attention_threshold=attention_threshold,
                 device=self.device,
-                debug_mode=True,  # Enable debug mode
+                debug_mode=debug_mode,  # Use the debug_mode from args instead of hardcoding True
                 dynamic_threshold_manager=pruner.threshold_manager if args.get("dynamic_threshold", False) else None
             )
 
@@ -329,6 +348,12 @@ class ExperimentRunner:
             if args.get("dynamic_threshold", False):
                 results["dynamic_threshold"] = True
                 results["bezier_points"] = bezier_points
+                
+                # Add ReLU parameters if ReLU transition is enabled
+                if args.get("use_relu", False):
+                    results["use_relu"] = True
+                    results["relu_activation_point"] = args.get("relu_activation_point", 0.5)
+                    
             if args.get("pruning_strategy", "") == "hybrid":
                 results["diversity_steps"] = args.get("diversity_steps", 0)
 
@@ -410,6 +435,11 @@ class ExperimentRunner:
                 serializable_results["bezier_points"] = results["bezier_points"]
             if "diversity_steps" in results:
                 serializable_results["diversity_steps"] = results["diversity_steps"]
+            # Add ReLU parameters if available
+            if "use_relu" in results:
+                serializable_results["use_relu"] = results["use_relu"]
+            if "relu_activation_point" in results:
+                serializable_results["relu_activation_point"] = results["relu_activation_point"]
 
             json.dump(serializable_results, f, indent=2)
 

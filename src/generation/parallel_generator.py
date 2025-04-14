@@ -197,14 +197,15 @@ class ParallelGenerator:
 
         # Set debug mode if requested
         if debug_mode:
-            self.debug_mode = True
+            # Set debug mode for this generator and all components
+            self.debug_mode = debug_mode
             if self.rope_modifier is not None:
-                self.rope_modifier.set_debug_mode(True)
-            self.attention_manager.set_debug_mode(True)
+                self.rope_modifier.set_debug_mode(debug_mode)
+            self.attention_manager.set_debug_mode(debug_mode)
             # Enable debug mode for TokenSelector too
-            self.token_selector.set_debug_mode(True)
+            self.token_selector.set_debug_mode(debug_mode)
             # Enable debug mode for TokenGenerator too
-            self.token_generator.set_debug_mode(True)
+            self.token_generator.set_debug_mode(debug_mode)
             # Log to file instead of console
             self.log(
                 "Debug mode enabled for generation - logging to files in logs/ directory"

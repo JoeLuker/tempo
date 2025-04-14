@@ -76,6 +76,9 @@ new_output.txt
 output.txt
 prompt.txt
 
+output/
+
+.vite/
 
 
 frontend/.DS_Store

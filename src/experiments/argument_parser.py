@@ -132,6 +132,19 @@ class ArgumentParser:
             default=0.8,
             help="Second Bezier control point for dynamic threshold",
         )
+        
+        # ReLU transition parameters
+        parser.add_argument(
+            "--use-relu",
+            action="store_true",
+            help="Use ReLU transition instead of Bezier curve for dynamic threshold",
+        )
+        parser.add_argument(
+            "--relu-activation-point",
+            type=float,
+            default=0.5,
+            help="Point at which ReLU transition begins (0-1), default: 0.5",
+        )
 
         # Cogito model parameters
         parser.add_argument(

@@ -30,6 +30,8 @@ class Pruner:
         final_threshold: float = 1.0,
         diversity_steps: int = 0,
         skip_reapply_threshold: bool = False,
+        use_relu: bool = False,
+        relu_activation_point: float = 0.5,
     ):
         """
         Initialize the pruner.
@@ -38,15 +40,17 @@ class Pruner:
             model: The language model
             tokenizer: HuggingFace tokenizer
             strategy: Pruning strategy ("coherence", "diversity", or "hybrid")
-            coherence_threshold: Coherence threshold (0-1)
-            diversity_clusters: Number of diversity clusters
+            coherence_threshold: Threshold for coherence-based pruning (0-1)
+            diversity_clusters: Number of clusters for diversity-based pruning
             device: Device to use for computation
             use_dynamic_threshold: Whether to use dynamic thresholding
-            max_steps: Maximum number of steps for dynamic thresholding
-            bezier_points: Control points for Bezier curve in dynamic thresholding
-            final_threshold: Final threshold for dynamic thresholding
-            diversity_steps: Number of initial steps to use diversity pruning before switching to hybrid
-            skip_reapply_threshold: Whether to skip reapplying threshold to all previous steps (faster)
+            max_steps: Maximum number of steps for dynamic threshold
+            bezier_points: Control points for Bezier curve [p1, p2]
+            final_threshold: Final threshold value for dynamic threshold
+            diversity_steps: Number of initial steps to use diversity strategy
+            skip_reapply_threshold: Skip reapplying threshold to previous steps
+            use_relu: Whether to use ReLU-based transitions instead of Bezier
+            relu_activation_point: Point at which ReLU transition begins (0-1)
         """
         # Invariant: Model and tokenizer must be provided
         if model is None or tokenizer is None:
@@ -117,6 +121,8 @@ class Pruner:
                 max_steps=max_steps,
                 bezier_points=bezier_points,
                 final_threshold=final_threshold,
+                use_relu=use_relu,
+                relu_activation_point=relu_activation_point,
             )
 
     def _convert_to_tuples(self, token_ids, token_probs):

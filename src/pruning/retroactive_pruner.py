@@ -19,7 +19,7 @@ class RetroactivePruner:
         tokenizer,
         attention_threshold: float = 0.01,
         device: str = "mps",
-        debug_mode: bool = True,
+        debug_mode: bool = False,
         dynamic_threshold_manager: Optional[DynamicThresholdManager] = None,
     ):
         """
@@ -76,10 +76,26 @@ class RetroactivePruner:
         if self.dynamic_threshold_manager is not None:
             # Get the progress value (0 to 1) instead of the actual threshold
             progress = min(1.0, step / self.dynamic_threshold_manager.max_steps)
-            # Scale threshold to be between 0.001 and the final threshold
-            final_threshold = self.dynamic_threshold_manager.final_threshold
-            min_threshold = 0.001
-            self.attention_threshold = min_threshold + (progress * (final_threshold - min_threshold))
+            
+            # Scale threshold differently depending on whether we're using ReLU or Bezier
+            if hasattr(self.dynamic_threshold_manager, 'use_relu') and self.dynamic_threshold_manager.use_relu:
+                # For ReLU, use the activation point to determine when to start increasing
+                relu_activation = self.dynamic_threshold_manager.relu_activation_point
+                if progress < relu_activation:
+                    # Before activation point - use minimum threshold
+                    self.attention_threshold = 0.001
+                else:
+                    # After activation point - linear increase
+                    relu_progress = (progress - relu_activation) / (1.0 - relu_activation) if relu_activation < 1.0 else 0.0
+                    final_threshold = self.dynamic_threshold_manager.final_threshold
+                    min_threshold = 0.001
+                    self.attention_threshold = min_threshold + (relu_progress * (final_threshold - min_threshold))
+            else:
+                # Original Bezier-based scaling
+                final_threshold = self.dynamic_threshold_manager.final_threshold
+                min_threshold = 0.001
+                self.attention_threshold = min_threshold + (progress * (final_threshold - min_threshold))
+                
             if self.debug_mode:
                 print(f"Updated retroactive pruner threshold to {self.attention_threshold:.4f} at step {step}")
 

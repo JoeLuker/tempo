@@ -5,6 +5,21 @@ from typing import List, Optional, Tuple, Dict, Any
 class DynamicThresholdManager:
     """
     Manages dynamic thresholds that change over the course of generation.
+    
+    This class provides two methods for controlling threshold progression during generation:
+    
+    1. Bezier Curve (default): Creates a smooth, gradual transition from base_threshold to 
+       final_threshold using a cubic Bezier curve. This provides a continuous, organic shift
+       between exploration and exploitation phases.
+       
+    2. ReLU Transition: Creates a distinct phase transition with a flat period (maintaining 
+       base_threshold) until reaching the activation point, followed by a linear increase to 
+       final_threshold. This creates a clear separation between exploration and exploitation.
+       
+    The ReLU transition is particularly useful when you want to:
+    - Have a well-defined exploration phase before committing to specific paths
+    - Create a distinct "thinking" phase followed by a "concluding" phase
+    - Control precisely when the model shifts from divergent to convergent generation
     """
 
     def __init__(
@@ -14,6 +29,8 @@ class DynamicThresholdManager:
         bezier_points: Optional[List[float]] = None,
         final_threshold: float = 1.0,
         max_tokens_per_step: int = 20,
+        use_relu: bool = False,
+        relu_activation_point: float = 0.5,
     ):
         """
         Initialize the dynamic threshold manager.
@@ -24,6 +41,8 @@ class DynamicThresholdManager:
             bezier_points: Control points for Bezier curve [p1, p2] between 0-1
             final_threshold: Final threshold value for dynamic threshold
             max_tokens_per_step: Maximum number of tokens expected per step
+            use_relu: Whether to use ReLU-based transition instead of Bezier curve
+            relu_activation_point: Point at which ReLU transition begins (0-1)
         """
         # Invariant: Thresholds must be valid values between 0 and 1
         if not (0 <= base_threshold <= 1):
@@ -51,12 +70,20 @@ class DynamicThresholdManager:
                 raise ValueError(
                     f"Invariant violation: bezier_points must be between 0 and 1, got {bezier_points}"
                 )
+                
+        # Invariant: ReLU activation point must be in valid range
+        if not (0 <= relu_activation_point <= 1):
+            raise ValueError(
+                f"Invariant violation: relu_activation_point must be between 0 and 1, got {relu_activation_point}"
+            )
 
         self.base_threshold = base_threshold
         self.max_steps = max_steps or 100  # Default if not specified
         self.max_tokens_per_step = max_tokens_per_step
         self.current_step = 0
         self.final_threshold = final_threshold
+        self.use_relu = use_relu
+        self.relu_activation_point = relu_activation_point
 
         # Default Bezier control points for exponential-like curve
         self.bezier_points = bezier_points if bezier_points is not None else [0.2, 0.8]
@@ -107,19 +134,25 @@ class DynamicThresholdManager:
         # Calculate progress as a value between 0 and 1
         progress = min(1.0, self.current_step / self.max_steps)
 
-        # Calculate threshold using cubic Bezier curve for smooth progression
-        bezier_value = self._cubic_bezier(
-            progress,
-            0.0,  # Start at 0
-            self.bezier_points[0],
-            self.bezier_points[1],
-            1.0,  # End at 1
-        )
+        if self.use_relu:
+            # Calculate threshold using ReLU transition
+            # Stay flat until activation point, then linear increase
+            relu_value = max(0, progress - self.relu_activation_point) / (1.0 - self.relu_activation_point) if self.relu_activation_point < 1.0 else 0.0
+            transition_value = relu_value
+        else:
+            # Calculate threshold using cubic Bezier curve for smooth progression
+            transition_value = self._cubic_bezier(
+                progress,
+                0.0,  # Start at 0
+                self.bezier_points[0],
+                self.bezier_points[1],
+                1.0,  # End at 1
+            )
 
         # Scale between base_threshold and final_threshold
         current_threshold = (
             self.base_threshold
-            + (self.final_threshold - self.base_threshold) * bezier_value
+            + (self.final_threshold - self.base_threshold) * transition_value
         )
 
         return current_threshold
