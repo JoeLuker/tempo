@@ -3,7 +3,25 @@ from typing import Dict, List, Tuple, Optional, Any
 import time
 import logging
 import os
+import torch.nn.functional as F
+import math
+import numpy as np
+from pathlib import Path
+from datetime import datetime
+import traceback
 
+# Import the sequence tracker
+try:
+    from run_tempo import sequence_tracker
+except ImportError:
+    # Create a dummy tracker if not available
+    print("Warning: sequence_tracker not found in token_generator, using dummy tracker")
+    class DummyTracker:
+        def update_length(self, length): pass
+        def increment_length(self, step_num=None): pass
+        def get_length(self): return 0
+        debug = False
+    sequence_tracker = DummyTracker()
 
 class TokenGenerator:
     """
@@ -20,6 +38,11 @@ class TokenGenerator:
             tokenizer: HuggingFace tokenizer
             device: Device to use for computation
         """
+        # Validate required parameters
+        assert model is not None, "Model cannot be None"
+        assert tokenizer is not None, "Tokenizer cannot be None"
+        assert device in ["cpu", "cuda", "mps"], f"Unsupported device: {device}"
+        
         self.model = model
         self.tokenizer = tokenizer
         self.device = device
@@ -55,6 +78,11 @@ class TokenGenerator:
             "decode_time": 0,
             "isolated_tokens_processed": 0,
         }
+        
+        # Verify tokenizer capabilities
+        assert hasattr(self.tokenizer, "encode"), "Tokenizer must have encode method"
+        assert hasattr(self.tokenizer, "decode"), "Tokenizer must have decode method"
+        assert hasattr(self.tokenizer, "__call__"), "Tokenizer must be callable"
 
     def _setup_logger(self):
         """Setup logging to file."""
@@ -84,6 +112,9 @@ class TokenGenerator:
 
         # Add handler to logger
         self.logger.addHandler(file_handler)
+        
+        # Verify logger setup
+        assert self.logger.handlers, "Failed to set up logger handlers"
 
     def log(self, message, level="info"):
         """
@@ -93,6 +124,9 @@ class TokenGenerator:
             message: Message to log
             level: Log level (info, debug, warning, error)
         """
+        assert message, "Log message cannot be empty"
+        assert level in ["info", "debug", "warning", "error"], f"Invalid log level: {level}"
+        
         if not self.debug_mode:
             return
 
@@ -112,6 +146,8 @@ class TokenGenerator:
         Args:
             enabled: Whether to enable debug mode
         """
+        assert isinstance(enabled, bool), "Debug mode must be a boolean"
+        
         self.debug_mode = enabled
         if enabled:
             print(
@@ -134,8 +170,7 @@ class TokenGenerator:
             tuple: (input_ids, attention_mask)
         """
         # Invariant: Prompt must be a non-empty string
-        if not prompt or not isinstance(prompt, str):
-            raise ValueError("Invariant violation: Prompt must be a non-empty string")
+        assert prompt and isinstance(prompt, str), "Prompt must be a non-empty string"
 
         # Performance tracking
         start_time = time.time()
@@ -165,30 +200,25 @@ class TokenGenerator:
         attention_mask = inputs["attention_mask"].to(self.device)
 
         # Invariant: Tokenized inputs must have valid dimensions and values
-        if input_ids.dim() != 2 or input_ids.size(0) != 1:
-            raise ValueError(
-                f"Invariant violation: input_ids must have shape [1, seq_len], got {input_ids.shape}"
-            )
+        assert input_ids.dim() == 2 and input_ids.size(0) == 1, \
+            f"input_ids must have shape [1, seq_len], got {input_ids.shape}"
 
-        if attention_mask.dim() != 2 or attention_mask.size(0) != 1:
-            raise ValueError(
-                f"Invariant violation: attention_mask must have shape [1, seq_len], got {attention_mask.shape}"
-            )
+        assert attention_mask.dim() == 2 and attention_mask.size(0) == 1, \
+            f"attention_mask must have shape [1, seq_len], got {attention_mask.shape}"
 
-        if input_ids.size(1) != attention_mask.size(1):
-            raise ValueError(
-                f"Invariant violation: input_ids and attention_mask must have same sequence length"
-            )
+        assert input_ids.size(1) == attention_mask.size(1), \
+            "input_ids and attention_mask must have same sequence length"
 
-        if torch.any(attention_mask > 1) or torch.any(attention_mask < 0):
-            raise ValueError(
-                "Invariant violation: attention_mask values must be 0 or 1"
-            )
-
-        # Store in cache
+        # Cache the results
         self.prompt_cache[prompt] = (input_ids, attention_mask)
-
+        
+        # Track timing
         self.perf_stats["tokenization_time"] += time.time() - start_time
+        
+        # Update sequence length in global tracker
+        if hasattr(sequence_tracker, "update_length"):
+            sequence_tracker.update_length(input_ids.size(1))
+            
         return input_ids, attention_mask
 
     def get_next_token_logits(
@@ -198,16 +228,29 @@ class TokenGenerator:
         custom_attention_mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """
-        Get logits for next token using the model.
+        Get logits for the next token using the model.
 
         Args:
             input_ids: Input token IDs
-            attention_mask: Attention mask
+            attention_mask: Attention mask for input
             custom_attention_mask: Optional custom attention mask
 
         Returns:
-            torch.Tensor: Next token logits
+            torch.Tensor: Logits for the next token
         """
+        # Validate inputs
+        assert input_ids is not None, "input_ids cannot be None"
+        assert attention_mask is not None, "attention_mask cannot be None"
+        assert isinstance(input_ids, torch.Tensor), "input_ids must be a tensor"
+        assert isinstance(attention_mask, torch.Tensor), "attention_mask must be a tensor"
+        assert input_ids.dim() == 2, f"input_ids must be 2D, got {input_ids.dim()}D"
+        assert attention_mask.dim() == 2, f"attention_mask must be 2D, got {attention_mask.dim()}D"
+        assert input_ids.shape[1] == attention_mask.shape[1], \
+            f"input_ids and attention_mask sequence lengths must match: {input_ids.shape[1]} vs {attention_mask.shape[1]}"
+        
+        if custom_attention_mask is not None:
+            assert isinstance(custom_attention_mask, torch.Tensor), "custom_attention_mask must be a tensor"
+        
         # Performance tracking
         start_time = time.time()
         self.perf_stats["model_calls"] += 1
@@ -608,6 +651,11 @@ class TokenGenerator:
                             self.log(
                                 f"Warning: Unexpected KV cache sequence length change: {prev_length} -> {current_length}"
                             )
+                            
+                        # Update sequence length tracking for performance analysis
+                        sequence_tracker.update_length(current_length)
+                        if hasattr(self, "debug_mode") and self.debug_mode:
+                            self.log(f"🔄 Sequence length updated to: {current_length}")
 
                     # Use the validated KV cache
                     return_kvs = outputs.past_key_values

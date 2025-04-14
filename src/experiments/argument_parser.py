@@ -227,6 +227,66 @@ class ArgumentParser:
             help="Allow pruning to evaluate isolated tokens (disabled by default in isolated mode)",
         )
 
+        # New parameters for RetroactivePruner
+        parser.add_argument(
+            "--use-relative-attention",
+            action="store_true",
+            help="Use relative attention thresholds instead of absolute (default: enabled)",
+        )
+        parser.add_argument(
+            "--no-relative-attention",
+            action="store_true",
+            help="Disable relative attention thresholds",
+        )
+        parser.add_argument(
+            "--relative-threshold",
+            type=float,
+            default=0.5,
+            help="Threshold for relative attention-based pruning (0-1)",
+        )
+        parser.add_argument(
+            "--use-multi-scale-attention",
+            action="store_true",
+            help="Use multi-scale attention integration across all layers (default: enabled)",
+        )
+        parser.add_argument(
+            "--no-multi-scale-attention",
+            action="store_true",
+            help="Disable multi-scale attention integration",
+        )
+        parser.add_argument(
+            "--num-layers-to-use",
+            type=int,
+            default=None,
+            help="Number of last layers to use for attention (None means use all layers)",
+        )
+        parser.add_argument(
+            "--use-lci-dynamic-threshold",
+            action="store_true",
+            help="Use LCI-based dynamic thresholding (default: enabled)",
+        )
+        parser.add_argument(
+            "--no-lci-dynamic-threshold",
+            action="store_true",
+            help="Disable LCI-based dynamic thresholding",
+        )
+        parser.add_argument(
+            "--use-sigmoid-threshold",
+            action="store_true",
+            help="Use sigmoid-based decision boundary (default: enabled)",
+        )
+        parser.add_argument(
+            "--no-sigmoid-threshold",
+            action="store_true",
+            help="Disable sigmoid-based decision boundary",
+        )
+        parser.add_argument(
+            "--sigmoid-steepness",
+            type=float,
+            default=10.0,
+            help="Controls how sharp the sigmoid transition is",
+        )
+
         # Parse arguments
         args = parser.parse_args()
 

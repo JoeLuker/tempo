@@ -27,18 +27,143 @@ import src.generation.text_formatter
 
 # Dictionary to store timing information when profiling
 timings = {
-    "model_loading": 0,
     "tokenization": 0,
+    "model_loading": 0,
     "token_generation": [],
     "token_selection": [],
     "pruning": [],
+    "retroactive_pruning": [],
     "attention_update": [],
-    "text_formatting": 0,
     "full_generation": 0,
+    "text_formatting": 0.0,
 }
 
 # Track performance by sequence length
 sequence_length_stats = {}
+
+# Create a dedicated class for sequence length tracking
+class SequenceLengthTracker:
+    """
+    Class for tracking sequence length and step count across generation.
+    Provides a clean interface for performance monitoring.
+    """
+    
+    def __init__(self, debug=False):
+        """Initialize the sequence length tracker."""
+        self.current_length = 0
+        self.max_length = 0
+        self.initial_length = 0
+        self.debug = debug
+        self.step_count = 0
+        self.length_history = []
+        # Initialize performance stats dictionary indexed by step
+        self.step_stats = {}
+    
+    def update_length(self, new_length):
+        """Update sequence length if the new length is larger than current."""
+        if new_length > self.current_length:
+            prev_length = self.current_length
+            self.current_length = new_length
+            
+            # Record in history
+            self.length_history.append(new_length)
+            
+            # Update max length
+            if new_length > self.max_length:
+                self.max_length = new_length
+            
+            # Set initial length if this is the first update
+            if self.initial_length == 0:
+                self.initial_length = new_length
+            
+            # Debug output
+            if self.debug:
+                print(f"New sequence length encountered: {self.current_length}")
+                print(f"🔄 Global sequence length updated: {prev_length} → {self.current_length}")
+                print(f"   Step count: {self.step_count}, Growth rate: +{self.current_length - prev_length} tokens")
+                
+                # Every 10 updates, print a summary of sequence length progression
+                if self.step_count % 10 == 0 and self.step_count > 0:
+                    self.print_progress_summary()
+            
+            return True
+        return False
+    
+    def increment_step(self, sequence_length=None):
+        """Increment the step count and update sequence length if provided."""
+        self.step_count += 1
+        
+        # Initialize stats for this step
+        self.step_stats[self.step_count] = {
+            "token_generation": [],
+            "token_selection": [],
+            "pruning": [],
+            "retroactive_pruning": [],
+            "attention_update": [],
+            "sequence_length": sequence_length or self.current_length
+        }
+        
+        # Update sequence length if provided
+        if sequence_length is not None:
+            self.update_length(sequence_length)
+            
+        if self.debug:
+            print(f"Step {self.step_count}: Sequence length = {self.current_length}")
+            
+        return self.step_count
+    
+    def record_timing(self, operation, elapsed_time, step=None):
+        """Record timing information for an operation at a specific step."""
+        # If step not provided, use current step
+        step = step or self.step_count
+        
+        if operation in ["token_generation", "token_selection", "pruning", 
+                        "retroactive_pruning", "attention_update"]:
+            # Add to global timings
+            timings[operation].append(elapsed_time)
+            
+            # Add to step-specific timings
+            if step in self.step_stats:
+                if operation in self.step_stats[step]:
+                    self.step_stats[step][operation].append(elapsed_time)
+                    
+                    # Debug print for timing
+                    if self.debug and operation == "token_generation":
+                        current_time = elapsed_time * 1000  # Convert to ms
+                        print(f"🔍 Step: {step:2d}, Time: {current_time:.1f}ms")
+    
+    def get_length(self):
+        """Get the current sequence length."""
+        return self.current_length
+    
+    def get_max_length(self):
+        """Get the maximum sequence length observed."""
+        return self.max_length
+    
+    def get_initial_length(self):
+        """Get the initial sequence length."""
+        return self.initial_length
+    
+    def get_growth_rate(self):
+        """Calculate the average growth rate of sequence length."""
+        if self.step_count > 1:
+            return (self.current_length - self.initial_length) / (self.step_count - 1)
+        return 0
+    
+    def print_progress_summary(self):
+        """Print a summary of sequence length progression."""
+        if len(self.length_history) > 1:
+            print("\n--- Sequence Length Progression Summary ---")
+            print(f"Initial length: {self.initial_length}")
+            print(f"Current length: {self.current_length}")
+            print(f"Maximum length: {self.max_length}")
+            print(f"Total steps: {self.step_count}")
+            print(f"Average growth rate: {self.get_growth_rate():.2f} tokens/step")
+            print("----------------------------------------\n")
+            
+    def get_step_stats(self):
+        """Get the step-based statistics for analysis."""
+        return self.step_stats
 
 
 class PerformanceTracker:
@@ -46,11 +171,16 @@ class PerformanceTracker:
     Context manager to track performance of code blocks.
     """
 
-    def __init__(self, name, detailed=False, seq_len=None):
+    def __init__(self, name, detailed=False, seq_tracker=None, step=None):
         self.name = name
         self.detailed = detailed
         self.start_time = 0
-        self.seq_len = seq_len
+        self.seq_tracker = seq_tracker
+        self.step = step if step is not None else (seq_tracker.step_count if seq_tracker else 0)
+        
+        # Debug output
+        if seq_tracker and seq_tracker.debug and self.name in ["token_generation", "token_selection", "pruning", "retroactive_pruning", "attention_update"]:
+            print(f"Performance tracker for {self.name} using step: {self.step}, seq len: {seq_tracker.get_length()}")
 
     def __enter__(self):
         # Record current CUDA events if available
@@ -64,58 +194,43 @@ class PerformanceTracker:
         if torch.cuda.is_available():
             torch.cuda.synchronize()
         elapsed = time.time() - self.start_time
-
-        # Store timing info
+        
+        # Store timing info by operation type
         if self.name in [
             "token_generation",
             "token_selection",
             "pruning",
+            "retroactive_pruning",
             "attention_update",
         ]:
+            # Store in global timings
             timings[self.name].append(elapsed)
-
-            # Track by sequence length if provided
-            if self.seq_len is not None:
-                if self.seq_len not in sequence_length_stats:
-                    sequence_length_stats[self.seq_len] = {
-                        "token_generation": [],
-                        "token_selection": [],
-                        "pruning": [],
-                        "attention_update": [],
-                    }
-                sequence_length_stats[self.seq_len][self.name].append(elapsed)
-
-                # Debug print for sequence length tracking (only for token generation)
-                if self.name == "token_generation":
-                    len_list = len(sequence_length_stats[self.seq_len][self.name])
-                    current_time = elapsed * 1000  # Convert to ms
-                    print(
-                        f"Seq len: {self.seq_len:2d}, Token #{len_list:2d}, Time: {current_time:.1f}ms"
-                    )
-        else:
+            
+            # Store in sequence tracker if available
+            if self.seq_tracker:
+                self.seq_tracker.record_timing(self.name, elapsed, self.step)
+                
+        elif self.name == "text_formatting":
+            # Text formatting is only called once
             timings[self.name] = elapsed
 
-        if self.detailed:
-            print(f"{self.name}: {elapsed:.4f} seconds")
 
-
-def patch_classes():
+def patch_classes(seq_tracker=None):
     """
-    Monkey-patch key methods to add timing instrumentation.
-    Only patch high-level TEMPO methods, not model internals.
+    Patch performance-sensitive methods with timing wrappers.
+    This allows us to profile the performance of each component.
+    
+    Args:
+        seq_tracker: Optional SequenceLengthTracker instance for performance monitoring
     """
     # Store original methods
-    orig_get_next_token_logits = (
-        src.generation.token_generator.TokenGenerator.get_next_token_logits_cached
-    )
-    orig_select_tokens = (
-        src.generation.token_selector.TokenSelector.select_tokens_above_threshold
-    )
+    orig_get_next_token_logits = src.generation.token_generator.TokenGenerator.get_next_token_logits_cached
+    orig_select_tokens = src.generation.token_selector.TokenSelector.select_tokens_above_threshold
     orig_prune_tokens = src.pruning.pruner.Pruner.prune_parallel_tokens
-    orig_update_input = (
-        src.generation.attention_manager.AttentionManager.update_input_efficiently
-    )
+    orig_update_input = src.generation.attention_manager.AttentionManager.update_input_efficiently
     orig_format_text = src.generation.text_formatter.TextFormatter.format_generated_text
+    orig_format_text_with_pruning = src.generation.text_formatter.TextFormatter.format_generated_text_with_pruning
+    orig_retroactive_prune = src.pruning.retroactive_pruner.RetroactivePruner.retroactively_prune
 
     # Patch methods with timing wrappers
     def timed_get_next_token_logits(
@@ -125,77 +240,48 @@ def patch_classes():
         past_key_values=None,
         custom_attention_mask=None,
     ):
-        # Get current sequence length from input_ids and past_key_values
-        seq_len = None
-
-        # First, try to get sequence length directly from input_ids
-        if hasattr(input_ids, "shape") and len(input_ids.shape) > 1:
-            if past_key_values is None:
-                # For the first token, use full input_ids length
-                seq_len = input_ids.shape[1]
-            else:
-                # For subsequent tokens, need to add kv_cache length + 1 (current token)
-                # Find past sequence length from KV cache
-                past_seq_len = 0
-                if isinstance(past_key_values, list) and len(past_key_values) > 0:
-                    for layer in past_key_values:
-                        if isinstance(layer, tuple) and len(layer) >= 2:
-                            if hasattr(layer[0], "size") and layer[0].dim() >= 3:
-                                past_seq_len = layer[0].size(2)
-                                break
-
-                # Total sequence length is past length + current token
-                seq_len = past_seq_len + 1
-
-        # Log the sequence length for debugging
-        if hasattr(self, "debug_mode") and self.debug_mode:
-            print(f"Processing sequence length: {seq_len}")
-
-        with PerformanceTracker("token_generation", detailed=False, seq_len=seq_len):
+        # For the first token (without past_key_values), use the input length as initial length
+        if past_key_values is None and seq_tracker and seq_tracker.get_initial_length() == 0:
+            if hasattr(input_ids, "shape") and len(input_ids.shape) > 1:
+                initial_length = input_ids.shape[1]
+                if seq_tracker.debug:
+                    print(f"Initial sequence - using input length: {initial_length}")
+                seq_tracker.initial_length = initial_length
+                seq_tracker.update_length(initial_length)
+        
+        # Use the performance tracker with the current sequence length
+        with PerformanceTracker("token_generation", seq_tracker=seq_tracker):
             return orig_get_next_token_logits(
                 self, input_ids, attention_mask, past_key_values, custom_attention_mask
             )
 
     def timed_select_tokens(self, *args, **kwargs):
-        # Get current sequence length
-        seq_len = None
-        if len(args) > 1 and hasattr(args[1], "shape") and len(args[1].shape) > 1:
-            seq_len = args[1].shape[
-                1
-            ]  # Second arg is usually logits with shape [batch, seq_len, vocab]
-
-        with PerformanceTracker("token_selection", seq_len=seq_len):
+        # Use performance tracker
+        with PerformanceTracker("token_selection", seq_tracker=seq_tracker):
             return orig_select_tokens(self, *args, **kwargs)
 
     def timed_prune_tokens(self, *args, **kwargs):
-        # Get current sequence length
-        seq_len = None
-        if len(args) > 0 and isinstance(args[0], list) and len(args[0]) > 0:
-            # First arg is token_set_list, each with an 'input_ids' field
-            if hasattr(args[0][0], "input_ids") and hasattr(
-                args[0][0].input_ids, "shape"
-            ):
-                seq_len = args[0][0].input_ids.shape[1]
-
-        with PerformanceTracker("pruning", seq_len=seq_len):
+        # Use performance tracker
+        with PerformanceTracker("pruning", seq_tracker=seq_tracker):
             return orig_prune_tokens(self, *args, **kwargs)
 
     def timed_update_input(self, *args, **kwargs):
-        # Get current sequence length
-        seq_len = None
-        if len(args) > 0 and isinstance(args[0], list) and len(args[0]) > 0:
-            # First arg is token_set_list, each with an 'input_ids' field
-            if hasattr(args[0][0], "input_ids") and hasattr(
-                args[0][0].input_ids, "shape"
-            ):
-                seq_len = args[0][0].input_ids.shape[1]
-
-        with PerformanceTracker("attention_update", seq_len=seq_len):
+        # Use performance tracker
+        with PerformanceTracker("attention_update", seq_tracker=seq_tracker):
             return orig_update_input(self, *args, **kwargs)
 
     def timed_format_text(self, *args, **kwargs):
-        with PerformanceTracker("text_formatting"):
+        with PerformanceTracker("text_formatting", seq_tracker=seq_tracker):
             return orig_format_text(self, *args, **kwargs)
+
+    def timed_format_text_with_pruning(self, *args, **kwargs):
+        with PerformanceTracker("text_formatting", seq_tracker=seq_tracker):
+            return orig_format_text_with_pruning(self, *args, **kwargs)
+
+    def timed_retroactive_prune(self, *args, **kwargs):
+        # Use performance tracker
+        with PerformanceTracker("retroactive_pruning", seq_tracker=seq_tracker):
+            return orig_retroactive_prune(self, *args, **kwargs)
 
     # Apply patches ONLY to TEMPO-specific methods, not model internals
     src.generation.token_generator.TokenGenerator.get_next_token_logits_cached = (
@@ -211,10 +297,21 @@ def patch_classes():
     src.generation.text_formatter.TextFormatter.format_generated_text = (
         timed_format_text
     )
+    src.generation.text_formatter.TextFormatter.format_generated_text_with_pruning = (
+        timed_format_text_with_pruning
+    )
+    src.pruning.retroactive_pruner.RetroactivePruner.retroactively_prune = (
+        timed_retroactive_prune
+    )
 
 
-def print_performance_report():
-    """Print a detailed performance report."""
+def print_performance_report(seq_tracker=None):
+    """
+    Print a detailed performance report.
+    
+    Args:
+        seq_tracker: Optional SequenceLengthTracker with step-based timings
+    """
     print("\n" + "=" * 50)
     print("TEMPO PERFORMANCE REPORT")
     print("=" * 50)
@@ -223,7 +320,7 @@ def print_performance_report():
     print(f"Tokenization: {timings['tokenization']:.4f} seconds")
 
     # Calculate statistics for iterative operations
-    for key in ["token_generation", "token_selection", "pruning", "attention_update"]:
+    for key in ["token_generation", "token_selection", "pruning", "retroactive_pruning", "attention_update"]:
         if timings[key]:
             avg = sum(timings[key]) / len(timings[key])
             total = sum(timings[key])
@@ -235,160 +332,321 @@ def print_performance_report():
             print(f"  Steps: {len(timings[key])}")
 
     print(f"\nText Formatting: {timings['text_formatting']:.4f} seconds")
+
+    # Add more detail if text formatting time is 0
+    if timings['text_formatting'] <= 0.0001:
+        print("  Warning: Text formatting time is unexpectedly low or zero.")
+        print("  This could indicate the text formatter is not being properly called or timed.")
+
     print(f"\nTotal Generation Time: {timings['full_generation']:.2f} seconds")
 
     # Calculate percentage breakdown
-    print("\nPercentage Breakdown:")
     total_time = timings["full_generation"]
-    if total_time > 0:
-        for key in [
-            "token_generation",
-            "token_selection",
-            "pruning",
-            "attention_update",
-        ]:
-            if timings[key]:
-                pct = sum(timings[key]) / total_time * 100
-                print(f"  {key.replace('_', ' ').title()}: {pct:.1f}%")
+    token_gen_time = sum(timings["token_generation"]) if timings["token_generation"] else 0
+    token_select_time = sum(timings["token_selection"]) if timings["token_selection"] else 0
+    pruning_time = sum(timings["pruning"]) if timings["pruning"] else 0
+    retroactive_pruning_time = sum(timings["retroactive_pruning"]) if timings["retroactive_pruning"] else 0
+    attn_update_time = sum(timings["attention_update"]) if timings["attention_update"] else 0
+    text_format_time = timings["text_formatting"]
 
-        text_pct = timings["text_formatting"] / total_time * 100
-        print(f"  Text Formatting: {text_pct:.1f}%")
+    token_pct = token_gen_time / total_time * 100
+    select_pct = token_select_time / total_time * 100
+    prune_pct = pruning_time / total_time * 100
+    retroactive_prune_pct = retroactive_pruning_time / total_time * 100
+    attn_pct = attn_update_time / total_time * 100
+    text_pct = text_format_time / total_time * 100
+    
+    # Calculate other time not accounted for
+    tracked_time = token_gen_time + token_select_time + pruning_time + retroactive_pruning_time + attn_update_time + text_format_time
+    other_time = total_time - tracked_time
+    other_pct = other_time / total_time * 100
 
-    print("=" * 50)
+    print("\nPercentage Breakdown:")
+    print(f"  Token Generation: {token_pct:.1f}%")
+    print(f"  Token Selection: {select_pct:.1f}%")
+    print(f"  Pruning: {prune_pct:.1f}%")
+    print(f"  Retroactive Pruning: {retroactive_prune_pct:.1f}%")
+    print(f"  Attention Update: {attn_pct:.1f}%")
+    print(f"  Text Formatting: {text_pct:.1f}%")
+    print(f"  Other Operations: {other_pct:.1f}%")
+    
+    # If sequence tracker is available, report step statistics
+    if seq_tracker and seq_tracker.step_count > 0:
+        print(f"\nStep Information:")
+        print(f"  Total Steps: {seq_tracker.step_count}")
+        print(f"  Sequence Length: {seq_tracker.get_length()}")
+        print(f"  Average Tokens/Step: {(seq_tracker.get_length() - seq_tracker.get_initial_length()) / seq_tracker.step_count:.2f}")
+        
+        # Print operation timing by step if detailed timings are available
+        if seq_tracker.get_step_stats():
+            step_timing = seq_tracker.get_step_stats()
+            max_step = max(step_timing.keys())
+            print(f"  Detailed step timings: Available for {len(step_timing)} steps")
+            
+            # Additional stats if enough steps are available
+            if max_step > 5:
+                # Get first and last steps for comparison
+                first_step = min(step_timing.keys())
+                
+                # Compare token generation time growth
+                if "token_generation" in step_timing[first_step] and "token_generation" in step_timing[max_step]:
+                    first_time = sum(step_timing[first_step]["token_generation"]) / len(step_timing[first_step]["token_generation"])
+                    last_time = sum(step_timing[max_step]["token_generation"]) / len(step_timing[max_step]["token_generation"])
+                    growth = last_time / first_time if first_time > 0 else 0
+                    print(f"  Token generation time growth (step {first_step} to {max_step}): {growth:.2f}x")
 
 
-def print_sequence_length_analysis():
-    """Print a detailed analysis of how performance scales with sequence length."""
-    if not sequence_length_stats:
-        print("\nNo sequence length data available.")
+def print_step_performance_analysis(seq_tracker):
+    """
+    Print a detailed analysis of how performance scales with step count and sequence length.
+    
+    Args:
+        seq_tracker: SequenceLengthTracker instance with performance data
+    """
+    step_stats = seq_tracker.get_step_stats()
+    if not step_stats:
+        print("\nNo step performance data available.")
         return
 
     print("\n" + "=" * 50)
-    print("SEQUENCE LENGTH PERFORMANCE ANALYSIS")
+    print("STEP-BASED PERFORMANCE ANALYSIS")
     print("=" * 50)
 
-    # Sort sequence lengths
-    seq_lengths = sorted(sequence_length_stats.keys())
+    # Get data from the sequence tracker
+    initial_length = seq_tracker.get_initial_length()
+    max_length = seq_tracker.get_length()
+    step_count = seq_tracker.step_count
+    length_history = seq_tracker.length_history
 
-    print("\nToken Generation Time by Sequence Length:")
-    print(
-        f"{'Seq Length':<10} {'Avg Time (ms)':<15} {'Ratio to Initial':<20} {'Visual'}"
-    )
-    print("-" * 70)
+    # Sort steps (which are now the keys in sequence_length_stats)
+    steps = sorted(step_stats.keys())
+    
+    # Print detailed summary of step tracking
+    n_steps = len(steps)
+    min_step = min(steps) if steps else 0
+    max_step = max(steps) if steps else 0
+    
+    print(f"\nGeneration Summary:")
+    print(f"  Total steps tracked: {step_count}")
+    print(f"  Initial sequence length: {initial_length}")
+    print(f"  Final sequence length: {max_length}")
+    print(f"  Sequence growth: +{max_length - initial_length} tokens")
+    
+    # Calculate average tokens per step
+    if step_count > 0:
+        avg_tokens_per_step = (max_length - initial_length) / step_count
+        print(f"  Average tokens per step: {avg_tokens_per_step:.2f}")
+    
+    print(f"\nPerformance Tracking:")
+    print(f"  Steps tracked: {n_steps}")
+    
+    # Extract sequence length at each step to show how it grows
+    if n_steps > 0:
+        seq_lengths = [step_stats[step].get("sequence_length", 0) for step in steps]
+        min_seq_len = min(seq_lengths) if seq_lengths else 0
+        max_seq_len = max(seq_lengths) if seq_lengths else 0
+        print(f"  Sequence length range: {min_seq_len} to {max_seq_len}")
+    
+    # Show step-to-sequence mapping if available
+    if n_steps > 1 and n_steps <= 20:
+        print("\nStep-to-Sequence Mapping:")
+        for step in steps:
+            seq_len = step_stats[step].get("sequence_length", "unknown")
+            print(f"  Step {step}: Sequence length = {seq_len}")
+    elif n_steps > 20:
+        # For many steps, show a sampling
+        print("\nStep-to-Sequence Mapping (sample):")
+        sample_indices = [0, n_steps//4, n_steps//2, 3*n_steps//4, n_steps-1]
+        sample_indices = sorted(set([max(0, min(i, n_steps-1)) for i in sample_indices]))
+        for i in sample_indices:
+            step = steps[i]
+            seq_len = step_stats[step].get("sequence_length", "unknown")
+            print(f"  Step {step}: Sequence length = {seq_len}")
 
-    # Get the initial sequence length for reference
-    initial_seq_len = seq_lengths[0]
-    initial_gen_time = (
-        sum(sequence_length_stats[initial_seq_len]["token_generation"])
-        / len(sequence_length_stats[initial_seq_len]["token_generation"])
-        * 1000
-    )
-
-    # Find the maximum time for scaling the visualization
-    max_time_ms = 0
-    for seq_len in seq_lengths:
-        if (
-            "token_generation" in sequence_length_stats[seq_len]
-            and sequence_length_stats[seq_len]["token_generation"]
-        ):
-            avg_time = (
-                sum(sequence_length_stats[seq_len]["token_generation"])
-                / len(sequence_length_stats[seq_len]["token_generation"])
-                * 1000
+    # For each operation type that supports step tracking
+    for operation in ["token_generation", "token_selection", "pruning", "retroactive_pruning", "attention_update"]:
+        # Check if any step has data for this operation
+        if any(operation in step_stats[step] and step_stats[step][operation] 
+               for step in steps):
+            
+            # Count total timing points for this operation
+            total_timing_points = sum(
+                len(step_stats[step][operation])
+                for step in steps
+                if operation in step_stats[step] and step_stats[step][operation]
             )
-            if avg_time > max_time_ms:
-                max_time_ms = avg_time
+            
+            print(f"\n{operation.replace('_', ' ').title()} Time by Step:")
+            print(f"Total timing points: {total_timing_points}")
+            print(f"{'Step':<10} {'Seq Len':<10} {'Count':<10} {'Avg Time (ms)':<15} {'Ratio to Initial':<20} {'Visual'}")
+            print("-" * 80)
 
-    # Scale factor for ASCII visualization (max 40 characters)
-    scale_factor = 40.0 / max_time_ms if max_time_ms > 0 else 1.0
+            # Get the initial step for reference
+            initial_step = steps[0]
+            # Use the first step that has data
+            for step in steps:
+                if operation in step_stats[step] and step_stats[step][operation]:
+                    initial_step = step
+                    break
+                    
+            initial_time = 0
+            if operation in step_stats[initial_step] and step_stats[initial_step][operation]:
+                initial_time = (
+                    sum(step_stats[initial_step][operation])
+                    / len(step_stats[initial_step][operation])
+                    * 1000  # Convert to ms
+                )
 
-    for seq_len in seq_lengths:
-        if (
-            "token_generation" in sequence_length_stats[seq_len]
-            and sequence_length_stats[seq_len]["token_generation"]
-        ):
-            avg_time = (
-                sum(sequence_length_stats[seq_len]["token_generation"])
-                / len(sequence_length_stats[seq_len]["token_generation"])
-                * 1000
-            )  # ms
-            ratio = avg_time / initial_gen_time if initial_gen_time > 0 else 0
+            # Find the maximum time for scaling the visualization
+            max_time_ms = 0
+            for step in steps:
+                if (
+                    operation in step_stats[step]
+                    and step_stats[step][operation]
+                ):
+                    avg_time = (
+                        sum(step_stats[step][operation])
+                        / len(step_stats[step][operation])
+                        * 1000
+                    )
+                    if avg_time > max_time_ms:
+                        max_time_ms = avg_time
 
-            # Create visual bar
-            bar_length = int(avg_time * scale_factor)
-            visual_bar = "▇" * bar_length
+            # Scale factor for ASCII visualization (max 40 characters)
+            scale_factor = 40.0 / max_time_ms if max_time_ms > 0 else 1.0
 
-            print(f"{seq_len:<10} {avg_time:<15.2f} {ratio:<20.2f} {visual_bar}")
+            # Collect data for trend analysis
+            x_data = []  # Steps
+            y_data = []  # Times
+            z_data = []  # Sequence lengths
 
-    # Analyze scaling behavior
-    if len(seq_lengths) > 2:
-        # Check if scaling appears to be quadratic (O(n²)) or linear (O(n))
-        first_len = seq_lengths[0]
-        last_len = seq_lengths[-1]
-        first_time = sum(sequence_length_stats[first_len]["token_generation"]) / len(
-            sequence_length_stats[first_len]["token_generation"]
-        )
-        last_time = sum(sequence_length_stats[last_len]["token_generation"]) / len(
-            sequence_length_stats[last_len]["token_generation"]
-        )
+            # Only print data for steps that have this operation
+            for step in steps:
+                if (
+                    operation in step_stats[step]
+                    and step_stats[step][operation]
+                ):
+                    count = len(step_stats[step][operation])
+                    avg_time = (
+                        sum(step_stats[step][operation])
+                        / count
+                        * 1000
+                    )  # ms
+                    ratio = avg_time / initial_time if initial_time > 0 else 0
+                    seq_len = step_stats[step].get("sequence_length", "?")
 
-        # Calculate observed ratio
-        observed_ratio = last_time / first_time if first_time > 0 else 0
+                    # Save for trend analysis
+                    x_data.append(step)
+                    y_data.append(avg_time)
+                    if isinstance(seq_len, (int, float)):
+                        z_data.append(seq_len)
 
-        # Calculate theoretical ratios
-        linear_ratio = last_len / first_len if first_len > 0 else 0
-        quadratic_ratio = (last_len / first_len) ** 2 if first_len > 0 else 0
+                    # Create visual bar
+                    bar_length = int(avg_time * scale_factor)
+                    visual_bar = "▇" * bar_length
 
-        print("\nScaling Analysis:")
-        print(f"Sequence length increased by factor: {last_len / first_len:.2f}x")
-        print(f"Time increased by factor: {observed_ratio:.2f}x")
-        print(f"Expected for linear scaling (O(n)): {linear_ratio:.2f}x")
-        print(f"Expected for quadratic scaling (O(n²)): {quadratic_ratio:.2f}x")
+                    print(f"{step:<10} {seq_len:<10} {count:<10} {avg_time:<15.2f} {ratio:<20.2f} {visual_bar}")
+            
+            # If we have enough data points, try to fit a trend line
+            if len(x_data) >= 3:
+                try:
+                    import numpy as np
+                    from scipy import stats
+                    
+                    # Perform linear regression with steps
+                    slope, intercept, r_value, p_value, std_err = stats.linregress(x_data, y_data)
+                    
+                    print("\nTrend Analysis by Step:")
+                    print(f"  Time = {slope:.4f} * step + {intercept:.4f}")
+                    print(f"  R² = {r_value**2:.4f} (higher is better fit)")
+                    
+                    # Project future performance
+                    projected_step = 2*max_step
+                    projected_time = slope*projected_step + intercept
+                    print(f"  Projected time at step {projected_step}: {projected_time:.2f} ms")
+                    
+                    # If we have sequence length data, try correlation with sequence length
+                    if len(z_data) >= 3:
+                        # Check correlation between time and sequence length
+                        corr_time_seq, _ = stats.pearsonr(y_data, z_data)
+                        print(f"\nCorrelation between time and sequence length: {corr_time_seq:.4f}")
+                        
+                        # Perform linear regression with sequence length if correlation is strong
+                        if abs(corr_time_seq) > 0.5:
+                            slope_seq, intercept_seq, r_value_seq, _, _ = stats.linregress(z_data, y_data)
+                            print("\nTrend Analysis by Sequence Length:")
+                            print(f"  Time = {slope_seq:.4f} * sequence_length + {intercept_seq:.4f}")
+                            print(f"  R² = {r_value_seq**2:.4f} (higher is better fit)")
+                            
+                            # Compare which is better predictor: step or sequence length
+                            if r_value_seq**2 > r_value**2:
+                                print("  Sequence length is a better predictor of time than step count")
+                            else:
+                                print("  Step count is a better predictor of time than sequence length")
+                            
+                except ImportError:
+                    # Skip trend analysis if scipy is not available
+                    print("\nTrend analysis skipped: scipy not available")
+                except Exception as e:
+                    print(f"Error in trend analysis: {e}")
 
-        # Determine which scaling is closer
-        linear_diff = abs(observed_ratio - linear_ratio)
-        quadratic_diff = abs(observed_ratio - quadratic_ratio)
+    # Analyze scaling behavior if we have sequence length data
+    if len(steps) > 2 and all('sequence_length' in step_stats[step] for step in [steps[0], steps[-1]]):
+        first_step = steps[0]
+        last_step = steps[-1]
+        first_seq_len = step_stats[first_step].get('sequence_length', 0)
+        last_seq_len = step_stats[last_step].get('sequence_length', 0)
+        
+        # Only proceed if we have valid sequence length data
+        if first_seq_len > 0 and last_seq_len > 0:
+            # Find an operation with data for both first and last step
+            for operation in ["token_generation", "token_selection", "attention_update"]:
+                if (operation in step_stats[first_step] and step_stats[first_step][operation] and
+                    operation in step_stats[last_step] and step_stats[last_step][operation]):
+                    
+                    first_time = sum(step_stats[first_step][operation]) / len(step_stats[first_step][operation])
+                    last_time = sum(step_stats[last_step][operation]) / len(step_stats[last_step][operation])
 
-        if linear_diff < quadratic_diff:
-            print(
-                f"Scaling appears closer to LINEAR (O(n)) with deviation of {linear_diff:.2f}"
-            )
-        else:
-            print(
-                f"Scaling appears closer to QUADRATIC (O(n²)) with deviation of {quadratic_diff:.2f}"
-            )
-            print(
-                "This suggests attention computation is the bottleneck, which is expected in Transformers."
-            )
-            print("\nPotential optimizations:")
-            print("1. Use a model with sliding window attention for longer contexts")
-            print("2. Enable CUDA Flash Attention if using NVIDIA GPUs")
-            print(
-                "3. Consider using sequence pruning more aggressively as length increases"
-            )
+                    # Calculate observed ratio
+                    observed_ratio = last_time / first_time if first_time > 0 else 0
 
-    # Analyze pruning as well
-    if any(
-        "pruning" in sequence_length_stats[seq_len]
-        and sequence_length_stats[seq_len]["pruning"]
-        for seq_len in seq_lengths
-    ):
-        print("\nPruning Time by Sequence Length:")
-        print(f"{'Seq Length':<10} {'Avg Time (ms)':<15} {'Calls':<10}")
-        print("-" * 35)
+                    # Calculate theoretical ratios
+                    step_ratio = last_step / first_step if first_step > 0 else 0
+                    seq_len_ratio = last_seq_len / first_seq_len if first_seq_len > 0 else 0
+                    quadratic_seq_ratio = (last_seq_len / first_seq_len) ** 2 if first_seq_len > 0 else 0
 
-        for seq_len in seq_lengths:
-            if (
-                "pruning" in sequence_length_stats[seq_len]
-                and sequence_length_stats[seq_len]["pruning"]
-            ):
-                avg_time = (
-                    sum(sequence_length_stats[seq_len]["pruning"])
-                    / len(sequence_length_stats[seq_len]["pruning"])
-                    * 1000
-                )  # ms
-                calls = len(sequence_length_stats[seq_len]["pruning"])
-                print(f"{seq_len:<10} {avg_time:<15.2f} {calls:<10}")
+                    print(f"\nScaling Analysis (based on {operation}):")
+                    print(f"  Steps increased by factor: {step_ratio:.2f}x (from {first_step} to {last_step})")
+                    print(f"  Sequence length increased by factor: {seq_len_ratio:.2f}x (from {first_seq_len} to {last_seq_len})")
+                    print(f"  Time increased by factor: {observed_ratio:.2f}x")
+                    print(f"  Expected for linear-in-sequence scaling (O(n)): {seq_len_ratio:.2f}x")
+                    print(f"  Expected for quadratic-in-sequence scaling (O(n²)): {quadratic_seq_ratio:.2f}x")
+
+                    # Determine which scaling is closer
+                    linear_diff = abs(observed_ratio - seq_len_ratio)
+                    quadratic_diff = abs(observed_ratio - quadratic_seq_ratio)
+
+                    if linear_diff < quadratic_diff:
+                        print(
+                            f"  Scaling appears closer to LINEAR in sequence length (O(n)) with deviation of {linear_diff:.2f}"
+                        )
+                    else:
+                        print(
+                            f"  Scaling appears closer to QUADRATIC in sequence length (O(n²)) with deviation of {quadratic_diff:.2f}"
+                        )
+                        print(
+                            "  This suggests attention computation is the bottleneck, which is expected in Transformers."
+                        )
+                
+                    # Only analyze one operation
+                    break
+
+    # Give optimization recommendations based on analysis
+    print("\nOptimization Recommendations:")
+    print("1. Use a model with sliding window attention for longer contexts")
+    print("2. Enable CUDA Flash Attention if using NVIDIA GPUs")
+    print("3. Consider using sequence pruning more aggressively as length increases")
+    print("4. For retroactive pruning, investigate optimizing the normalization and sigmoid calculations")
 
     print("=" * 50)
 
@@ -487,12 +745,16 @@ def main():
     # Get preserving isolated tokens flag (true means don't preserve by default)
     no_preserve_isolated_tokens = args.pop("no_preserve_isolated_tokens", False)
 
+    # Create sequence length tracker for performance monitoring
+    debug_mode = args.pop("debug_mode", False)
+    seq_tracker = SequenceLengthTracker(debug=debug_mode or enable_profiling)
+
     # Setup profiling if enabled
     profiler = None
     if enable_profiling:
         print("Profiling enabled - performance details will be reported at the end")
-        # Apply timing instrumentation
-        patch_classes()
+        # Apply timing instrumentation with sequence tracker
+        patch_classes(seq_tracker)
 
         # Setup cProfile if requested
         if use_cprofile:
@@ -600,11 +862,32 @@ def main():
         print(f" Done! ({time.time() - start_time:.2f}s)")
         print("Model wrapped with TEMPO wrapper for intermediate value extraction")
 
-    # Create experiment runner with wrapped or unwrapped model
+    # Create the experiment runner with wrapped or unwrapped model
     if not default_mode:
         runner = ExperimentRunner(
             wrapped_model, tokenizer, device, skip_wrapping=default_mode
         )
+
+    # Define a callback function to update the sequence tracker
+    def sequence_length_callback(new_length, step_count, prompt_length):
+        """Callback to update the sequence tracker with generator step count."""
+        # Calculate total sequence length (prompt + generated)
+        total_length = prompt_length + new_length
+        
+        # Update the sequence tracker with the step and length information
+        seq_tracker.increment_step()
+        seq_tracker.update_length(total_length)
+        
+        # Debug output
+        if seq_tracker.debug:
+            print(f"Step {seq_tracker.step_count}: Sequence length = {total_length} (prompt: {prompt_length}, generated: {new_length})")
+            
+            # Print summary every 10 steps
+            if seq_tracker.step_count > 0 and seq_tracker.step_count % 10 == 0:
+                print(f"\n--- Step {seq_tracker.step_count} Summary ---")
+                print(f"Current sequence length: {total_length}")
+                print(f"Average tokens per step: {new_length/seq_tracker.step_count:.2f}")
+                print("---------------------------\n")
 
     # Run experiment
     prompt = args.get("prompt", "")
@@ -654,7 +937,7 @@ def main():
 
     # Run with performance monitoring
     generation_tracker = (
-        PerformanceTracker("full_generation", detailed=enable_profiling)
+        PerformanceTracker("full_generation", seq_tracker=seq_tracker)
         if enable_profiling
         else None
     )
@@ -715,9 +998,15 @@ def main():
             print("-" * 50)
         else:
             # Use TEMPO experiment runner for parallel generation
+            args["sequence_callback"] = sequence_length_callback
+            args["seq_tracker"] = seq_tracker  # Pass the tracker to the runner
             results = runner.run_experiment(args)
 
     generation_time = time.time() - start_time
+    
+    # Store the generation time in timings dictionary
+    if enable_profiling:
+        timings["full_generation"] = generation_time
 
     if generation_tracker:
         generation_tracker.__exit__(None, None, None)
@@ -745,10 +1034,10 @@ def main():
             stats.print_stats(20)  # Print top 20 functions
 
         # Print performance report
-        print_performance_report()
+        print_performance_report(seq_tracker)
 
-        # Print sequence length analysis
-        print_sequence_length_analysis()
+        # Print step performance analysis
+        print_step_performance_analysis(seq_tracker)
 
         # Print memory usage
         profile_memory_usage()

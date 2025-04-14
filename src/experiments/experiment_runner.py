@@ -11,6 +11,8 @@ from ..visualization.position_visualizer import PositionVisualizer
 from ..modeling.model_wrapper import TEMPOModelWrapper
 import time
 from tqdm import tqdm
+from src.pruning import Pruner, RetroactivePruner
+from src.pruning.dynamic_threshold import DynamicThresholdManager
 
 
 class ExperimentRunner:
@@ -139,8 +141,6 @@ class ExperimentRunner:
             attention_threshold = args.get("attention_threshold", 0.01)
 
             # Create regular pruner with coherence strategy
-            from src.pruning import Pruner, RetroactivePruner
-
             pruner = Pruner(
                 model=self.model,
                 tokenizer=self.tokenizer,
@@ -162,7 +162,22 @@ class ExperimentRunner:
                 attention_threshold=attention_threshold,
                 device=self.device,
                 debug_mode=debug_mode,  # Use the debug_mode from args instead of hardcoding True
-                dynamic_threshold_manager=pruner.threshold_manager if args.get("dynamic_threshold", False) else None
+                dynamic_threshold_manager=pruner.threshold_manager if args.get("dynamic_threshold", False) else 
+                    # Create a dummy threshold manager if dynamic threshold is not enabled
+                    DynamicThresholdManager(
+                        max_steps=args.get("max_tokens", 100),
+                        base_threshold=attention_threshold,
+                        final_threshold=attention_threshold,  # No change in threshold
+                        bezier_points=[0.5, 0.5],  # Linear interpolation
+                        use_relu=False
+                    ),
+                use_relative_attention=not args.get("no_relative_attention", False),
+                relative_threshold=args.get("relative_threshold", 0.5),
+                use_multi_scale_attention=not args.get("no_multi_scale_attention", False),
+                num_layers_to_use=args.get("num_layers_to_use", None),
+                use_lci_dynamic_threshold=not args.get("no_lci_dynamic_threshold", False),
+                use_sigmoid_threshold=not args.get("no_sigmoid_threshold", False),
+                sigmoid_steepness=args.get("sigmoid_steepness", 10.0),
             )
 
             print(

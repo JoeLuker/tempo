@@ -1,25 +1,18 @@
-from fastapi import FastAPI, HTTPException, BackgroundTasks, Depends
+from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field, field_validator
 from typing import List, Dict, Any, Optional, Tuple
 import torch
 import time
-import json
-import os
-import io
-import uuid
 import logging
-import matplotlib.pyplot as plt
-import numpy as np
 from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig
 from src.modeling.model_wrapper import TEMPOModelWrapper
 from src.generation.parallel_generator import ParallelGenerator
-from src.search.mcts_generator import MCTSGenerator
 from src.pruning.diversity_pruner import DiversityPruner
 from src.pruning.retroactive_pruner import RetroactivePruner
 from src.visualization.token_visualizer import TokenVisualizer
 from src.visualization.position_visualizer import PositionVisualizer
+import traceback
 
 # Configure logging
 logging.basicConfig(
@@ -410,510 +403,187 @@ async def health_check():
 async def generate_text(
     request: GenerationRequest, components: Tuple = Depends(get_model_components)
 ):
-    """Generate text using TEMPO with invariant guarantees"""
-    start_time = time.time()
-    model, tokenizer, default_generator = components
+    """
+    Generate text using TEMPO parallel generation.
+    """
+    # Extract components
+    model, tokenizer, generator = components
+    
+    # Validate that components were properly initialized
+    assert model is not None, "Model not initialized"
+    assert tokenizer is not None, "Tokenizer not initialized"
+    assert generator is not None, "Generator not initialized"
+
+    # Extract request parameters
+    prompt = request.prompt
+    max_tokens = request.max_tokens
+    threshold = request.threshold
+    
+    # Validate core parameters
+    assert prompt, "Prompt cannot be empty"
+    assert max_tokens > 0, "max_tokens must be positive"
+    assert 0.0 <= threshold <= 1.0, "threshold must be between 0.0 and 1.0"
 
     try:
-        logger.info(
-            f"Processing generation request with threshold={request.threshold}, tokens={request.max_tokens}"
-        )
+        # Log the request
+        logger.info(f"Received generation request: prompt={prompt[:50]}..., max_tokens={max_tokens}")
 
-        # INVARIANT: Use defensive parameter validation despite Pydantic
-        if request.threshold < 0 or request.threshold > 1:
-            raise ValueError(
-                f"Threshold must be between 0 and 1, got {request.threshold}"
-            )
+        # Prepare timer
+        start_time = time.time()
 
-        if request.max_tokens < 1:
-            raise ValueError(f"Max tokens must be positive, got {request.max_tokens}")
-
-        # Determine which generator to use
-        if request.use_mcts:
-            logger.info(
-                f"Using MCTS generator with {request.mcts_simulations} simulations"
-            )
-
-            # Create MCTSGenerator
-            generator = MCTSGenerator(
-                model=model,
-                tokenizer=tokenizer,
-                pruner=default_generator.pruner,  # Reuse the pruner from default generator
-                device="mps",
-                c_puct=request.mcts_c_puct,
-                num_simulations=request.mcts_simulations,
-                max_depth=request.mcts_depth,
-                debug_mode=False,
-            )
+        # Determine which pruner to use based on request
+        if request.use_retroactive_pruning:
+            # Use retroactive pruning
+            assert hasattr(ModelSingleton, "retroactive_pruner"), "Retroactive pruner not initialized"
+            retroactive_pruner = ModelSingleton.retroactive_pruner
+            
+            # Configure retroactive pruner
+            if hasattr(retroactive_pruner, "set_attention_threshold"):
+                retroactive_pruner.set_attention_threshold(request.attention_threshold)
         else:
-            # Use default ParallelGenerator but update its pruner
-            generator = default_generator
+            retroactive_pruner = None
 
-        # Configure pruning based on request
-        if request.use_pruning:
-            # Create pruners as needed
-            if request.use_diversity_pruning:
-                diversity_pruner = DiversityPruner(
-                    model=model,
-                    tokenizer=tokenizer,
-                    diversity_clusters=request.diversity_clusters,
-                    device="mps",
-                    debug_mode=False,
-                )
-                generator.pruner = diversity_pruner
+        # Check if MCTS should be used
+        if request.use_mcts:
+            # MCTS not implemented in API yet
+            logger.warning("MCTS requested but not yet supported in API, falling back to standard generation")
+        
+        # Verify generator has the correct methods
+        assert hasattr(generator, "generate"), "Generator missing generate method"
 
-            # Configure retroactive pruning if requested
-            if request.use_retroactive_pruning:
-                retroactive_pruner = RetroactivePruner(
-                    model=model,
-                    tokenizer=tokenizer,
-                    attention_threshold=request.attention_threshold,
-                    device="mps",
-                    debug_mode=False,
-                )
-                generator.retroactive_pruner = retroactive_pruner
-
-        try:
-            # Run TEMPO generation
-            generate_params = {
-                "prompt": request.prompt,
-                "max_tokens": request.max_tokens,
-                "threshold": request.threshold,
-                "return_parallel_sets": True,
-                "use_pruning": request.use_pruning,
-                "min_steps": request.min_steps,
-                "show_token_ids": request.show_token_ids,
-                "debug_mode": False,  # We don't expose debug mode in the API
-                "disable_kv_cache": request.disable_kv_cache,
-                "system_content": (
-                    request.system_content if request.enable_thinking else None
-                ),
-            }
-
-            # Add MCTS-specific parameters only if using MCTS
-            if request.use_mcts and isinstance(generator, MCTSGenerator):
-                generate_params.update(
-                    {
-                        "mcts_simulations": request.mcts_simulations,
-                        "mcts_c_puct": request.mcts_c_puct,
-                        "mcts_depth": request.mcts_depth,
-                        "attention_threshold": request.attention_threshold,
-                    }
-                )
-
-            # Run generation with appropriate parameters
-            results = generator.generate(**generate_params)
-            # Debug log to see the structure of results
-            logger.info(f"Generator returned keys: {list(results.keys())}")
-
-            # If token_sets missing but parallel_tokens exists, adapt the structure
-            if "token_sets" not in results and "parallel_tokens" in results:
-                logger.info("Adapting parallel_tokens to token_sets format")
-                parallel_tokens = results.get("parallel_tokens", [])
-                token_sets = []
-
-                # Convert parallel_tokens to token_sets format
-                for i, tokens in enumerate(parallel_tokens):
-                    if isinstance(tokens, list) and len(tokens) > 0:
-                        # Each entry should be position, original_tokens, pruned_tokens
-                        token_sets.append((i, tokens, []))
-
-                # Update results with the converted token_sets
-                results["token_sets"] = token_sets
-
-            # Process position_to_tokens and final_pruned_sets early if token_sets is missing
-            if "token_sets" not in results:
-                logger.info("Processing position_to_tokens for Cogito model output")
-                # This will be handled comprehensively after error handling
-
-        except RuntimeError as e:
-            # Handle the specific "No tokens above threshold" error
-            if "No tokens above threshold" in str(e):
-                logger.error(f"Generation error: {str(e)}")
-                # Make sure we provide a token_sets array, even if empty
-                results = {
-                    "generated_text": f"{request.prompt} [Generation stopped: No tokens above threshold. Try lowering the threshold value.]",
-                    "token_sets": [],
-                }
-            else:
-                # Re-raise other runtime errors
-                raise
-
-        # INVARIANT: Generation results must contain required fields
-        if "generated_text" not in results:
-            logger.warning(f"Generation results missing 'generated_text' field")
-            raise ValueError("Generation results missing 'generated_text' field")
-
-        if "token_sets" not in results:
-            logger.warning(f"Generation results missing 'token_sets' field")
-            # Instead of raising an error, create token_sets from position_to_tokens and final_pruned_sets
-            logger.info(
-                "Constructing token_sets from position_to_tokens and final_pruned_sets"
-            )
-
-            # Check if we have position_to_tokens
-            position_to_tokens = results.get("position_to_tokens", {})
-            final_pruned_sets = results.get("final_pruned_sets", {})
-
-            # Quick sanity check on the structures
-            if not isinstance(position_to_tokens, dict):
-                logger.warning(
-                    f"position_to_tokens is not a dictionary! Type: {type(position_to_tokens)}"
-                )
-                position_to_tokens = {}
-
-            if not isinstance(final_pruned_sets, dict):
-                logger.warning(
-                    f"final_pruned_sets is not a dictionary! Type: {type(final_pruned_sets)}"
-                )
-                # Convert to dictionary or empty dictionary if unexpected type
-                try:
-                    if isinstance(final_pruned_sets, list):
-                        logger.info(
-                            "Converting final_pruned_sets from list to dictionary"
-                        )
-                        converted_final_pruned_sets = {}
-                        for i, item in enumerate(final_pruned_sets):
-                            converted_final_pruned_sets[str(i)] = item
-                        final_pruned_sets = converted_final_pruned_sets
-                    else:
-                        final_pruned_sets = {}
-                except Exception as e:
-                    logger.error(f"Failed to convert final_pruned_sets: {str(e)}")
-                    final_pruned_sets = {}
-
-            # Add detailed logging for debugging
-            if position_to_tokens:
-                logger.info(
-                    f"Found position_to_tokens with {len(position_to_tokens)} positions"
-                )
-
-                # Log keys in position_to_tokens
-                logger.info(
-                    f"Position_to_tokens keys: {list(position_to_tokens.keys())}"
-                )
-
-                # Log the structure of the first position for debugging
-                if position_to_tokens:
-                    first_pos = next(iter(position_to_tokens))
-                    if isinstance(position_to_tokens[first_pos], dict):
-                        logger.info(
-                            f"Position {first_pos} has keys: {list(position_to_tokens[first_pos].keys())}"
-                        )
-                    else:
-                        logger.info(
-                            f"Position {first_pos} value type: {type(position_to_tokens[first_pos])}"
-                        )
-                    logger.info(
-                        f"Example position_to_tokens structure: {position_to_tokens[first_pos]}"
-                    )
-            else:
-                logger.warning("No position_to_tokens data found")
-
-            if final_pruned_sets:
-                logger.info(
-                    f"Found final_pruned_sets with {len(final_pruned_sets)} positions"
-                )
-                # Log the structure of the first position for debugging
-                if final_pruned_sets:
-                    first_pos = next(iter(final_pruned_sets))
-                    if isinstance(final_pruned_sets[first_pos], dict):
-                        logger.info(
-                            f"Final pruned position {first_pos} has keys: {list(final_pruned_sets[first_pos].keys())}"
-                        )
-                    elif isinstance(final_pruned_sets[first_pos], list):
-                        logger.info(
-                            f"Final pruned position {first_pos} is a list of length {len(final_pruned_sets[first_pos])}"
-                        )
-                        if final_pruned_sets[first_pos]:
-                            logger.info(
-                                f"First element type: {type(final_pruned_sets[first_pos][0])}"
-                            )
-                    else:
-                        logger.info(
-                            f"Final pruned position {first_pos} value type: {type(final_pruned_sets[first_pos])}"
-                        )
-                    logger.info(
-                        f"Example final_pruned_sets structure: {final_pruned_sets[first_pos]}"
-                    )
-            else:
-                logger.warning("No final_pruned_sets data found")
-
-            if position_to_tokens:
-                # Convert position_to_tokens to token_sets format
-                token_sets = []
-
-                # Sort positions to ensure they're in order
-                positions = sorted(
-                    [int(pos) for pos in position_to_tokens.keys() if pos.isdigit()]
-                )
-
-                for pos in positions:
-                    pos_str = str(pos)
-                    if pos_str in position_to_tokens:
-                        # Format: (position, original_tokens, pruned_tokens)
-                        original_tokens = []
-
-                        # Extract tokens and probabilities
-                        tokens_data = position_to_tokens[pos_str]
-
-                        # Handle the case where tokens_data is a list of string tokens
-                        if (
-                            isinstance(tokens_data, list)
-                            and tokens_data
-                            and isinstance(tokens_data[0], str)
-                        ):
-                            logger.info(f"Processing string tokens at position {pos}")
-                            # For each string token, convert to token ID and add to original_tokens
-                            for token_str in tokens_data:
-                                try:
-                                    # Encode the string token to get token ID
-                                    token_ids = tokenizer.encode(
-                                        token_str, add_special_tokens=False
-                                    )
-                                    if token_ids:
-                                        # Use the first token ID if multiple are returned
-                                        token_id = token_ids[0]
-                                        # Use default probability since we don't have actual values
-                                        original_tokens.append((token_id, 1.0))
-                                except Exception as e:
-                                    logger.warning(
-                                        f"Failed to encode token '{token_str}': {str(e)}"
-                                    )
-                                    continue
-                        else:
-                            # Handle different possible structures for non-string tokens
-                            tokens = []
-                            probs = []
-
-                            if isinstance(tokens_data, dict):
-                                if "tokens" in tokens_data:
-                                    tokens = tokens_data.get("tokens", [])
-                                    probs = tokens_data.get("probs", [])
-                                elif "top_tokens" in tokens_data:
-                                    # Alternative structure sometimes used
-                                    tokens = tokens_data.get("top_tokens", [])
-                                    probs = tokens_data.get("top_probs", [])
-                                elif "token_ids" in tokens_data:
-                                    # Another possible structure
-                                    tokens = tokens_data.get("token_ids", [])
-                                    probs = tokens_data.get("probabilities", [])
-                            elif isinstance(tokens_data, list):
-                                # Handle list of (token, prob) pairs or similar
-                                if (
-                                    tokens_data
-                                    and isinstance(tokens_data[0], (list, tuple))
-                                    and len(tokens_data[0]) >= 2
-                                ):
-                                    # Extract tokens and probs from list of pairs
-                                    tokens = [item[0] for item in tokens_data]
-                                    probs = [item[1] for item in tokens_data]
-                                elif tokens_data:
-                                    # Just a list of tokens, use default prob
-                                    tokens = tokens_data
-                                    probs = [0.5] * len(tokens)  # Default probability
-
-                            # Create (token_id, prob) pairs with defensive programming
-                            for i, token_id in enumerate(tokens):
-                                prob = probs[i] if i < len(probs) else 0.0
-                                # Ensure token_id is an int and prob is a float
-                                try:
-                                    token_id_int = int(token_id)
-                                    prob_float = float(prob)
-                                    original_tokens.append((token_id_int, prob_float))
-                                except (ValueError, TypeError):
-                                    logger.warning(
-                                        f"Invalid token data at position {pos}: {token_id}, {prob}"
-                                    )
-                                    continue
-
-                        # Extract pruned tokens if available
-                        pruned_tokens = []
-                        try:
-                            if pos_str in final_pruned_sets:
-                                pruned_data = final_pruned_sets[pos_str]
-
-                                # Handle string tokens in pruned data
-                                if (
-                                    isinstance(pruned_data, list)
-                                    and pruned_data
-                                    and isinstance(pruned_data[0], str)
-                                ):
-                                    logger.info(
-                                        f"Processing pruned string tokens at position {pos}"
-                                    )
-                                    for token_str in pruned_data:
-                                        try:
-                                            # Encode the string token to get token ID
-                                            token_ids = tokenizer.encode(
-                                                token_str, add_special_tokens=False
-                                            )
-                                            if token_ids:
-                                                # Use the first token ID if multiple are returned
-                                                token_id = token_ids[0]
-                                                # Use default probability
-                                                pruned_tokens.append((token_id, 0.8))
-                                        except Exception as e:
-                                            logger.warning(
-                                                f"Failed to encode pruned token '{token_str}': {str(e)}"
-                                            )
-                                            continue
-                                elif (
-                                    isinstance(pruned_data, dict)
-                                    and "tokens" in pruned_data
-                                ):
-                                    p_tokens = pruned_data.get("tokens", [])
-                                    p_probs = pruned_data.get("probs", [])
-
-                                    for i, token_id in enumerate(p_tokens):
-                                        prob = p_probs[i] if i < len(p_probs) else 0.0
-                                        try:
-                                            token_id_int = int(token_id)
-                                            prob_float = float(prob)
-                                            pruned_tokens.append(
-                                                (token_id_int, prob_float)
-                                            )
-                                        except (ValueError, TypeError):
-                                            logger.warning(
-                                                f"Invalid pruned token data at position {pos}: {token_id}, {prob}"
-                                            )
-                                            continue
-                        except Exception as e:
-                            logger.error(
-                                f"Error processing pruned tokens at position {pos}: {str(e)}"
-                            )
-                            # Continue with empty pruned tokens if there was an error
-                            pruned_tokens = []
-
-                        token_sets.append((pos, original_tokens, pruned_tokens))
-
-                results["token_sets"] = token_sets
-            else:
-                # If no position_to_tokens, create empty token_sets
-                results["token_sets"] = []
-
-        # Extract the token sets and format them for the response
-        steps = []
-        token_sets = results.get("token_sets", [])
-
-        for position, original_tokens, pruned_tokens in token_sets:
-            # INVARIANT: Token sets must be properly structured
-            if not isinstance(position, int):
-                raise ValueError(f"Invalid position type: {type(position)}")
-
-            if not all(isinstance(t, tuple) and len(t) == 2 for t in original_tokens):
-                raise ValueError("Invalid token format in original_tokens")
-
-            if not all(isinstance(t, tuple) and len(t) == 2 for t in pruned_tokens):
-                raise ValueError("Invalid token format in pruned_tokens")
-
-            # Create token info objects for original tokens
-            original_token_infos = []
-            for token_id, prob in original_tokens:
-                token_text = tokenizer.decode([token_id], skip_special_tokens=False)
-                original_token_infos.append(
-                    TokenInfo(
-                        token_text=token_text,
-                        token_id=token_id,
-                        probability=float(prob),  # Ensure float type
-                    )
-                )
-
-            # Create token info objects for pruned tokens
-            pruned_token_infos = []
-            for token_id, prob in pruned_tokens:
-                token_text = tokenizer.decode([token_id], skip_special_tokens=False)
-                pruned_token_infos.append(
-                    TokenInfo(
-                        token_text=token_text,
-                        token_id=token_id,
-                        probability=float(prob),  # Ensure float type
-                    )
-                )
-
-            steps.append(
-                StepInfo(
-                    position=position,
-                    parallel_tokens=original_token_infos,
-                    pruned_tokens=pruned_token_infos,
-                )
-            )
+        # Generate text with error handling
+        generation_result = generator.generate(
+            prompt=prompt,
+            max_tokens=max_tokens,
+            threshold=threshold,
+            return_parallel_sets=True,
+            use_pruning=request.use_pruning,
+            min_steps=request.min_steps,
+            show_token_ids=request.show_token_ids,
+            use_custom_rope=request.use_custom_rope,
+            disable_kv_cache=request.disable_kv_cache,
+            system_content=request.system_content,
+            retroactive_pruner=retroactive_pruner,
+        )
+        
+        # Verify generation results
+        assert "generated_text" in generation_result, "Generation result missing 'generated_text'"
+        assert "raw_generated_text" in generation_result, "Generation result missing 'raw_generated_text'"
 
         # Calculate elapsed time
         elapsed_time = time.time() - start_time
+        logger.info(f"Generation completed in {elapsed_time:.2f}s")
 
-        # Prepare pruning info if used
-        pruning_info = None
-        if request.use_pruning:
-            pruning_info = PruningInfo(
-                strategy="hybrid",
-                coherence_threshold=request.coherence_threshold,
-                diversity_clusters=request.diversity_clusters,
-                use_dynamic_threshold=True,  # This is hardcoded in the API
-                diversity_steps=request.diversity_steps,
-                pruning_time=results.get("pruning_time", 0.0),
-            )
-
-        # Extract original parallel positions if available
-        original_parallel_positions = []
-        if "original_parallel_positions" in results and isinstance(
-            results["original_parallel_positions"], (list, set)
-        ):
-            original_parallel_positions = list(results["original_parallel_positions"])
-
-        # Format the response with all available data
+        # Create response object
         response = GenerationResponse(
-            # Core output
-            generated_text=results.get("generated_text", ""),
-            raw_generated_text=results.get("raw_generated_text", ""),
-            # Token-level data
-            steps=steps,
-            position_to_tokens=results.get("position_to_tokens", {}),
-            original_parallel_positions=original_parallel_positions,
-            # Performance and timing
+            generated_text=generation_result["generated_text"],
+            raw_generated_text=generation_result["raw_generated_text"],
+            steps=[],  # Will be populated below
             timing=TimingInfo(
-                generation_time=results.get("generation_time", elapsed_time),
-                pruning_time=results.get("pruning_time", 0.0),
+                generation_time=generation_result.get("generation_time", elapsed_time),
+                pruning_time=generation_result.get("pruning_time", 0.0),
                 elapsed_time=elapsed_time,
             ),
-            # Pruning information
-            pruning=pruning_info,
-            # Model information
             model_info=ModelInfo(
                 model_name="deepcogito/cogito-v1-preview-llama-3B",
-                is_qwen_model=results.get("is_qwen_model", False),
-                use_custom_rope=results.get("use_custom_rope", True),
+                is_qwen_model=generation_result.get("is_qwen_model", False),
+                use_custom_rope=request.use_custom_rope,
             ),
-            # Generation settings
-            threshold=request.threshold,
-            max_tokens=request.max_tokens,
+            threshold=threshold,
+            max_tokens=max_tokens,
             min_steps=request.min_steps,
-            prompt=request.prompt,
-            # Advanced fields
-            had_repetition_loop=results.get("had_repetition_loop", False),
-            system_content=results.get("system_content", None),
-            # Token sets data for visualization (raw data from generator)
-            token_sets=token_sets,
-            # Raw token information for visualization
-            tokens_by_position=results.get("tokens_by_position", {}),
-            final_pruned_sets=results.get("final_pruned_sets", {}),
+            prompt=prompt,
+            had_repetition_loop=generation_result.get("had_repetition_loop", False),
+            system_content=request.system_content,
+            token_sets=[],
         )
 
-        logger.info(
-            f"Generation completed in {elapsed_time:.2f}s, produced {len(steps)} steps"
-        )
+        # Process token sets if available
+        if "token_sets" in generation_result:
+            # Validate token sets format
+            token_sets = generation_result["token_sets"]
+            assert isinstance(token_sets, list), "token_sets must be a list"
+            
+            # Convert token sets to required format
+            response.token_sets = [
+                (position, [(int(tid), float(prob)) for tid, prob in token_ids_probs[0]], 
+                 [(int(tid), float(prob)) for tid, prob in token_ids_probs[1]])
+                for position, token_ids_probs, _ in token_sets
+            ]
+
+            # Build steps for the response
+            steps = []
+            for position, (orig_tokens, orig_probs), (pruned_tokens, pruned_probs) in token_sets:
+                # Create token info objects
+                parallel_tokens = [
+                    TokenInfo(
+                        token_text=tokenizer.decode([int(tid)]),
+                        token_id=int(tid),
+                        probability=float(prob),
+                    )
+                    for tid, prob in zip(orig_tokens, orig_probs)
+                ]
+                
+                pruned_tokens_info = [
+                    TokenInfo(
+                        token_text=tokenizer.decode([int(tid)]),
+                        token_id=int(tid),
+                        probability=float(prob),
+                    )
+                    for tid, prob in zip(pruned_tokens, pruned_probs)
+                ]
+                
+                # Create step info
+                step = StepInfo(
+                    position=position,
+                    parallel_tokens=parallel_tokens,
+                    pruned_tokens=pruned_tokens_info,
+                )
+                steps.append(step)
+            
+            response.steps = steps
+
+        # Add pruning information if available
+        if request.use_pruning:
+            strategy_name = "coherence"
+            if request.use_diversity_pruning:
+                strategy_name = "diversity" 
+            if request.use_diversity_pruning and request.use_retroactive_pruning:
+                strategy_name = "hybrid"
+                
+            response.pruning = PruningInfo(
+                strategy=strategy_name,
+                coherence_threshold=request.coherence_threshold,
+                diversity_clusters=request.diversity_clusters,
+                use_dynamic_threshold=request.dynamic_threshold,
+                diversity_steps=request.diversity_steps,
+                pruning_time=generation_result.get("pruning_time", 0.0),
+            )
+
+        # Add position to tokens mapping if available
+        if "position_to_tokens" in generation_result:
+            response.position_to_tokens = generation_result["position_to_tokens"]
+
+        # Add final pruned sets if available
+        if "final_pruned_sets" in generation_result:
+            response.final_pruned_sets = generation_result["final_pruned_sets"]
+
+        # Add original parallel positions if available
+        if "original_parallel_positions" in generation_result:
+            response.original_parallel_positions = list(generation_result["original_parallel_positions"])
+
+        # Validate the response is complete
+        assert response.generated_text, "Generated text is missing in response"
+        assert response.raw_generated_text, "Raw generated text is missing in response"
+        assert response.timing, "Timing information is missing in response"
 
         return response
 
-    except ValueError as e:
-        # Client errors (invalid parameters)
-        logger.warning(f"Client error during generation: {str(e)}")
-        raise HTTPException(status_code=400, detail=str(e))
-
     except Exception as e:
-        # Server errors (model failures, etc.)
-        logger.error(f"Generation error: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Generation error: {str(e)}")
+        # Log the error with traceback
+        logger.error(f"Error during generation: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Generation failed: {str(e)}")
 
 
 # Run with: uvicorn api:app --host 0.0.0.0 --port 8000
