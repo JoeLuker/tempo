@@ -44,18 +44,38 @@ class RoPEModifier:
         """
         if self.is_installed:
             print("RoPE modifier already installed")
-            return
+            return True  # Return True when already installed
 
         patched_count = 0
         mistral_specific_patches = 0
         qwen_specific_patches = 0
 
+        # Get model type for debugging
+        model_type = getattr(self.model.config, "model_type", "unknown").lower()
+        print(f"DEBUG: Model type detected: {model_type}")
+        print(f"DEBUG: Installing RoPE modifier on device: {self.device}")
+
         # First check if this is a Qwen model, which has a different RoPE implementation
-        model_type = getattr(self.model.config, "model_type", "").lower()
         is_qwen = "qwen" in model_type
+        
+        # Try to identify all modules related to RoPE
+        print("\nDEBUG: Searching for RoPE-related modules...")
+        rope_related_modules = {}
+        for name, module in self.model.named_modules():
+            if any(rope_name in str(type(module).__name__).lower() or rope_name in name.lower() 
+                   for rope_name in ["ropeembedding", "rotary", "rope"]):
+                rope_related_modules[name] = str(type(module).__name__)
+        
+        if rope_related_modules:
+            print(f"DEBUG: Found {len(rope_related_modules)} potential RoPE-related modules:")
+            for name, module_type in rope_related_modules.items():
+                print(f"  - {name} ({module_type})")
+        else:
+            print("DEBUG: No RoPE-related modules found by name or type. This may indicate an unsupported model architecture.")
 
         if is_qwen:
             # For Qwen models, look for specific RoPE implementations
+            print("\nDEBUG: Attempting to patch Qwen-specific RoPE modules...")
             for name, module in self.model.named_modules():
                 if any(
                     rope_name in str(type(module).__name__).lower()
@@ -67,10 +87,16 @@ class RoPEModifier:
                         patched_count += 1
                         self.patched_modules.add(name)
                         qwen_specific_patches += 1
+                    else:
+                        if not hasattr(module, "forward"):
+                            print(f"DEBUG: Module {name} skipped - no forward method")
+                        else:
+                            print(f"DEBUG: Module {name} skipped - already patched")
 
         # First find modules that are directly responsible for RoPE
         # For Mistral, we want to patch the MistralRotaryEmbedding class
         if qwen_specific_patches == 0:
+            print("\nDEBUG: Attempting to patch direct rotary embedding modules...")
             for name, module in self.model.named_modules():
                 # Direct rotary embedding classes
                 if any(
@@ -87,10 +113,19 @@ class RoPEModifier:
                         patched_count += 1
                         self.patched_modules.add(name)
                         mistral_specific_patches += 1
+                    else:
+                        if not hasattr(module, "forward"):
+                            print(f"DEBUG: Module {name} skipped - no forward method")
+                        else:
+                            print(f"DEBUG: Module {name} skipped - already patched")
 
         # Then look for attention modules that might apply RoPE internally
         if mistral_specific_patches == 0 and qwen_specific_patches == 0:
             # If we didn't find any specific modules, fall back to general approach
+            print("\nDEBUG: No specific modules found, falling back to general approach...")
+            
+            # First check for modules with rotary_emb attribute
+            print("DEBUG: Looking for modules with rotary_emb attribute...")
             for name, module in self.model.named_modules():
                 # Look for attention modules that have rotary position embeddings
                 if (
@@ -104,8 +139,11 @@ class RoPEModifier:
                     self._patch_module(name, module)
                     patched_count += 1
                     self.patched_modules.add(name)
+                elif hasattr(module, "rotary_emb") and not hasattr(module, "forward"):
+                    print(f"DEBUG: Module {name} has rotary_emb but no forward method")
 
             # Also look for modules that might apply rotary embeddings differently
+            print("DEBUG: Looking for modules with rotary-related methods or names...")
             for name, module in self.model.named_modules():
                 # Various ways RoPE might be implemented
                 if (
@@ -123,15 +161,33 @@ class RoPEModifier:
                         self._patch_module(name, module)
                         patched_count += 1
                         self.patched_modules.add(name)
+                    else:
+                        print(f"DEBUG: Module {name} skipped - no forward method")
 
         # Invariant: At least one module must be patched
         if patched_count == 0:
-            raise ValueError(
-                "Invariant violation: Failed to patch any RoPE modules. Model may not support RoPE or module structure is unexpected."
-            )
+            print("\nDEBUG: CRITICAL ERROR - Failed to patch any RoPE modules")
+            print("DEBUG: Dumping model structure to help diagnose...")
+            model_structure = {}
+            for name, module in self.model.named_modules():
+                module_attrs = [attr for attr in dir(module) if not attr.startswith('__')]
+                model_structure[name] = {
+                    "type": str(type(module).__name__),
+                    "has_forward": hasattr(module, "forward"),
+                    "rope_related_attributes": [attr for attr in module_attrs if "rotary" in attr.lower() or "rope" in attr.lower()]
+                }
+            
+            # Print a summary of the model structure
+            print("\nDEBUG: Model module summary:")
+            for name, info in list(model_structure.items())[:20]:  # Show first 20 to avoid overwhelming output
+                if info["rope_related_attributes"] or "rotary" in name.lower() or "rope" in name.lower():
+                    print(f"  {name} ({info['type']}): has_forward={info['has_forward']}, rope_attrs={info['rope_related_attributes']}")
+            
+            return False  # Return False to indicate failure
 
         print(f"RoPE modifier installed: patched {patched_count} modules")
         self.is_installed = True
+        return True  # Return True to indicate success
 
     def _patch_module(self, name: str, module: Any):
         """
