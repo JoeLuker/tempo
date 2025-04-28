@@ -9,19 +9,36 @@ import numpy as np
 from pathlib import Path
 from datetime import datetime
 import traceback
+import sys
 
 # Import the sequence tracker
-try:
-    from run_tempo import sequence_tracker
-except ImportError:
-    # Create a dummy tracker if not available
-    print("Warning: sequence_tracker not found in token_generator, using dummy tracker")
-    class DummyTracker:
-        def update_length(self, length): pass
-        def increment_length(self, step_num=None): pass
-        def get_length(self): return 0
-        debug = False
-    sequence_tracker = DummyTracker()
+sequence_tracker = None
+
+def set_sequence_tracker(tracker):
+    """Set the global sequence tracker instance."""
+    global sequence_tracker
+    sequence_tracker = tracker
+
+# Default to dummy tracker until properly set
+class DummyTracker:
+    def update_length(self, length):
+        pass
+
+    def increment_step(self, step_num=None):
+        pass
+    
+    def increment_length(self, step_num=None):
+        pass
+
+    def get_length(self):
+        return 0
+
+    debug = True  # Default to debug mode on for the dummy tracker
+
+# Use dummy tracker initially
+sequence_tracker = DummyTracker()
+print("Initialized token_generator with dummy tracker - will be replaced at runtime")
+
 
 class TokenGenerator:
     """
@@ -42,13 +59,13 @@ class TokenGenerator:
         assert model is not None, "Model cannot be None"
         assert tokenizer is not None, "Tokenizer cannot be None"
         assert device in ["cpu", "cuda", "mps"], f"Unsupported device: {device}"
-        
+
         self.model = model
         self.tokenizer = tokenizer
         self.device = device
 
         # Debug mode
-        self.debug_mode = False
+        self.debug_mode = True
 
         # Cache for tokenized prompts
         self.prompt_cache = {}
@@ -78,7 +95,7 @@ class TokenGenerator:
             "decode_time": 0,
             "isolated_tokens_processed": 0,
         }
-        
+
         # Verify tokenizer capabilities
         assert hasattr(self.tokenizer, "encode"), "Tokenizer must have encode method"
         assert hasattr(self.tokenizer, "decode"), "Tokenizer must have decode method"
@@ -101,6 +118,11 @@ class TokenGenerator:
 
         # Create file handler
         log_file = os.path.join(log_dir, "token_generator_debug.log")
+
+        # Clear the log file by opening in write mode first
+        with open(log_file, "w") as f:
+            pass
+
         file_handler = logging.FileHandler(log_file, mode="a")
         file_handler.setLevel(logging.DEBUG)
 
@@ -112,7 +134,7 @@ class TokenGenerator:
 
         # Add handler to logger
         self.logger.addHandler(file_handler)
-        
+
         # Verify logger setup
         assert self.logger.handlers, "Failed to set up logger handlers"
 
@@ -125,8 +147,13 @@ class TokenGenerator:
             level: Log level (info, debug, warning, error)
         """
         assert message, "Log message cannot be empty"
-        assert level in ["info", "debug", "warning", "error"], f"Invalid log level: {level}"
-        
+        assert level in [
+            "info",
+            "debug",
+            "warning",
+            "error",
+        ], f"Invalid log level: {level}"
+
         if not self.debug_mode:
             return
 
@@ -147,7 +174,7 @@ class TokenGenerator:
             enabled: Whether to enable debug mode
         """
         assert isinstance(enabled, bool), "Debug mode must be a boolean"
-        
+
         self.debug_mode = enabled
         if enabled:
             print(
@@ -200,25 +227,28 @@ class TokenGenerator:
         attention_mask = inputs["attention_mask"].to(self.device)
 
         # Invariant: Tokenized inputs must have valid dimensions and values
-        assert input_ids.dim() == 2 and input_ids.size(0) == 1, \
-            f"input_ids must have shape [1, seq_len], got {input_ids.shape}"
+        assert (
+            input_ids.dim() == 2 and input_ids.size(0) == 1
+        ), f"input_ids must have shape [1, seq_len], got {input_ids.shape}"
 
-        assert attention_mask.dim() == 2 and attention_mask.size(0) == 1, \
-            f"attention_mask must have shape [1, seq_len], got {attention_mask.shape}"
+        assert (
+            attention_mask.dim() == 2 and attention_mask.size(0) == 1
+        ), f"attention_mask must have shape [1, seq_len], got {attention_mask.shape}"
 
-        assert input_ids.size(1) == attention_mask.size(1), \
-            "input_ids and attention_mask must have same sequence length"
+        assert input_ids.size(1) == attention_mask.size(
+            1
+        ), "input_ids and attention_mask must have same sequence length"
 
         # Cache the results
         self.prompt_cache[prompt] = (input_ids, attention_mask)
-        
+
         # Track timing
         self.perf_stats["tokenization_time"] += time.time() - start_time
-        
+
         # Update sequence length in global tracker
         if hasattr(sequence_tracker, "update_length"):
             sequence_tracker.update_length(input_ids.size(1))
-            
+
         return input_ids, attention_mask
 
     def get_next_token_logits(
@@ -242,15 +272,22 @@ class TokenGenerator:
         assert input_ids is not None, "input_ids cannot be None"
         assert attention_mask is not None, "attention_mask cannot be None"
         assert isinstance(input_ids, torch.Tensor), "input_ids must be a tensor"
-        assert isinstance(attention_mask, torch.Tensor), "attention_mask must be a tensor"
+        assert isinstance(
+            attention_mask, torch.Tensor
+        ), "attention_mask must be a tensor"
         assert input_ids.dim() == 2, f"input_ids must be 2D, got {input_ids.dim()}D"
-        assert attention_mask.dim() == 2, f"attention_mask must be 2D, got {attention_mask.dim()}D"
-        assert input_ids.shape[1] == attention_mask.shape[1], \
-            f"input_ids and attention_mask sequence lengths must match: {input_ids.shape[1]} vs {attention_mask.shape[1]}"
-        
+        assert (
+            attention_mask.dim() == 2
+        ), f"attention_mask must be 2D, got {attention_mask.dim()}D"
+        assert (
+            input_ids.shape[1] == attention_mask.shape[1]
+        ), f"input_ids and attention_mask sequence lengths must match: {input_ids.shape[1]} vs {attention_mask.shape[1]}"
+
         if custom_attention_mask is not None:
-            assert isinstance(custom_attention_mask, torch.Tensor), "custom_attention_mask must be a tensor"
-        
+            assert isinstance(
+                custom_attention_mask, torch.Tensor
+            ), "custom_attention_mask must be a tensor"
+
         # Performance tracking
         start_time = time.time()
         self.perf_stats["model_calls"] += 1
@@ -299,6 +336,8 @@ class TokenGenerator:
         Returns:
             tuple: (next_token_logits, past_key_values)
         """
+        self.log(">>> ENTERING get_next_token_logits_cached <<<", level="warning")
+        
         # FUNDAMENTAL INVARIANT: Input tensors must be valid tensors
         if not isinstance(input_ids, torch.Tensor):
             raise ValueError("Invariant violation: input_ids must be a torch.Tensor")
@@ -493,6 +532,7 @@ class TokenGenerator:
                     "attention_mask": attention_mask,
                     "use_cache": True,  # Always use cache when possible for efficiency
                     "output_attentions": True,  # Always request attention patterns for reuse in pruning
+                    "return_dict": True,  # Ensure we get the full output object with attentions
                 }
 
                 # Only include past_key_values if they are provided
@@ -529,6 +569,58 @@ class TokenGenerator:
 
                 outputs = self.model(**model_args)
 
+                # === START NEW DEBUG LOGGING ===
+                if self.debug_mode:
+                    self.log(f"DEBUG DIRECT: Output type = {type(outputs)}", level="warning")
+                    try:
+                        # Use dir() to see all available attributes/methods
+                        self.log(f"DEBUG DIRECT: Available attributes/methods = {dir(outputs)}", level="warning")
+                        # Specifically check for attentions attribute presence
+                        has_attentions = hasattr(outputs, 'attentions')
+                        self.log(f"DEBUG DIRECT: hasattr(outputs, 'attentions') = {has_attentions}", level="warning")
+                        if has_attentions:
+                            # Check if the attribute is None or evaluates to False (e.g., empty list)
+                            is_attentions_none_or_false = outputs.attentions is None or not outputs.attentions
+                            self.log(f"DEBUG DIRECT: outputs.attentions is None or evaluates to False = {is_attentions_none_or_false}", level="warning")
+                            if not is_attentions_none_or_false:
+                                self.log(f"DEBUG DIRECT: Type of outputs.attentions = {type(outputs.attentions)}", level="warning")
+                                if isinstance(outputs.attentions, (list, tuple)):
+                                    self.log(f"DEBUG DIRECT: Length of outputs.attentions = {len(outputs.attentions)}", level="warning")
+
+                    except Exception as inspect_err:
+                         self.log(f"DEBUG DIRECT: Error inspecting outputs object: {inspect_err}", level="error")
+                # === END NEW DEBUG LOGGING ===
+
+                # Conditional logic for setting self.cached_attention based on inspection
+                if hasattr(outputs, "attentions") and outputs.attentions:
+                     self.cached_attention = outputs.attentions
+                     if self.debug_mode:
+                         self.log(f"DEBUG DIRECT: self.cached_attention was SET.", level="info")
+                else:
+                     # Log exactly why it wasn't set based on inspection results
+                     if not hasattr(outputs, "attentions"):
+                         self.log("DEBUG DIRECT: self.cached_attention NOT SET - object lacks 'attentions' attribute.", level="warning")
+                     elif outputs.attentions is None:
+                         self.log("DEBUG DIRECT: self.cached_attention NOT SET - 'attentions' attribute is None.", level="warning")
+                     else: # hasattr is true, but outputs.attentions is False (e.g., empty list)
+                         self.log("DEBUG DIRECT: self.cached_attention NOT SET - 'attentions' attribute is present but empty.", level="warning")
+                     self.cached_attention = None # Explicitly set to None
+
+                # === Previous debug logging ===
+                if self.debug_mode:
+                    self.log("--- Attention Output Check ---")
+                    if hasattr(outputs, 'attentions') and outputs.attentions:
+                        self.log(f"Model returned {len(outputs.attentions)} attention layers.")
+                        if len(outputs.attentions) > 0 and outputs.attentions[0] is not None and hasattr(outputs.attentions[0], 'shape'):
+                             self.log(f"First attention layer shape: {outputs.attentions[0].shape}")
+                        else:
+                             self.log("First attention layer has no shape attribute or is invalid.")
+                    elif hasattr(outputs, 'attentions'):
+                         self.log("Model returned 'attentions' attribute, but it is None or empty.", level="warning")
+                    else:
+                        self.log("Model output object does NOT have 'attentions' attribute.", level="warning")
+                    self.log("-----------------------------")
+
                 # INVARIANT: Ensure outputs has logits attribute
                 if not hasattr(outputs, "logits"):
                     raise ValueError(
@@ -549,8 +641,14 @@ class TokenGenerator:
 
                 # Store attention patterns for later use in pruning
                 if hasattr(outputs, "attentions") and outputs.attentions:
-                    # Store the entire attention tensor stack as a class attribute
                     self.cached_attention = outputs.attentions
+
+                    # Debug: Print attention shapes
+                    # if self.debug_mode:
+                    #     print("\n*** ATTENTION SHAPES DEBUG ***")
+                    #     for i, layer_attn in enumerate(outputs.attentions):
+                    #         print(f"Layer {i} attention shape: {layer_attn.shape}")
+                    #     print("*****************************\n")
 
                     # Store sequence length for verification
                     if not hasattr(self, "cached_attention_seq_len"):
@@ -568,6 +666,11 @@ class TokenGenerator:
                         self.log(
                             f"Cached attention for sequence length {current_seq_len}"
                         )
+                else:
+                    # Explicitly log if not set
+                    if self.debug_mode:
+                        self.log("Failed to cache attention - outputs.attentions is missing or empty", level="warning")
+                        self.cached_attention = None  # Ensure it's explicitly None
 
             except Exception as e:
                 # No fallbacks - fail with explicit error
@@ -651,7 +754,7 @@ class TokenGenerator:
                             self.log(
                                 f"Warning: Unexpected KV cache sequence length change: {prev_length} -> {current_length}"
                             )
-                            
+
                         # Update sequence length tracking for performance analysis
                         sequence_tracker.update_length(current_length)
                         if hasattr(self, "debug_mode") and self.debug_mode:
@@ -815,19 +918,43 @@ class TokenGenerator:
 
     def get_cached_attention(self):
         """
-        Get the cached attention patterns from the most recent model forward pass.
-
+        Get the cached attention from the last forward pass.
+        
         Returns:
-            tuple: (cached_attention, seq_length) or (None, None) if no cached attention
+            tuple: (cached_attention, sequence_length)
         """
-        if hasattr(self, "cached_attention") and self.cached_attention:
-            seq_len = (
-                self.cached_attention_seq_len[-1]
-                if hasattr(self, "cached_attention_seq_len")
-                and self.cached_attention_seq_len
-                else None
-            )
+        if hasattr(self, "cached_attention") and self.cached_attention is not None:
+            # Log shapes for debugging
+            if self.debug_mode:
+                attention_layer_count = len(self.cached_attention)
+                if attention_layer_count > 0:
+                    first_layer_shape = self.cached_attention[0].shape
+                    last_layer_shape = self.cached_attention[-1].shape
+                    self.log(f"*** ATTENTION SHAPES DEBUG ***")
+                    self.log(f"Cached attention has {attention_layer_count} layers")
+                    self.log(f"First layer shape: {first_layer_shape}")
+                    self.log(f"Last layer shape: {last_layer_shape}")
+                    
+                    # Log more details about dimensions
+                    if len(first_layer_shape) >= 4:
+                        batch_size, num_heads, seq_len, attended_len = first_layer_shape
+                        self.log(f"Attention dimensions: batch_size={batch_size}, num_heads={num_heads}, seq_len={seq_len}, attended_len={attended_len}")
+                    
+                    # Log sequence length
+                    seq_len = self.cached_attention_seq_len[0] if hasattr(self, "cached_attention_seq_len") else None
+                    self.log(f"Cached attention sequence length: {seq_len}")
+                else:
+                    self.log("Warning: Cached attention is empty (0 layers)")
+            
+            # Return cached attention and its sequence length
+            seq_len = None
+            if hasattr(self, "cached_attention_seq_len") and self.cached_attention_seq_len:
+                seq_len = self.cached_attention_seq_len[0]
             return self.cached_attention, seq_len
+        
+        # No cached attention available
+        if self.debug_mode:
+            self.log("Warning: No cached attention available", "warning")
         return None, None
 
     def get_next_token_logits_for_isolated_parallel(
@@ -853,6 +980,8 @@ class TokenGenerator:
         Returns:
             tuple: (next_token_logits, past_key_values)
         """
+        self.log(">>> ENTERING get_next_token_logits_for_isolated_parallel <<<", level="warning")
+        
         # Performance tracking
         start_time = time.time()
         self.perf_stats["model_calls"] += 1
@@ -908,6 +1037,7 @@ class TokenGenerator:
                 "attention_mask": attention_mask_for_model,
                 "use_cache": True,
                 "output_attentions": True,
+                "return_dict": True,  # Ensure we get the full output object with attentions
             }
 
             # Only include past_key_values if they are provided
@@ -939,12 +1069,71 @@ class TokenGenerator:
             # Run the model forward pass just once
             outputs = self.model(**model_args)
 
+            # === START NEW DEBUG LOGGING ===
+            if self.debug_mode:
+                self.log(f"DEBUG DIRECT: Output type (isolated parallel) = {type(outputs)}", level="warning")
+                try:
+                    # Use dir() to see all available attributes/methods
+                    self.log(f"DEBUG DIRECT: Available attributes/methods = {dir(outputs)}", level="warning")
+                    # Specifically check for attentions attribute presence
+                    has_attentions = hasattr(outputs, 'attentions')
+                    self.log(f"DEBUG DIRECT: hasattr(outputs, 'attentions') = {has_attentions}", level="warning")
+                    if has_attentions:
+                        # Check if the attribute is None or evaluates to False (e.g., empty list)
+                        is_attentions_none_or_false = outputs.attentions is None or not outputs.attentions
+                        self.log(f"DEBUG DIRECT: outputs.attentions is None or evaluates to False = {is_attentions_none_or_false}", level="warning")
+                        if not is_attentions_none_or_false:
+                            self.log(f"DEBUG DIRECT: Type of outputs.attentions = {type(outputs.attentions)}", level="warning")
+                            if isinstance(outputs.attentions, (list, tuple)):
+                                self.log(f"DEBUG DIRECT: Length of outputs.attentions = {len(outputs.attentions)}", level="warning")
+
+                except Exception as inspect_err:
+                     self.log(f"DEBUG DIRECT: Error inspecting outputs object: {inspect_err}", level="error")
+            # === END NEW DEBUG LOGGING ===
+
+            # Conditional logic for setting self.cached_attention based on inspection
+            if hasattr(outputs, "attentions") and outputs.attentions:
+                 self.cached_attention = outputs.attentions
+                 if self.debug_mode:
+                     self.log(f"DEBUG DIRECT: self.cached_attention was SET.", level="info")
+            else:
+                 # Log exactly why it wasn't set based on inspection results
+                 if not hasattr(outputs, "attentions"):
+                     self.log("DEBUG DIRECT: self.cached_attention NOT SET - object lacks 'attentions' attribute.", level="warning")
+                 elif outputs.attentions is None:
+                     self.log("DEBUG DIRECT: self.cached_attention NOT SET - 'attentions' attribute is None.", level="warning")
+                 else: # hasattr is true, but outputs.attentions is False (e.g., empty list)
+                     self.log("DEBUG DIRECT: self.cached_attention NOT SET - 'attentions' attribute is present but empty.", level="warning")
+                 self.cached_attention = None # Explicitly set to None
+
+            # === Previous debug logging (now with warning level) ===
+            if self.debug_mode:
+                self.log("--- Attention Output Check (Isolated Parallel) ---")
+                if hasattr(outputs, 'attentions') and outputs.attentions:
+                    self.log(f"Model returned {len(outputs.attentions)} attention layers.")
+                    if len(outputs.attentions) > 0 and outputs.attentions[0] is not None and hasattr(outputs.attentions[0], 'shape'):
+                         self.log(f"First attention layer shape: {outputs.attentions[0].shape}")
+                    else:
+                         self.log("First attention layer has no shape attribute or is invalid.")
+                elif hasattr(outputs, 'attentions'):
+                     self.log("Model returned 'attentions' attribute, but it is None or empty.", level="warning")
+                else:
+                    self.log("Model output object does NOT have 'attentions' attribute.", level="warning")
+                self.log("-----------------------------")
+
             # Get logits for last position - this can be reused for all parallel tokens
             next_token_logits = outputs.logits[:, -1, :]
 
             # Store attention patterns for later use in pruning
             if hasattr(outputs, "attentions") and outputs.attentions:
                 self.cached_attention = outputs.attentions
+
+                # Debug: Print attention shapes
+                # if self.debug_mode:
+                #     print("\n*** ATTENTION SHAPES DEBUG ***")
+                #     for i, layer_attn in enumerate(outputs.attentions):
+                #         print(f"Layer {i} attention shape: {layer_attn.shape}")
+                #     print("*****************************\n")
 
                 # Store sequence length for verification
                 if not hasattr(self, "cached_attention_seq_len"):
@@ -962,6 +1151,11 @@ class TokenGenerator:
                     self.log(
                         f"Cached attention for sequence length {current_seq_len} (shared among {num_parallel_tokens} parallel tokens)"
                     )
+            else:
+                # Explicitly log if not set
+                if self.debug_mode:
+                    self.log("Failed to cache attention in isolated parallel mode - outputs.attentions is missing or empty", level="warning")
+                    self.cached_attention = None  # Ensure it's explicitly None
 
         # Update performance stats
         processing_time = time.time() - start_time
@@ -989,3 +1183,219 @@ class TokenGenerator:
         self.last_parallel_count = num_parallel_tokens
 
         return next_token_logits, return_kvs
+
+    def clear_kv_cache(self):
+        """
+        Clear any KV cache state in the model.
+        This helps prevent contamination from previous generations.
+        """
+        # Log the operation if in debug mode
+        if self.debug_mode:
+            self.log("Clearing KV cache for clean generation")
+            
+        # Use try/except instead of hasattr to safely attempt to clear the cache
+        try:
+            # Try to use clear_kv_cache method if it exists
+            self.model.clear_kv_cache()
+            if self.debug_mode:
+                self.log("Successfully cleared KV cache using model.clear_kv_cache()")
+            return
+        except (AttributeError, AssertionError):
+            # Method doesn't exist, continue to next approach
+            pass
+            
+        try:
+            # Try to use reset_cache method if it exists
+            self.model.reset_cache()
+            if self.debug_mode:
+                self.log("Successfully cleared KV cache using model.reset_cache()")
+            return
+        except (AttributeError, AssertionError):
+            # Method doesn't exist, continue to next approach
+            pass
+            
+        try:
+            # For Hugging Face models using past_key_values
+            if self.model._past_key_values is not None:
+                self.model._past_key_values = None
+                if self.debug_mode:
+                    self.log("Successfully cleared _past_key_values")
+                return
+        except (AttributeError, AssertionError):
+            # Attribute doesn't exist, continue to next approach
+            pass
+            
+        # If we get here, no cache clearing was possible
+        self.log("No KV cache clearing mechanism available - continuing without clearing", level="warning")
+
+    def generate_next_token(
+        self,
+        input_ids: torch.Tensor,
+        attention_mask: torch.Tensor,
+        disable_kv_cache: bool = False,
+        input_identifiers: Optional[List[int]] = None,
+    ):
+        """
+        Generate the next token logits for the given input.
+        This is a wrapper around the get_next_token_logits methods that handles KV caching.
+
+        Args:
+            input_ids: Input token IDs
+            attention_mask: Attention mask for input
+            disable_kv_cache: Whether to disable KV caching
+            input_identifiers: Optional identifiers for the input (for parallel generation)
+
+        Returns:
+            outputs: Model outputs with logits in shape [batch_size, sequence_length, vocab_size]
+        """
+        # Create a simple output container
+        class SimpleOutputs:
+            def __init__(self, logits):
+                self.logits = logits
+                self.attentions = None
+
+        if disable_kv_cache:
+            # Use the simpler method without KV caching
+            logits = self.get_next_token_logits(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+            )
+            
+            # Reshape logits to [batch_size, sequence_length=1, vocab_size]
+            # ParallelGenerator expects 3D tensor with sequence dimension
+            if logits.dim() == 2:  # [batch_size, vocab_size]
+                logits = logits.unsqueeze(1)  # Add sequence dimension -> [batch_size, 1, vocab_size]
+                
+            return SimpleOutputs(logits)
+        else:
+            # Use the cached version for better performance
+            if input_identifiers is not None and len(input_identifiers) > 1:
+                # We're in parallel token mode, check if we can use the isolated optimization
+                # This is a major optimization for isolated parallel tokens
+                logits, _ = self.get_next_token_logits_for_isolated_parallel(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    num_parallel_tokens=len(input_identifiers),
+                )
+            else:
+                # Standard token processing with KV cache
+                logits, _ = self.get_next_token_logits_cached(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                )
+            
+            # Reshape logits to [batch_size, sequence_length=1, vocab_size]
+            # ParallelGenerator expects 3D tensor with sequence dimension
+            if logits.dim() == 2:  # [batch_size, vocab_size]
+                logits = logits.unsqueeze(1)  # Add sequence dimension -> [batch_size, 1, vocab_size]
+                
+            if self.debug_mode:
+                self.log(f"Logits shape after reshaping: {logits.shape}")
+                
+            return SimpleOutputs(logits)
+
+    def generate_next_token_with_cache(
+        self,
+        input_ids: torch.Tensor,
+        attention_mask: torch.Tensor,
+        past_key_values: Optional[List[Tuple[torch.Tensor]]] = None,
+        custom_attention_mask: Optional[torch.Tensor] = None,
+        disable_kv_cache: bool = False,
+        input_identifiers: Optional[List[int]] = None
+    ) -> Tuple[torch.Tensor, Optional[List[Tuple[torch.Tensor]]]]:
+        """
+        Generate the next token using the model with explicit KV cache management.
+        
+        Args:
+            input_ids: Input token IDs
+            attention_mask: Attention mask matching the full sequence length
+            past_key_values: Optional past key values for KV cache
+            custom_attention_mask: Optional custom attention mask
+            disable_kv_cache: Whether to disable KV caching
+            input_identifiers: Optional list of identifiers for the input tokens
+            
+        Returns:
+            Tuple of (next_token_logits, updated_past_key_values)
+        """
+        # Validate inputs
+        assert input_ids is not None, "input_ids cannot be None"
+        assert attention_mask is not None, "attention_mask cannot be None"
+        
+        # Performance tracking
+        start_time = time.time()
+        self.perf_stats["model_calls"] += 1
+        
+        # Check if we need to use KV cache
+        use_cache = not disable_kv_cache
+        
+        # Use inference mode for efficiency
+        with torch.inference_mode():
+            # Check if the model is Qwen-based
+            model_type = getattr(self.model.config, "model_type", "").lower()
+            is_qwen = "qwen" in model_type
+            
+            # Build model arguments
+            model_args = {
+                "input_ids": input_ids,
+                "attention_mask": attention_mask,
+                "use_cache": use_cache,
+                "output_attentions": True,
+                "return_dict": True,
+            }
+            
+            # Add past_key_values if provided and using cache
+            if use_cache and past_key_values is not None:
+                model_args["past_key_values"] = past_key_values
+                
+            # For Qwen models, handle attention specially
+            if is_qwen and custom_attention_mask is not None:
+                if custom_attention_mask.dim() == 3:
+                    model_args["position_bias"] = custom_attention_mask
+                elif custom_attention_mask.dim() == 4:
+                    model_args["attention_mask"] = custom_attention_mask
+                
+            # Run the model
+            outputs = self.model(**model_args)
+        
+        # Get logits for next token (last position)
+        next_token_logits = outputs.logits[:, -1, :]
+        
+        # Store attention patterns if available
+        if hasattr(outputs, "attentions") and outputs.attentions:
+            self.cached_attention = outputs.attentions
+            if self.debug_mode:
+                self.log(f"Cached attention in generate_next_token_with_cache (layers: {len(self.cached_attention)})")
+                
+                # Add sequence length tracking for retrieval
+                if not hasattr(self, "cached_attention_seq_len"):
+                    self.cached_attention_seq_len = []
+                current_seq_len = input_ids.size(1)
+                if past_key_values is not None:
+                    # When using KV cache, add the past sequence length
+                    if len(past_key_values) > 0 and hasattr(past_key_values[0][0], "size"):
+                        current_seq_len += past_key_values[0][0].size(2)
+                self.cached_attention_seq_len.append(current_seq_len)
+                
+                self.log(f"Cached attention for sequence length {current_seq_len}")
+        else:
+            self.cached_attention = None
+            if self.debug_mode:
+                self.log("No attention output received in generate_next_token_with_cache", "warning")
+                
+                # Log detailed diagnostics
+                if hasattr(outputs, "attentions"):
+                    self.log("outputs.attentions attribute exists but is empty or None", "warning")
+                else:
+                    self.log("outputs object lacks attentions attribute", "warning")
+                    
+                # Log what the model actually returned
+                if hasattr(outputs, "__dict__"):
+                    self.log(f"Available model output attributes: {list(outputs.__dict__.keys())}", "warning")
+        
+        # Get updated past_key_values
+        updated_past_key_values = outputs.past_key_values if use_cache else None
+        
+        # Update performance tracking
+        self.perf_stats["model_time"] += time.time() - start_time
+        
+        return next_token_logits, updated_past_key_values

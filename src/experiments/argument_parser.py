@@ -50,6 +50,12 @@ class ArgumentParser:
             default="./output",
             help="Directory to save output",
         )
+        parser.add_argument(
+            "--model",
+            type=str,
+            default="deepcogito/cogito-v1-preview-llama-3B",
+            help="Model name or path to use",
+        )
 
         # Pruning parameters
         parser.add_argument(
@@ -60,8 +66,8 @@ class ArgumentParser:
         parser.add_argument(
             "--pruning-strategy",
             type=str,
-            default="attention",
-            choices=["attention", "diversity", "hybrid"],
+            default="coherence",
+            choices=["coherence", "diversity", "hybrid"],
             help="Pruning strategy to use",
         )
         parser.add_argument(
@@ -132,7 +138,7 @@ class ArgumentParser:
             default=0.8,
             help="Second Bezier control point for dynamic threshold",
         )
-        
+
         # ReLU transition parameters
         parser.add_argument(
             "--use-relu",
@@ -227,7 +233,7 @@ class ArgumentParser:
             help="Allow pruning to evaluate isolated tokens (disabled by default in isolated mode)",
         )
 
-        # New parameters for RetroactivePruner
+        # Parameters for RetroactivePruner
         parser.add_argument(
             "--use-relative-attention",
             action="store_true",
@@ -285,6 +291,15 @@ class ArgumentParser:
             type=float,
             default=10.0,
             help="Controls how sharp the sigmoid transition is",
+        )
+        parser.add_argument(
+            "--complete-pruning-mode",
+            type=str,
+            default="keep_token",
+            choices=["keep_token", "keep_unattended", "remove_position"],
+            help="How to handle pruned positions: 'keep_token' (default) - keep the best token, "
+            "'keep_unattended' - keep the best token but mark as unattended, "
+            "'remove_position' - completely remove the position from generation",
         )
 
         # Parse arguments

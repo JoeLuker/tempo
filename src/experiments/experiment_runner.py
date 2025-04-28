@@ -79,7 +79,7 @@ class ExperimentRunner:
         )
         no_preserve_isolated_tokens = args.get("no_preserve_isolated_tokens", False)
         use_mcts = args.get("use_mcts", False)
-        
+
         # Process dynamic thresholding parameters
         if args.get("dynamic_threshold", False):
             # Process bezier points if they were supplied as individual p1, p2 values
@@ -88,14 +88,18 @@ class ExperimentRunner:
                 bezier_p2 = args.get("bezier_p2", 0.8)
                 bezier_points = [bezier_p1, bezier_p2]
                 args["bezier_points"] = bezier_points
-                
+
             # Add ReLU configuration to results if enabled
             use_relu = args.get("use_relu", False)
             if use_relu:
                 relu_activation = args.get("relu_activation_point", 0.5)
-                print(f"Using dynamic thresholding with ReLU transition (activation point: {relu_activation})")
+                print(
+                    f"Using dynamic thresholding with ReLU transition (activation point: {relu_activation})"
+                )
             elif args.get("dynamic_threshold", False):
-                print(f"Using dynamic thresholding with Bezier curve (control points: {bezier_points[0]}, {bezier_points[1]})")
+                print(
+                    f"Using dynamic thresholding with Bezier curve (control points: {bezier_points[0]}, {bezier_points[1]})"
+                )
 
         # Convert flags for backward compatibility
         isolate_parallel_tokens = not allow_intraset_token_visibility
@@ -125,13 +129,35 @@ class ExperimentRunner:
         self.debug_mode = debug_mode
         if debug_mode:
             print("Debug mode enabled for experiment runner")
-            self.model.set_debug_mode(True)
+            
+            # Set debug mode in the model
+            if hasattr(self.model, 'set_debug_mode'):
+                self.model.set_debug_mode(True)
+                print("Model debug mode ENABLED")
+            
+            # Log debug mode to file
+            os.makedirs("logs", exist_ok=True)
+            with open("logs/experiment_debug.log", "a") as f:
+                f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Experiment started with debug mode ENABLED\n")
+                f.write(f"Prompt: {prompt[:100]}{'...' if len(prompt) > 100 else ''}\n")
+                f.write(f"Parameters: threshold={threshold}, max_tokens={max_tokens}\n")
+                f.write("----------------------------------------\n")
 
         # Create output directory if needed
         output_path = Path(output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
 
         setup_progress.update(1)  # First step complete
+
+        # Create a SINGLE token generator to be shared by all components
+        shared_token_generator = TokenGenerator(
+            model=self.model, tokenizer=self.tokenizer, device=self.device
+        )
+        
+        # Set debug mode on the shared token generator
+        if debug_mode:
+            shared_token_generator.set_debug_mode(True)
+            print("Shared TokenGenerator debug mode ENABLED")
 
         # Modify pruning setup
         pruner = None
@@ -140,12 +166,22 @@ class ExperimentRunner:
         if use_pruning:
             attention_threshold = args.get("attention_threshold", 0.01)
 
-            # Create regular pruner with coherence strategy
+            # Create regular pruner with strategy from args
             pruner = Pruner(
                 model=self.model,
                 tokenizer=self.tokenizer,
-                strategy="coherence",  # Use coherence strategy
-                coherence_threshold=0.1,  # Lower base threshold
+                strategy=args.get(
+                    "pruning_strategy", "coherence"
+                ),  # Use pruning_strategy from args
+                coherence_threshold=args.get(
+                    "coherence_threshold", 0.1
+                ),  # Use coherence_threshold from args
+                diversity_clusters=args.get(
+                    "diversity_clusters", 3
+                ),  # Use diversity_clusters from args
+                diversity_steps=args.get(
+                    "diversity_steps", 0
+                ),  # Use diversity_steps from args
                 device=self.device,
                 use_dynamic_threshold=args.get("dynamic_threshold", False),
                 max_steps=args.get("max_tokens", None),
@@ -162,83 +198,75 @@ class ExperimentRunner:
                 attention_threshold=attention_threshold,
                 device=self.device,
                 debug_mode=debug_mode,  # Use the debug_mode from args instead of hardcoding True
-                dynamic_threshold_manager=pruner.threshold_manager if args.get("dynamic_threshold", False) else 
+                dynamic_threshold_manager=(
+                    pruner.threshold_manager
+                    if args.get("dynamic_threshold", False)
+                    else
                     # Create a dummy threshold manager if dynamic threshold is not enabled
                     DynamicThresholdManager(
                         max_steps=args.get("max_tokens", 100),
                         base_threshold=attention_threshold,
                         final_threshold=attention_threshold,  # No change in threshold
                         bezier_points=[0.5, 0.5],  # Linear interpolation
-                        use_relu=False
-                    ),
+                        use_relu=False,
+                    )
+                ),
                 use_relative_attention=not args.get("no_relative_attention", False),
                 relative_threshold=args.get("relative_threshold", 0.5),
-                use_multi_scale_attention=not args.get("no_multi_scale_attention", False),
+                use_multi_scale_attention=not args.get(
+                    "no_multi_scale_attention", False
+                ),
                 num_layers_to_use=args.get("num_layers_to_use", None),
-                use_lci_dynamic_threshold=not args.get("no_lci_dynamic_threshold", False),
+                use_lci_dynamic_threshold=not args.get(
+                    "no_lci_dynamic_threshold", False
+                ),
                 use_sigmoid_threshold=not args.get("no_sigmoid_threshold", False),
                 sigmoid_steepness=args.get("sigmoid_steepness", 10.0),
+                complete_pruning_mode=args.get("complete_pruning_mode", "keep_token"),
             )
+
+            # Set the shared TokenGenerator instance on the pruners
+            if hasattr(pruner, "strategy") and hasattr(pruner.strategy, "set_token_generator"):
+                pruner.strategy.set_token_generator(shared_token_generator)
+                pruner.strategy.set_debug_mode(debug_mode)
+                print("Set shared TokenGenerator on Pruner strategy")
+
+            if retroactive_pruner is not None and hasattr(retroactive_pruner, "set_token_generator"):
+                retroactive_pruner.set_token_generator(shared_token_generator)
+                retroactive_pruner.set_debug_mode(debug_mode)
+                print("Set shared TokenGenerator on RetroactivePruner")
 
             print(
                 f"Using coherence-based pruning with retroactive pruning (attention threshold: {attention_threshold})"
-                + (", dynamic threshold enabled" if args.get("dynamic_threshold", False) else "")
+                + (
+                    ", dynamic threshold enabled"
+                    if args.get("dynamic_threshold", False)
+                    else ""
+                )
             )
 
         setup_progress.update(1)  # Pruning setup complete
 
-        # Create token generator for MCTS (if needed)
-        token_generator = None
-        if use_mcts or use_pruning:  # Create token generator for both MCTS and pruning
-            token_generator = TokenGenerator(
-                model=self.model, tokenizer=self.tokenizer, device=self.device
-            )
-
-            # Set debug mode after creation if needed
-            if debug_mode:
-                token_generator.set_debug_mode(True)
-
-            # Initialize token generator with the prompt to ensure it has cached attention
-            if use_pruning and pruner is not None:
-                # Get input tensors from the prompt
-                input_ids, attention_mask = token_generator.prepare_input_from_prompt(prompt)
-                
-                # Run the model once to get cached attention
-                with torch.inference_mode():
-                    outputs = self.model(
-                        input_ids=input_ids,
-                        attention_mask=attention_mask,
-                        output_attentions=True,
-                    )
-                    if hasattr(outputs, "attentions") and outputs.attentions:
-                        token_generator.cached_attention = outputs.attentions
-                        token_generator.cached_attention_seq_len = [input_ids.size(1)]
-
-                # Set token generator for pruning
-                pruner.strategy.set_token_generator(token_generator)
-
         # Create the appropriate generator based on the mode
         if use_mcts:
-            # Get MCTS parameters
-            mcts_simulations = args.get("mcts_simulations", 10)
+            # Import specialized components for MCTS
             mcts_c_puct = args.get("mcts_c_puct", 1.0)
-            mcts_depth = args.get("mcts_depth", 5)
-
-            print(
-                f"Using Monte Carlo Tree Search with {mcts_simulations} simulations per step"
+            mcts_simulations = args.get("mcts_simulations", 10)
+            mcts_attention_threshold = args.get(
+                "mcts_attention_threshold", attention_threshold
             )
 
-            # Import the MCTS generator
             from src.search import MCTSGenerator
 
+            # Use the standard MCTS generator with shared token generator
             generator = MCTSGenerator(
                 model=self.model,
                 tokenizer=self.tokenizer,
-                token_generator=token_generator,
+                token_generator=shared_token_generator,
                 retroactive_pruner=retroactive_pruner,
                 c_puct=mcts_c_puct,
                 num_simulations=mcts_simulations,
-                attention_threshold=args.get("attention_threshold", 0.01),
+                attention_threshold=mcts_attention_threshold,
                 device=self.device,
                 debug_mode=debug_mode,
             )
@@ -249,14 +277,11 @@ class ExperimentRunner:
                 tokenizer=self.tokenizer,
                 pruner=pruner,
                 device=self.device,
-                has_custom_attention=True,  # Assuming model supports custom attention
+                has_custom_attention=True,
                 use_custom_rope=use_custom_rope,
                 debug_mode=debug_mode,
+                token_generator=shared_token_generator,  # Pass the shared instance
             )
-
-            # Set token generator for pruning if available
-            if token_generator is not None and pruner is not None:
-                pruner.strategy.set_token_generator(token_generator)
 
         setup_progress.update(1)  # Generator created
 
@@ -271,13 +296,40 @@ class ExperimentRunner:
                 and hasattr(generator, "rope_modifier")
                 and generator.rope_modifier is not None
             ):
+                # ALWAYS set debug mode based on the passed debug_mode parameter, not conditionally
+                generator.rope_modifier.set_debug_mode(debug_mode)
                 if debug_mode:
-                    generator.rope_modifier.set_debug_mode(True)
-                    print("RoPE modifier debug mode enabled")
+                    print("RoPE modifier debug mode ENABLED")
+                else:
+                    print("RoPE modifier debug mode disabled")
 
                 if disable_kv_cache_consistency:
                     generator.rope_modifier.enable_kv_cache_consistency(False)
                     print("RoPE modifier KV cache consistency disabled")
+
+            # ALWAYS set debug mode for AttentionManager
+            if hasattr(generator, "attention_manager"):
+                generator.attention_manager.set_debug_mode(debug_mode)
+                if debug_mode:
+                    print("AttentionManager debug mode ENABLED")
+                else:
+                    print("AttentionManager debug mode disabled")
+
+            # ALWAYS set debug mode for TokenSelector
+            if hasattr(generator, "token_selector"):
+                generator.token_selector.set_debug_mode(debug_mode)
+                if debug_mode:
+                    print("TokenSelector debug mode ENABLED")
+                else:
+                    print("TokenSelector debug mode disabled")
+
+            # ALWAYS set debug mode for TokenGenerator
+            if hasattr(generator, "token_generator"):
+                generator.token_generator.set_debug_mode(debug_mode)
+                if debug_mode:
+                    print("TokenGenerator debug mode ENABLED")
+                else:
+                    print("TokenGenerator debug mode disabled")
 
             if disable_kv_cache:
                 print("KV caching disabled for more consistent attention patterns")
@@ -320,7 +372,11 @@ class ExperimentRunner:
         if use_mcts:
             # Generate with MCTS generator
             generated_text = generator.generate(
-                prompt=prompt, max_tokens=max_tokens, temperature=1.0, top_p=0.9
+                prompt=prompt,
+                max_tokens=max_tokens,
+                temperature=1.0,
+                top_p=0.9,
+                debug_mode=debug_mode,
             )
 
             # Create results structure similar to ParallelGenerator
@@ -363,12 +419,14 @@ class ExperimentRunner:
             if args.get("dynamic_threshold", False):
                 results["dynamic_threshold"] = True
                 results["bezier_points"] = bezier_points
-                
+
                 # Add ReLU parameters if ReLU transition is enabled
                 if args.get("use_relu", False):
                     results["use_relu"] = True
-                    results["relu_activation_point"] = args.get("relu_activation_point", 0.5)
-                    
+                    results["relu_activation_point"] = args.get(
+                        "relu_activation_point", 0.5
+                    )
+
             if args.get("pruning_strategy", "") == "hybrid":
                 results["diversity_steps"] = args.get("diversity_steps", 0)
 
@@ -385,7 +443,7 @@ class ExperimentRunner:
             results["use_mcts"] = True
             results["mcts_simulations"] = mcts_simulations
             results["mcts_c_puct"] = mcts_c_puct
-            results["mcts_depth"] = mcts_depth
+            results["mcts_attention_threshold"] = mcts_attention_threshold
 
         # Add model wrapper information if debug mode is enabled
         if debug_mode:
@@ -435,7 +493,7 @@ class ExperimentRunner:
             if use_mcts:
                 serializable_results["mcts_simulations"] = mcts_simulations
                 serializable_results["mcts_c_puct"] = mcts_c_puct
-                serializable_results["mcts_depth"] = mcts_depth
+                serializable_results["mcts_attention_threshold"] = mcts_attention_threshold
 
             # Add pruning params if available
             if "pruning_strategy" in results:
@@ -454,7 +512,9 @@ class ExperimentRunner:
             if "use_relu" in results:
                 serializable_results["use_relu"] = results["use_relu"]
             if "relu_activation_point" in results:
-                serializable_results["relu_activation_point"] = results["relu_activation_point"]
+                serializable_results["relu_activation_point"] = results[
+                    "relu_activation_point"
+                ]
 
             json.dump(serializable_results, f, indent=2)
 

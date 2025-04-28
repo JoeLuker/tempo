@@ -352,6 +352,7 @@ class MCTSGenerator:
         max_tokens: int = 100,
         temperature: float = 1.0,
         top_p: float = 0.9,
+        debug_mode: Optional[bool] = None,
     ) -> str:
         """
         Generate text using MCTS.
@@ -361,10 +362,15 @@ class MCTSGenerator:
             max_tokens: Maximum number of tokens to generate
             temperature: Sampling temperature
             top_p: Nucleus sampling threshold
+            debug_mode: Whether to show debug information (None means use instance setting)
 
         Returns:
             Generated text
         """
+        # Set debug mode only if explicitly passed
+        if debug_mode is not None:
+            self.debug_mode = debug_mode
+
         # Tokenize the prompt
         input_ids = self.tokenizer.encode(prompt, return_tensors="pt").to(self.device)
         attention_mask = torch.ones_like(input_ids)

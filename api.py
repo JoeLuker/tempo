@@ -8,11 +8,10 @@ import logging
 from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig
 from src.modeling.model_wrapper import TEMPOModelWrapper
 from src.generation.parallel_generator import ParallelGenerator
-from src.pruning.diversity_pruner import DiversityPruner
-from src.pruning.retroactive_pruner import RetroactivePruner
 from src.visualization.token_visualizer import TokenVisualizer
 from src.visualization.position_visualizer import PositionVisualizer
 import traceback
+import uuid
 
 # Configure logging
 logging.basicConfig(
@@ -108,35 +107,14 @@ class ModelSingleton:
             assert hasattr(cls.model, "forward"), "Model missing forward method"
             assert hasattr(cls.model, "config"), "Model missing config attribute"
 
-            # Create diversity pruner
-            diversity_pruner = DiversityPruner(
-                model=wrapped_model,
-                tokenizer=cls.tokenizer,
-                diversity_clusters=3,
-                device=device,
-                debug_mode=False,
-            )
-
-            # Create retroactive pruner
-            retroactive_pruner = RetroactivePruner(
-                model=wrapped_model,
-                tokenizer=cls.tokenizer,
-                attention_threshold=0.01,
-                device=device,
-                debug_mode=False,
-            )
-
-            # Create ParallelGenerator
+            # Create ParallelGenerator without a default pruner
             cls.generator = ParallelGenerator(
                 model=wrapped_model,
                 tokenizer=cls.tokenizer,
-                pruner=diversity_pruner,  # Use diversity pruner as the default
+                pruner=None,  # No default pruner
                 device=device,
                 has_custom_attention=True,
             )
-
-            # Make retroactive pruner available to the generator
-            cls.retroactive_pruner = retroactive_pruner
 
             # INVARIANT: Generator must be properly initialized
             assert hasattr(
@@ -233,6 +211,10 @@ class GenerationRequest(BaseModel):
         default=True,
         description="Use retroactive pruning to reduce token sets for more coherent generation",
     )
+    pruning_strategy: str = Field(
+        default="coherence",
+        description="Pruning strategy: coherence, diversity, or hybrid",
+    )
     coherence_threshold: float = Field(
         default=0.3,
         ge=0.0,
@@ -258,11 +240,80 @@ class GenerationRequest(BaseModel):
         default=True,
         description="Use dynamic thresholding that starts with diverse completions and gradually increases coherence",
     )
+    final_threshold: float = Field(
+        default=1.0,
+        ge=0.0,
+        le=1.0,
+        description="Final threshold value for dynamic thresholding (default: 1.0)",
+    )
+    use_relu: bool = Field(
+        default=False,
+        description="Use ReLU transition instead of Bezier curve for dynamic threshold",
+    )
+    relu_activation_point: float = Field(
+        default=0.5,
+        ge=0.0,
+        le=1.0,
+        description="Point at which ReLU transition begins (0-1)",
+    )
     attention_threshold: float = Field(
         default=0.01,
         ge=0.0,
         le=1.0,
         description="Attention threshold for retroactive pruning (lower means more tokens kept)",
+    )
+
+    # Parallel tokens options
+    allow_intraset_token_visibility: bool = Field(
+        default=False,
+        description="Allow tokens within the same parallel set to see each other during generation",
+    )
+    no_preserve_isolated_tokens: bool = Field(
+        default=False,
+        description="Allow pruning to evaluate isolated tokens even when tokens are isolated",
+    )
+
+    # Advanced retroactive pruning options
+    no_relative_attention: bool = Field(
+        default=False,
+        description="Disable relative attention thresholds",
+    )
+    relative_threshold: float = Field(
+        default=0.5,
+        ge=0.0,
+        le=1.0,
+        description="Threshold for relative attention-based pruning (0-1)",
+    )
+    no_multi_scale_attention: bool = Field(
+        default=False,
+        description="Disable multi-scale attention integration",
+    )
+    num_layers_to_use: Optional[int] = Field(
+        default=None,
+        description="Number of last layers to use for attention (None means use all layers)",
+    )
+    no_lci_dynamic_threshold: bool = Field(
+        default=False,
+        description="Disable LCI-based dynamic thresholding",
+    )
+    no_sigmoid_threshold: bool = Field(
+        default=False,
+        description="Disable sigmoid-based decision boundary",
+    )
+    sigmoid_steepness: float = Field(
+        default=10.0,
+        ge=1.0,
+        description="Controls how sharp the sigmoid transition is",
+    )
+    complete_pruning_mode: str = Field(
+        default="keep_token",
+        description="How to handle pruned positions: 'keep_token' (keep best token), 'keep_unattended' (mark as unattended), 'remove_position' (remove position)",
+    )
+
+    # Advanced caching options
+    disable_kv_cache_consistency: bool = Field(
+        default=False,
+        description="Disable KV cache consistency checks for RoPE modification",
     )
 
     # Validator for prompt
@@ -279,6 +330,26 @@ class GenerationRequest(BaseModel):
             raise ValueError("Bezier points must contain exactly 2 values")
         if not all(0 <= p <= 1 for p in v):
             raise ValueError("Bezier points must be between 0 and 1")
+        return v
+
+    # Validator for pruning strategy
+    @field_validator("pruning_strategy")
+    def validate_pruning_strategy(cls, v):
+        valid_strategies = ["coherence", "diversity", "hybrid"]
+        if v not in valid_strategies:
+            raise ValueError(
+                f"Pruning strategy must be one of: {', '.join(valid_strategies)}"
+            )
+        return v
+
+    # Validator for complete pruning mode
+    @field_validator("complete_pruning_mode")
+    def validate_complete_pruning_mode(cls, v):
+        valid_modes = ["keep_token", "keep_unattended", "remove_position"]
+        if v not in valid_modes:
+            raise ValueError(
+                f"Complete pruning mode must be one of: {', '.join(valid_modes)}"
+            )
         return v
 
 
@@ -301,7 +372,23 @@ class PruningInfo(BaseModel):
     diversity_clusters: int
     use_dynamic_threshold: bool
     diversity_steps: int
+    final_threshold: float = 1.0
+    use_relu: bool = False
+    relu_activation_point: float = 0.5
+    bezier_points: List[float] = Field(default=[0.2, 0.8])
     pruning_time: float
+
+
+class RetroactivePruningInfo(BaseModel):
+    attention_threshold: float
+    use_relative_attention: bool = True
+    relative_threshold: float = 0.5
+    use_multi_scale_attention: bool = True
+    num_layers_to_use: Optional[int] = None
+    use_lci_dynamic_threshold: bool = True
+    use_sigmoid_threshold: bool = True
+    sigmoid_steepness: float = 10.0
+    complete_pruning_mode: str = "keep_token"
 
 
 class TimingInfo(BaseModel):
@@ -331,6 +418,7 @@ class GenerationResponse(BaseModel):
 
     # Pruning information
     pruning: Optional[PruningInfo] = None
+    retroactive_pruning: Optional[RetroactivePruningInfo] = None
 
     # Model information
     model_info: ModelInfo
@@ -408,7 +496,7 @@ async def generate_text(
     """
     # Extract components
     model, tokenizer, generator = components
-    
+
     # Validate that components were properly initialized
     assert model is not None, "Model not initialized"
     assert tokenizer is not None, "Tokenizer not initialized"
@@ -418,7 +506,7 @@ async def generate_text(
     prompt = request.prompt
     max_tokens = request.max_tokens
     threshold = request.threshold
-    
+
     # Validate core parameters
     assert prompt, "Prompt cannot be empty"
     assert max_tokens > 0, "max_tokens must be positive"
@@ -426,28 +514,104 @@ async def generate_text(
 
     try:
         # Log the request
-        logger.info(f"Received generation request: prompt={prompt[:50]}..., max_tokens={max_tokens}")
+        logger.info(
+            f"Received generation request: prompt={prompt[:50]}..., max_tokens={max_tokens}"
+        )
 
         # Prepare timer
         start_time = time.time()
 
-        # Determine which pruner to use based on request
-        if request.use_retroactive_pruning:
-            # Use retroactive pruning
-            assert hasattr(ModelSingleton, "retroactive_pruner"), "Retroactive pruner not initialized"
-            retroactive_pruner = ModelSingleton.retroactive_pruner
-            
-            # Configure retroactive pruner
-            if hasattr(retroactive_pruner, "set_attention_threshold"):
-                retroactive_pruner.set_attention_threshold(request.attention_threshold)
-        else:
-            retroactive_pruner = None
+        # Create per-request pruner instances
+        pruner = None
+        retroactive_pruner = None
+
+        # Configure pruner if needed
+        if request.use_pruning:
+            # Import the pruner classes
+            from src.pruning.pruner import Pruner
+
+            # Create a new pruner with the requested strategy for this request
+            pruner = Pruner(
+                model=model,
+                tokenizer=tokenizer,
+                strategy=request.pruning_strategy,
+                coherence_threshold=request.coherence_threshold,
+                diversity_clusters=request.diversity_clusters,
+                diversity_steps=request.diversity_steps,
+                device=generator.device,
+                use_dynamic_threshold=request.dynamic_threshold,
+                max_steps=max_tokens,
+                bezier_points=request.bezier_points,
+                final_threshold=request.final_threshold,
+                use_relu=request.use_relu,
+                relu_activation_point=request.relu_activation_point,
+                debug_mode=False,  # Set to True for debugging
+            )
+
+            logger.info(
+                f"Created per-request pruner with strategy: {request.pruning_strategy}"
+            )
+
+            # Create per-request retroactive pruner if needed
+            if request.use_retroactive_pruning:
+                from src.pruning.retroactive_pruner import RetroactivePruner
+
+                # Create a new retroactive pruner for this request
+                retroactive_pruner = RetroactivePruner(
+                    model=model,
+                    tokenizer=tokenizer,
+                    attention_threshold=request.attention_threshold,
+                    device=generator.device,
+                    debug_mode=False,
+                    dynamic_threshold_manager=(
+                        pruner.threshold_manager
+                        if hasattr(pruner, "threshold_manager")
+                        else None
+                    ),
+                )
+
+                # Configure advanced retroactive pruning parameters
+                retroactive_pruner.use_relative_attention = (
+                    not request.no_relative_attention
+                )
+                retroactive_pruner.relative_threshold = request.relative_threshold
+                retroactive_pruner.use_multi_scale_attention = (
+                    not request.no_multi_scale_attention
+                )
+                retroactive_pruner.num_layers_to_use = request.num_layers_to_use
+                retroactive_pruner.use_lci_dynamic_threshold = (
+                    not request.no_lci_dynamic_threshold
+                )
+                retroactive_pruner.use_sigmoid_threshold = (
+                    not request.no_sigmoid_threshold
+                )
+                retroactive_pruner.sigmoid_steepness = request.sigmoid_steepness
+                retroactive_pruner.complete_pruning_mode = request.complete_pruning_mode
+
+                logger.info(
+                    f"Created per-request retroactive pruner with attention threshold: {request.attention_threshold}"
+                )
+
+        # Configure RoPE modifier if needed
+        if hasattr(generator, "rope_modifier") and generator.rope_modifier is not None:
+            if request.disable_kv_cache_consistency:
+                if hasattr(generator.rope_modifier, "enable_kv_cache_consistency"):
+                    generator.rope_modifier.enable_kv_cache_consistency(False)
+                    logger.info("Disabled KV cache consistency for RoPE modifier")
 
         # Check if MCTS should be used
         if request.use_mcts:
             # MCTS not implemented in API yet
-            logger.warning("MCTS requested but not yet supported in API, falling back to standard generation")
-        
+            logger.warning(
+                "MCTS requested but not yet supported in API, falling back to standard generation"
+            )
+
+        # Prepare system content for thinking mode
+        system_content = request.system_content
+        if request.enable_thinking and not system_content:
+            system_content = "Enable deep thinking subroutine."
+            logger.info("Enabled thinking mode with system content")
+
         # Verify generator has the correct methods
         assert hasattr(generator, "generate"), "Generator missing generate method"
 
@@ -460,15 +624,25 @@ async def generate_text(
             use_pruning=request.use_pruning,
             min_steps=request.min_steps,
             show_token_ids=request.show_token_ids,
-            use_custom_rope=request.use_custom_rope,
             disable_kv_cache=request.disable_kv_cache,
-            system_content=request.system_content,
-            retroactive_pruner=retroactive_pruner,
+            system_content=system_content,
+            pruner=pruner,  # Pass the per-request pruner
+            retroactive_pruner=retroactive_pruner,  # Pass the per-request retroactive pruner
+            isolate_parallel_tokens=not request.allow_intraset_token_visibility,
+            preserve_all_isolated_tokens=(
+                not request.no_preserve_isolated_tokens
+                if not request.allow_intraset_token_visibility
+                else None
+            ),
         )
-        
+
         # Verify generation results
-        assert "generated_text" in generation_result, "Generation result missing 'generated_text'"
-        assert "raw_generated_text" in generation_result, "Generation result missing 'raw_generated_text'"
+        assert (
+            "generated_text" in generation_result
+        ), "Generation result missing 'generated_text'"
+        assert (
+            "raw_generated_text" in generation_result
+        ), "Generation result missing 'raw_generated_text'"
 
         # Calculate elapsed time
         elapsed_time = time.time() - start_time
@@ -494,7 +668,7 @@ async def generate_text(
             min_steps=request.min_steps,
             prompt=prompt,
             had_repetition_loop=generation_result.get("had_repetition_loop", False),
-            system_content=request.system_content,
+            system_content=system_content,
             token_sets=[],
         )
 
@@ -503,17 +677,24 @@ async def generate_text(
             # Validate token sets format
             token_sets = generation_result["token_sets"]
             assert isinstance(token_sets, list), "token_sets must be a list"
-            
+
             # Convert token sets to required format
             response.token_sets = [
-                (position, [(int(tid), float(prob)) for tid, prob in token_ids_probs[0]], 
-                 [(int(tid), float(prob)) for tid, prob in token_ids_probs[1]])
+                (
+                    position,
+                    [(int(tid), float(prob)) for tid, prob in token_ids_probs[0]],
+                    [(int(tid), float(prob)) for tid, prob in token_ids_probs[1]],
+                )
                 for position, token_ids_probs, _ in token_sets
             ]
 
             # Build steps for the response
             steps = []
-            for position, (orig_tokens, orig_probs), (pruned_tokens, pruned_probs) in token_sets:
+            for (
+                position,
+                (orig_tokens, orig_probs),
+                (pruned_tokens, pruned_probs),
+            ) in token_sets:
                 # Create token info objects
                 parallel_tokens = [
                     TokenInfo(
@@ -523,7 +704,7 @@ async def generate_text(
                     )
                     for tid, prob in zip(orig_tokens, orig_probs)
                 ]
-                
+
                 pruned_tokens_info = [
                     TokenInfo(
                         token_text=tokenizer.decode([int(tid)]),
@@ -532,7 +713,7 @@ async def generate_text(
                     )
                     for tid, prob in zip(pruned_tokens, pruned_probs)
                 ]
-                
+
                 # Create step info
                 step = StepInfo(
                     position=position,
@@ -540,25 +721,37 @@ async def generate_text(
                     pruned_tokens=pruned_tokens_info,
                 )
                 steps.append(step)
-            
+
             response.steps = steps
 
         # Add pruning information if available
         if request.use_pruning:
-            strategy_name = "coherence"
-            if request.use_diversity_pruning:
-                strategy_name = "diversity" 
-            if request.use_diversity_pruning and request.use_retroactive_pruning:
-                strategy_name = "hybrid"
-                
             response.pruning = PruningInfo(
-                strategy=strategy_name,
+                strategy=request.pruning_strategy,
                 coherence_threshold=request.coherence_threshold,
                 diversity_clusters=request.diversity_clusters,
                 use_dynamic_threshold=request.dynamic_threshold,
                 diversity_steps=request.diversity_steps,
+                final_threshold=request.final_threshold,
+                use_relu=request.use_relu,
+                relu_activation_point=request.relu_activation_point,
+                bezier_points=request.bezier_points,
                 pruning_time=generation_result.get("pruning_time", 0.0),
             )
+
+            # Add retroactive pruning information if available
+            if request.use_retroactive_pruning:
+                response.retroactive_pruning = RetroactivePruningInfo(
+                    attention_threshold=request.attention_threshold,
+                    use_relative_attention=not request.no_relative_attention,
+                    relative_threshold=request.relative_threshold,
+                    use_multi_scale_attention=not request.no_multi_scale_attention,
+                    num_layers_to_use=request.num_layers_to_use,
+                    use_lci_dynamic_threshold=not request.no_lci_dynamic_threshold,
+                    use_sigmoid_threshold=not request.no_sigmoid_threshold,
+                    sigmoid_steepness=request.sigmoid_steepness,
+                    complete_pruning_mode=request.complete_pruning_mode,
+                )
 
         # Add position to tokens mapping if available
         if "position_to_tokens" in generation_result:
@@ -570,7 +763,9 @@ async def generate_text(
 
         # Add original parallel positions if available
         if "original_parallel_positions" in generation_result:
-            response.original_parallel_positions = list(generation_result["original_parallel_positions"])
+            response.original_parallel_positions = list(
+                generation_result["original_parallel_positions"]
+            )
 
         # Validate the response is complete
         assert response.generated_text, "Generated text is missing in response"

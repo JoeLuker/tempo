@@ -57,21 +57,28 @@ class RoPEModifier:
 
         # First check if this is a Qwen model, which has a different RoPE implementation
         is_qwen = "qwen" in model_type
-        
+
         # Try to identify all modules related to RoPE
         print("\nDEBUG: Searching for RoPE-related modules...")
         rope_related_modules = {}
         for name, module in self.model.named_modules():
-            if any(rope_name in str(type(module).__name__).lower() or rope_name in name.lower() 
-                   for rope_name in ["ropeembedding", "rotary", "rope"]):
+            if any(
+                rope_name in str(type(module).__name__).lower()
+                or rope_name in name.lower()
+                for rope_name in ["ropeembedding", "rotary", "rope"]
+            ):
                 rope_related_modules[name] = str(type(module).__name__)
-        
+
         if rope_related_modules:
-            print(f"DEBUG: Found {len(rope_related_modules)} potential RoPE-related modules:")
+            print(
+                f"DEBUG: Found {len(rope_related_modules)} potential RoPE-related modules:"
+            )
             for name, module_type in rope_related_modules.items():
                 print(f"  - {name} ({module_type})")
         else:
-            print("DEBUG: No RoPE-related modules found by name or type. This may indicate an unsupported model architecture.")
+            print(
+                "DEBUG: No RoPE-related modules found by name or type. This may indicate an unsupported model architecture."
+            )
 
         if is_qwen:
             # For Qwen models, look for specific RoPE implementations
@@ -122,8 +129,10 @@ class RoPEModifier:
         # Then look for attention modules that might apply RoPE internally
         if mistral_specific_patches == 0 and qwen_specific_patches == 0:
             # If we didn't find any specific modules, fall back to general approach
-            print("\nDEBUG: No specific modules found, falling back to general approach...")
-            
+            print(
+                "\nDEBUG: No specific modules found, falling back to general approach..."
+            )
+
             # First check for modules with rotary_emb attribute
             print("DEBUG: Looking for modules with rotary_emb attribute...")
             for name, module in self.model.named_modules():
@@ -170,19 +179,33 @@ class RoPEModifier:
             print("DEBUG: Dumping model structure to help diagnose...")
             model_structure = {}
             for name, module in self.model.named_modules():
-                module_attrs = [attr for attr in dir(module) if not attr.startswith('__')]
+                module_attrs = [
+                    attr for attr in dir(module) if not attr.startswith("__")
+                ]
                 model_structure[name] = {
                     "type": str(type(module).__name__),
                     "has_forward": hasattr(module, "forward"),
-                    "rope_related_attributes": [attr for attr in module_attrs if "rotary" in attr.lower() or "rope" in attr.lower()]
+                    "rope_related_attributes": [
+                        attr
+                        for attr in module_attrs
+                        if "rotary" in attr.lower() or "rope" in attr.lower()
+                    ],
                 }
-            
+
             # Print a summary of the model structure
             print("\nDEBUG: Model module summary:")
-            for name, info in list(model_structure.items())[:20]:  # Show first 20 to avoid overwhelming output
-                if info["rope_related_attributes"] or "rotary" in name.lower() or "rope" in name.lower():
-                    print(f"  {name} ({info['type']}): has_forward={info['has_forward']}, rope_attrs={info['rope_related_attributes']}")
-            
+            for name, info in list(model_structure.items())[
+                :20
+            ]:  # Show first 20 to avoid overwhelming output
+                if (
+                    info["rope_related_attributes"]
+                    or "rotary" in name.lower()
+                    or "rope" in name.lower()
+                ):
+                    print(
+                        f"  {name} ({info['type']}): has_forward={info['has_forward']}, rope_attrs={info['rope_related_attributes']}"
+                    )
+
             return False  # Return False to indicate failure
 
         print(f"RoPE modifier installed: patched {patched_count} modules")
@@ -325,258 +348,97 @@ class RoPEModifier:
 
         return custom_forward
 
-    def register_parallel_positions(self, input_position_mapping: dict):
+    def register_parallel_positions(self, position_mapping: Dict[int, int]):
         """
         Register position mapping for parallel tokens.
-        Ensures all tokens in a parallel set map to the same position.
+        Maps physical token positions to their logical positions.
 
         Args:
-            input_position_mapping: Dictionary mapping token positions to their effective positions
+            position_mapping: Dictionary mapping physical token positions to logical positions
         """
         if not self.is_installed:
             print("Warning: RoPE modifier not installed yet. Call install() first.")
-
+            return
+        
+        if self.debug_mode:
+            print(f"Registering parallel position mapping: {position_mapping}")
+        
         # Reset the sequence_position_map when updating position_map to avoid stale mappings
         self.sequence_position_map = {}
-
-        # Save a copy of the input mapping
-        new_mapping = input_position_mapping.copy()
-
+        
+        # Update the main position map
+        self.position_map.update(position_mapping)
+        
+        # Clear the embedding cache to force regeneration
+        self.position_embedding_cache = {}
+        
         # Find all parallel token sets by grouping by target position
         parallel_sets = {}
-        for pos, target_pos in new_mapping.items():
-            if target_pos not in parallel_sets:
-                parallel_sets[target_pos] = []
-            parallel_sets[target_pos].append(pos)
-
-        # Store parallel token sets for debugging and consistency checks
-        self.parallel_token_sets = parallel_sets
-
-        # Invariant: Parallel position mapping must be valid
-        # Each parallel set should have at least one position
-        for pos, positions in parallel_sets.items():
-            if len(positions) == 0:
-                raise ValueError(
-                    f"Invariant violation: Parallel set at position {pos} contains no positions"
-                )
-
-        # Invariant: Position mapping preserves TEMPO's core concept
-        # Parallel tokens should map to the same position
-        # In particular, consecutive positions in a parallel set should map to the same target
-        for pos, positions in parallel_sets.items():
-            if len(positions) > 1:
-                target_pos = pos
-                # Check if consecutive positions in the parallel set map to the same target
-                for i in range(len(positions) - 1):
-                    if positions[i] + 1 != positions[i + 1]:
-                        # Not consecutive - this might be deliberate but worth validating
-                        if self.debug_mode:
-                            print(
-                                f"Note: Non-consecutive positions in parallel set at {pos}: {positions}"
-                            )
-
-                    # Verify both positions map to the same target in new_mapping
-                    curr_pos, next_pos = positions[i], positions[i + 1]
-                    if curr_pos in new_mapping and next_pos in new_mapping:
-                        if new_mapping[curr_pos] != new_mapping[next_pos]:
-                            raise ValueError(
-                                f"Invariant violation: Positions in same parallel set map to different targets: {curr_pos}->{new_mapping[curr_pos]}, {next_pos}->{new_mapping[next_pos]}"
-                            )
-
-        # Invariant: Position mapping preserves TEMPO's core concept
-        # CRITICAL INVARIANT: Each parallel set MUST map to exactly ONE target position
-        for pos, positions in parallel_sets.items():
-            if len(positions) > 1:
-                # Check that ALL positions in the set map to the SAME target
-                target_positions = set()
-                for position in positions:
-                    if position in new_mapping:
-                        target_positions.add(new_mapping[position])
-
-                # There must be exactly ONE target position
-                if len(target_positions) != 1:
-                    raise ValueError(
-                        f"Invariant violation: Parallel set at position {pos} maps to multiple targets: {target_positions}. Each set must map to exactly ONE position."
-                    )
-
-                # The target position should match the parallel set's key
-                if list(target_positions)[0] != pos and self.debug_mode:
-                    print(
-                        f"Warning: Parallel set at position {pos} maps to different target {list(target_positions)[0]}"
-                    )
-
-        # Update the position map
-        self.position_map = new_mapping
-
-        # Clear position embedding cache when mapping changes
-        self.position_embedding_cache = {}
-
+        for physical_pos, logical_pos in position_mapping.items():
+            if logical_pos not in parallel_sets:
+                parallel_sets[logical_pos] = []
+            parallel_sets[logical_pos].append(physical_pos)
+        
+        # Update parallel token sets
+        for logical_pos, physical_positions in parallel_sets.items():
+            self.parallel_token_sets[logical_pos] = physical_positions
+        
+        # Sanity checks in debug mode
         if self.debug_mode:
-            print(
-                f"Registered {len(input_position_mapping)} parallel position mappings"
-            )
-            print(f"Identified {len(parallel_sets)} parallel token sets")
-            for target_pos, positions in parallel_sets.items():
-                if len(positions) > 1:
-                    print(f"  Set at position {target_pos}: {positions}")
-
+            for logical_pos, physical_positions in parallel_sets.items():
+                if len(physical_positions) > 1:
+                    print(f"Set up parallel tokens at logical position {logical_pos} with {len(physical_positions)} physical positions: {physical_positions}")
+                
     def apply_position_mapping(self, position_ids: torch.Tensor) -> torch.Tensor:
         """
-        Apply position mapping to position IDs tensor.
-        This modifies the position IDs to create the parallelism effect
-        by mapping multiple positions to the same effective position.
+        Apply position mapping to the position IDs tensor.
+        For positions that are mapped, replace the position ID with the mapped ID.
 
         Args:
-            position_ids: Original position IDs tensor
+            position_ids: Position IDs tensor [batch_size, seq_len]
 
         Returns:
-            torch.Tensor: Modified position IDs with parallel tokens mapped to same positions
+            torch.Tensor: Modified position IDs
         """
-        # INVARIANT: Input position_ids must be a valid tensor
-        if not isinstance(position_ids, torch.Tensor):
-            raise ValueError("Invariant violation: position_ids must be a torch.Tensor")
-
-        if position_ids.dim() < 2:
-            raise ValueError(
-                f"Invariant violation: position_ids must have at least 2 dimensions, got {position_ids.dim()}"
-            )
-
-        # If no position mapping is defined, return the original tensor
-        if not self.position_map:
+        # Quick return if no position mapping is registered
+        if not self.position_map and not self.parallel_token_sets:
             return position_ids
 
-        # Create a deep copy to avoid modifying the original tensor
+        # Copy the input tensor to avoid modifying the original
         mapped_position_ids = position_ids.clone()
 
-        # Cache key for this tensor to avoid redundant computation
-        cache_key = (
-            position_ids.shape,
-            position_ids.sum().item(),
-            len(self.position_map),
-        )
+        # Create a unique cache key for this position_ids tensor
+        # This helps avoid redundant computation for repeated forward passes
+        cache_key = f"{position_ids.shape}_{position_ids.sum().item()}"
         if cache_key in self.position_embedding_cache:
             return self.position_embedding_cache[cache_key]
 
-        # INVARIANT: Position map must contain valid positions and targets
-        valid_positions = True
-        for pos, mapped_pos in self.position_map.items():
-            if not isinstance(pos, int) or pos < 0:
-                valid_positions = False
-                if self.debug_mode:
-                    print(
-                        f"Invariant violation: Position {pos} must be a non-negative integer"
-                    )
-            if not isinstance(mapped_pos, int) or mapped_pos < 0:
-                valid_positions = False
-                if self.debug_mode:
-                    print(
-                        f"Invariant violation: Mapped position {mapped_pos} must be a non-negative integer"
-                    )
-
-        if not valid_positions:
-            raise ValueError(
-                "Invariant violation: Position map contains invalid positions"
-            )
-
-        # Partially vectorized implementation of position mapping
-        # First, handle sequence position mappings
-        seq_idx_mappings = {
-            seq_idx: mapped_pos
-            for seq_idx, mapped_pos in self.position_map.items()
-            if isinstance(seq_idx, int)
-        }
-
-        # Track which positions were actually modified
+        # Apply simple position remapping first
         modified_positions = set()
+        for orig_pos, mapped_pos in self.position_map.items():
+            if orig_pos < position_ids.size(1):
+                mapped_position_ids[:, orig_pos] = mapped_pos
+                modified_positions.add(orig_pos)
 
-        if seq_idx_mappings:
-            # Create a mask for positions that need updating based on sequence index
-            for batch_idx in range(position_ids.size(0)):
-                # Vectorized approach for sequence indices that can be processed in parallel
-                seq_idxs = torch.tensor(
-                    list(seq_idx_mappings.keys()), device=position_ids.device
-                )
-                mapped_values = torch.tensor(
-                    list(seq_idx_mappings.values()), device=position_ids.device
-                )
-
-                # Only process indices that are within the sequence length
-                valid_idxs = seq_idxs < position_ids.size(1)
-                if torch.any(valid_idxs):
-                    seq_idxs = seq_idxs[valid_idxs]
-                    mapped_values = mapped_values[valid_idxs]
-
-                    # Store original values for invariant verification
-                    original_values = mapped_position_ids[batch_idx, seq_idxs].clone()
-
-                    # Update mapped positions using indexing
-                    mapped_position_ids[batch_idx, seq_idxs] = mapped_values
-
-                    # INVARIANT: Track which positions were modified
-                    for idx in seq_idxs.tolist():
-                        modified_positions.add(idx)
-
-                    # Record mappings for KV cache consistency
-                    for seq_idx, mapped_pos in zip(
-                        seq_idxs.tolist(), mapped_values.tolist()
-                    ):
-                        absolute_idx = position_ids[batch_idx, seq_idx].item()
-                        self.sequence_position_map[absolute_idx] = mapped_pos
-
-        # Handle absolute position mappings - this part is harder to fully vectorize
-        # due to the need to check each position value and update the mapping dictionary
-        absolute_mappings = {}
-        for batch_idx in range(position_ids.size(0)):
-            for seq_idx in range(position_ids.size(1)):
-                absolute_idx = position_ids[batch_idx, seq_idx].item()
-
-                # Skip indices already handled by sequence mapping
-                if seq_idx in self.position_map:
-                    continue
-
-                # Check if this absolute position has a mapping
-                if absolute_idx in self.position_map:
-                    mapped_position = self.position_map[absolute_idx]
-
-                    # INVARIANT: Track which positions were modified
-                    modified_positions.add(seq_idx)
-
-                    mapped_position_ids[batch_idx, seq_idx] = mapped_position
-                    # Track this mapping for KV cache consistency
-                    self.sequence_position_map[absolute_idx] = mapped_position
-
-        # INVARIANT: Verify parallel token sets have consistent position IDs
-        if self.debug_mode and self.parallel_token_sets and modified_positions:
-            # Track which parallel sets were modified
-            modified_sets = []
-
+        # Then handle the parallel token sets
+        if self.parallel_token_sets:
             for target_pos, positions in self.parallel_token_sets.items():
-                if len(positions) > 1:
+                if isinstance(positions, list) and len(positions) > 1:
                     # Check if any position in this set was modified
                     if any(pos in modified_positions for pos in positions):
-                        modified_sets.append((target_pos, positions))
-
-                    # Check that all tokens in this set have the same position ID
-                    for batch_idx in range(position_ids.size(0)):
-                        # Vectorized check for positions within bounds
-                        valid_positions = [
-                            pos for pos in positions if pos < position_ids.size(1)
-                        ]
-                        if len(valid_positions) > 1:
-                            pos_values = mapped_position_ids[
-                                batch_idx, valid_positions
-                            ].tolist()
-                            if len(set(pos_values)) > 1:
-                                print(
-                                    f"Invariant violation: Inconsistent position IDs in parallel set {positions}: {set(pos_values)}"
-                                )
-                                # Correct the inconsistency by setting all to the first value
-                                first_value = pos_values[0]
-                                for pos in valid_positions:
-                                    mapped_position_ids[batch_idx, pos] = first_value
-
-            if modified_sets:
-                print(f"Modified {len(modified_sets)} parallel token sets")
+                        # Check that all tokens in this set have the same position ID
+                        for batch_idx in range(position_ids.size(0)):
+                            # Validate positions are within bounds of the tensor
+                            valid_positions = [pos for pos in positions if pos < position_ids.size(1)]
+                            
+                            if len(valid_positions) > 1:
+                                pos_values = mapped_position_ids[batch_idx, valid_positions].tolist()
+                                if len(set(pos_values)) > 1:
+                                    if self.debug_mode:
+                                        print(f"Ensuring position consistency in parallel set: {positions}")
+                                    # Set all positions in the set to the same value (target_pos)
+                                    for pos in valid_positions:
+                                        mapped_position_ids[batch_idx, pos] = target_pos
 
         # Cache the result to avoid redundant computation
         self.position_embedding_cache[cache_key] = mapped_position_ids
@@ -742,14 +604,13 @@ class RoPEModifier:
         return False
 
     def reset(self):
-        """Reset the position mapping and related caches."""
+        """Reset all position mappings and caches."""
         self.position_map = {}
         self.sequence_position_map = {}
-        self.position_embedding_cache = {}
         self.parallel_token_sets = {}
-
+        self.position_embedding_cache = {}
         if self.debug_mode:
-            print("RoPE modifier state reset")
+            print("RoPE modifier reset - all position mappings cleared")
 
     def uninstall(self):
         """Restore the original forward methods for all patched modules."""
@@ -777,16 +638,42 @@ class RoPEModifier:
             enabled: Whether to enable debug mode
         """
         self.debug_mode = enabled
-        print(f"RoPE modifier debug mode {'enabled' if enabled else 'disabled'}")
+        if enabled:
+            print("RoPE modifier debug mode enabled")
+        else:
+            print("RoPE modifier debug mode disabled")
 
     def enable_kv_cache_consistency(self, enabled: bool = True):
         """
-        Enable or disable KV cache consistency checks.
+        Enable or disable KV cache consistency enforcement.
 
         Args:
             enabled: Whether to enable KV cache consistency
         """
         self.enable_kv_cache_consistency = enabled
-        print(
-            f"RoPE modifier KV cache consistency {'enabled' if enabled else 'disabled'}"
-        )
+        if self.debug_mode:
+            print(
+                f"RoPE KV cache consistency {'enabled' if enabled else 'disabled'}"
+            )
+            
+    def add_parallel_position_mappings(self, position_idx: int, virtual_positions: List[int]):
+        """
+        Add mappings for parallel token positions at a specific index.
+        
+        Args:
+            position_idx: The base position index for the parallel tokens
+            virtual_positions: List of virtual positions to map to the base position
+        """
+        if self.debug_mode:
+            print(f"Adding parallel position mappings: base={position_idx}, virtual={virtual_positions}")
+        
+        # Create position mappings
+        for virtual_pos in virtual_positions:
+            self.position_map[virtual_pos] = position_idx
+            
+        # Track this parallel set
+        # Store as a list of positions instead of a dictionary to match how it's used in apply_position_mapping
+        self.parallel_token_sets[position_idx] = virtual_positions
+        
+        # Clear the embedding cache for these positions
+        self.position_embedding_cache = {}

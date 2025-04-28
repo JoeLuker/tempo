@@ -1,0 +1,15 @@
+include LICENSE
+include README.md
+include requirements.txt
+include requirements-test.txt
+include pytest.ini
+recursive-include src *.py *.typed
+recursive-include examples *.py
+recursive-include tests *.py
+recursive-include images *.png *.jpg *.jpeg *.gif
+prune */__pycache__
+prune */.pytest_cache
+prune */.venv
+prune */.git
+prune */.vite
+global-exclude *.py[cod] *.so *.dylib *.dll .DS_Store 

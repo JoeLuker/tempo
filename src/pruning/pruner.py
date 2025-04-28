@@ -32,6 +32,7 @@ class Pruner:
         skip_reapply_threshold: bool = False,
         use_relu: bool = False,
         relu_activation_point: float = 0.5,
+        debug_mode: bool = False,
     ):
         """
         Initialize the pruner.
@@ -51,6 +52,7 @@ class Pruner:
             skip_reapply_threshold: Skip reapplying threshold to previous steps
             use_relu: Whether to use ReLU-based transitions instead of Bezier
             relu_activation_point: Point at which ReLU transition begins (0-1)
+            debug_mode: Whether to enable debug mode
         """
         # Invariant: Model and tokenizer must be provided
         if model is None or tokenizer is None:
@@ -81,6 +83,7 @@ class Pruner:
         self.use_dynamic_threshold = use_dynamic_threshold
         self.use_numpy_format = True  # Flag to determine data format consistency
         self.skip_reapply_threshold = skip_reapply_threshold  # Use the provided value
+        self.debug_mode = debug_mode
 
         # Performance tracking
         self.perf_stats = {
@@ -95,7 +98,7 @@ class Pruner:
             "format_conversions": 0,
         }
 
-        # Create the appropriate strategy
+        # Create the appropriate strategy based on the strategy parameter
         if strategy == "diversity":
             self.strategy = DiversityPruningStrategy(
                 model, tokenizer, diversity_clusters, device
@@ -109,10 +112,13 @@ class Pruner:
                 diversity_steps,
                 device,
             )
-        else:  # default to coherence
+        elif strategy == "coherence":
             self.strategy = CoherencePruningStrategy(
                 model, tokenizer, coherence_threshold, device
             )
+        else:
+            # This should never happen due to the earlier validation
+            raise ValueError(f"Unsupported pruning strategy: {strategy}")
 
         # Create dynamic threshold manager if needed
         if use_dynamic_threshold:
@@ -141,13 +147,16 @@ class Pruner:
         ):
             if all(isinstance(item, tuple) for item in zip(token_ids, token_probs)):
                 # Ensure token IDs are integers
-                return [(int(tid), float(prob)) for tid, prob in zip(token_ids, token_probs)]
+                return [
+                    (int(tid), float(prob)) for tid, prob in zip(token_ids, token_probs)
+                ]
 
         # If inputs are numpy arrays, convert to list of tuples
         if isinstance(token_ids, np.ndarray) and isinstance(token_probs, np.ndarray):
             # Ensure token IDs are integers and probabilities are floats
             result = [
-                (int(tid), float(prob)) for tid, prob in zip(token_ids.astype(np.int32), token_probs)
+                (int(tid), float(prob))
+                for tid, prob in zip(token_ids.astype(np.int32), token_probs)
             ]
             self.perf_stats["format_conversion_time"] += time.time() - start_time
             return result
@@ -157,7 +166,9 @@ class Pruner:
             token_probs, (list, tuple)
         ):
             # Ensure token IDs are integers
-            result = [(int(tid), float(prob)) for tid, prob in zip(token_ids, token_probs)]
+            result = [
+                (int(tid), float(prob)) for tid, prob in zip(token_ids, token_probs)
+            ]
             self.perf_stats["format_conversion_time"] += time.time() - start_time
             return result
 
@@ -193,10 +204,7 @@ class Pruner:
         try:
             ids, probs = zip(*tuples_list)
             # Ensure correct dtypes
-            result = (
-                np.array(ids, dtype=np.int32),
-                np.array(probs, dtype=np.float32)
-            )
+            result = (np.array(ids, dtype=np.int32), np.array(probs, dtype=np.float32))
             self.perf_stats["format_conversion_time"] += time.time() - start_time
             return result
         except Exception:
@@ -205,40 +213,50 @@ class Pruner:
             return np.array([], dtype=np.int32), np.array([], dtype=np.float32)
 
     def prune_parallel_tokens(
-        self, input_ids: torch.Tensor, parallel_tokens: Tuple[np.ndarray, np.ndarray]
+        self,
+        input_ids: torch.Tensor,
+        parallel_tokens: Tuple[np.ndarray, np.ndarray],
+        current_generation_step: Optional[int] = None,
     ) -> Tuple[Tuple[np.ndarray, np.ndarray], List[Tuple[np.ndarray, np.ndarray]]]:
         """
-        Prune parallel tokens based on the selected strategy.
-        Optimized for performance with detailed tracking.
+        Prune parallel tokens using the selected strategy.
 
         Args:
             input_ids: Current input token IDs
-            parallel_tokens: Tuple of (token_ids, token_probs) as NumPy arrays
+            parallel_tokens: Tuple of (token_ids, probabilities) as NumPy arrays
+            current_generation_step: Current step in the generation process (source of truth)
 
         Returns:
             Tuple[Tuple[np.ndarray, np.ndarray], List[Tuple[np.ndarray, np.ndarray]]]:
-                - Pruned (token_ids, token_probs) for current step
-                - List of pruned token sets for all steps (when using dynamic threshold)
+                - Pruned token set
+                - List of (original, pruned) token sets
         """
-        # Extract token IDs and probabilities
-        if isinstance(parallel_tokens, tuple) and len(parallel_tokens) == 2:
-            token_ids, token_probs = parallel_tokens
-        else:
-            # For backward compatibility, handle list of tuples
-            token_ids, token_probs = self._convert_from_tuples(parallel_tokens)
-
-        # Invariant: Input must be valid
-        if not isinstance(input_ids, torch.Tensor):
-            raise ValueError("Invariant violation: input_ids must be a torch.Tensor")
-
-        # Performance tracking
-        start_time = time.time()
         self.perf_stats["prune_calls"] += 1
-        self.perf_stats["total_tokens"] += len(token_ids)
-        self.perf_stats["steps"] += 1
 
-        # Convert to list of tuples for strategy compatibility
-        parallel_tuples = self._convert_to_tuples(token_ids, token_probs)
+        token_ids, token_probs = parallel_tokens
+
+        # Debug information about the tokens before pruning
+        if self.debug_mode:
+            print(
+                f"\nPruning {len(token_ids)} parallel tokens at step {current_generation_step if current_generation_step is not None else '?'}"
+            )
+
+        # Create a list of tuples for the strategy
+        parallel_tuples = [
+            (int(tid), float(prob)) for tid, prob in zip(token_ids, token_probs)
+        ]
+
+        # Track performance stats
+        self.perf_stats["total_tokens"] += len(parallel_tuples)
+
+        # Track number of tokens pruned based on original count
+        prune_start = time.time()
+
+        attention_time = 0
+        logits_time = 0
+        select_time = 0
+        threshold_time = 0
+        strategy_time = 0
 
         if self.use_dynamic_threshold:
             # Get token scores from the strategy
@@ -249,13 +267,32 @@ class Pruner:
 
             # Store token set and scores in dynamic threshold manager
             threshold_store_start = time.time()
-            self.threshold_manager.store_token_set(parallel_tuples, token_scores)
-            
+            self.threshold_manager.store_token_set(
+                parallel_tuples, token_scores, step=current_generation_step
+            )
+
             # Only reapply threshold if not skipping
             if not self.skip_reapply_threshold:
+                # Debug output for dynamic threshold
+                if self.debug_mode:
+                    current_threshold = self.threshold_manager.get_current_threshold(
+                        step=current_generation_step
+                    )
+                    print(
+                        f"Current dynamic threshold: {current_threshold:.4f} at step {current_generation_step}"
+                    )
+                    print(
+                        f"Progress: {min(1.0, current_generation_step / self.threshold_manager.max_steps) if current_generation_step is not None else 0:.4f}"
+                    )
+                    print(
+                        f"Base threshold: {self.threshold_manager.base_threshold:.4f}, Final threshold: {self.threshold_manager.final_threshold:.4f}"
+                    )
+
                 # Get updated pruned sets with current dynamic threshold
-                all_pruned_sets = self.threshold_manager.reapply_threshold_to_all_sets()
-                
+                all_pruned_sets = self.threshold_manager.reapply_threshold_to_all_sets(
+                    step=current_generation_step
+                )
+
                 # Convert the last set (current step) back to numpy arrays
                 if all_pruned_sets:
                     current_pruned = all_pruned_sets[-1]
@@ -267,15 +304,18 @@ class Pruner:
                         # If no tokens survived pruning, use highest probability token
                         max_prob_idx = np.argmax(token_probs)
                         pruned_ids = np.array([token_ids[max_prob_idx]], dtype=np.int32)
-                        pruned_probs = np.array([token_probs[max_prob_idx]], dtype=np.float32)
+                        pruned_probs = np.array(
+                            [token_probs[max_prob_idx]], dtype=np.float32
+                        )
                 else:
                     # Fallback to highest probability token
                     max_prob_idx = np.argmax(token_probs)
                     pruned_ids = np.array([token_ids[max_prob_idx]], dtype=np.int32)
-                    pruned_probs = np.array([token_probs[max_prob_idx]], dtype=np.float32)
+                    pruned_probs = np.array(
+                        [token_probs[max_prob_idx]], dtype=np.float32
+                    )
 
                 threshold_time = time.time() - threshold_store_start
-                self.perf_stats["threshold_time"] += threshold_time
 
                 # Convert all pruned sets to numpy arrays for consistency
                 all_pruned_arrays = []
@@ -283,22 +323,30 @@ class Pruner:
                     if pruned_set:
                         p_ids, p_probs = zip(*pruned_set)
                         all_pruned_arrays.append(
-                            (np.array(p_ids, dtype=np.int32), 
-                             np.array(p_probs, dtype=np.float32))
+                            (
+                                np.array(p_ids, dtype=np.int32),
+                                np.array(p_probs, dtype=np.float32),
+                            )
                         )
                     else:
                         # Empty set case
                         all_pruned_arrays.append(
-                            (np.array([], dtype=np.int32), 
-                             np.array([], dtype=np.float32))
+                            (
+                                np.array([], dtype=np.int32),
+                                np.array([], dtype=np.float32),
+                            )
                         )
 
                 return (pruned_ids, pruned_probs), all_pruned_arrays
             else:
                 # Apply pruning using the strategy with current threshold
                 pruning_start = time.time()
-                current_threshold = self.threshold_manager.get_current_threshold()
-                self.strategy.coherence_threshold = current_threshold  # Update strategy threshold
+                current_threshold = self.threshold_manager.get_current_threshold(
+                    step=current_generation_step
+                )
+                self.strategy.coherence_threshold = (
+                    current_threshold  # Update strategy threshold
+                )
                 pruned_tuples = self.strategy.prune_tokens(input_ids, parallel_tuples)
                 strategy_time = time.time() - pruning_start
 
@@ -311,7 +359,9 @@ class Pruner:
                     # If no tokens survived pruning, use highest probability token
                     max_prob_idx = np.argmax(token_probs)
                     pruned_ids = np.array([token_ids[max_prob_idx]], dtype=np.int32)
-                    pruned_probs = np.array([token_probs[max_prob_idx]], dtype=np.float32)
+                    pruned_probs = np.array(
+                        [token_probs[max_prob_idx]], dtype=np.float32
+                    )
 
                 return (pruned_ids, pruned_probs), []
 
@@ -334,16 +384,23 @@ class Pruner:
 
             return (pruned_ids, pruned_probs), []
 
-    def get_final_pruned_sets(self) -> List[Tuple[np.ndarray, np.ndarray]]:
+    def get_final_pruned_sets(
+        self, current_generation_step: Optional[int] = None
+    ) -> List[Tuple[np.ndarray, np.ndarray]]:
         """
         Get the final pruned sets after applying dynamic thresholding.
+
+        Args:
+            current_generation_step: Current step in the generation process (source of truth)
 
         Returns:
             List[Tuple[np.ndarray, np.ndarray]]: Final pruned token sets as NumPy arrays
         """
         if self.use_dynamic_threshold:
             threshold_start = time.time()
-            final_sets = self.threshold_manager.reapply_threshold_to_all_sets()
+            final_sets = self.threshold_manager.reapply_threshold_to_all_sets(
+                step=current_generation_step
+            )
             self.perf_stats["threshold_time"] += time.time() - threshold_start
 
             # Convert to NumPy arrays

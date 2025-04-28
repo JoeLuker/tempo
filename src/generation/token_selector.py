@@ -30,7 +30,7 @@ class TokenSelector:
         self._setup_logger()
 
         # Debug mode
-        self.debug_mode = False
+        self.debug_mode = True
 
     def _setup_logger(self):
         """Setup logging to file."""
@@ -49,6 +49,11 @@ class TokenSelector:
 
         # Create file handler
         log_file = os.path.join(log_dir, "token_selector_debug.log")
+
+        # Clear the log file by opening in write mode first
+        with open(log_file, "w") as f:
+            pass
+
         file_handler = logging.FileHandler(log_file, mode="a")
         file_handler.setLevel(logging.DEBUG)
 
@@ -284,7 +289,9 @@ class TokenSelector:
             )
             token_info = []
             for i, (tid, prob) in enumerate(zip(token_ids, token_probs)):
-                token_text = self.tokenizer.decode([int(tid)], skip_special_tokens=False)
+                token_text = self.tokenizer.decode(
+                    [int(tid)], skip_special_tokens=False
+                )
                 token_info.append(
                     f"    {i+1}. '{token_text}' (ID: {int(tid)}): {prob:.6f}"
                 )
@@ -591,5 +598,65 @@ class TokenSelector:
             )
 
         return [
-            self.tokenizer.decode([int(tid)], skip_special_tokens=False) for tid in token_ids
+            self.tokenizer.decode([int(tid)], skip_special_tokens=False)
+            for tid in token_ids
         ]
+
+    def select_tokens(
+        self, 
+        next_token_logits: torch.Tensor, 
+        threshold: float, 
+        max_tokens: int = 25
+    ) -> Tuple[List[Tuple[torch.Tensor, float]], int]:
+        """
+        Select tokens with probabilities above the threshold.
+        This is a wrapper around select_tokens_above_threshold that returns the format
+        expected by ParallelGenerator.
+
+        Args:
+            next_token_logits: Logits tensor for next token
+            threshold: Probability threshold
+            max_tokens: Maximum number of tokens to return
+
+        Returns:
+            tuple: (token_data, subset_size)
+                token_data: List of (token_id_tensor, probability) tuples
+                subset_size: Number of tokens above threshold
+        """
+        if self.debug_mode:
+            self.log(f"select_tokens called with threshold {threshold}")
+            
+        # Call the existing method to get token IDs and probabilities
+        token_ids, token_probs = self.select_tokens_above_threshold(
+            next_token_logits, 
+            threshold, 
+            max_tokens
+        )
+        
+        # If no tokens were selected, fall back to the top token
+        if len(token_ids) == 0:
+            if self.debug_mode:
+                self.log(f"No tokens above threshold {threshold}, falling back to top token")
+            
+            # Get the top token regardless of threshold
+            top_ids, top_probs = self.select_top_tokens(next_token_logits, top_k=1)
+            token_ids = top_ids
+            token_probs = top_probs
+            
+            if self.debug_mode:
+                token_text = self.tokenizer.decode([int(token_ids[0])], skip_special_tokens=False)
+                self.log(f"Selected top token: '{token_text}' (ID: {int(token_ids[0])}) with prob: {token_probs[0]:.6f}")
+        
+        # Convert to the format expected by ParallelGenerator
+        token_data = []
+        for token_id, prob in zip(token_ids, token_probs):
+            # Create tensor for token ID
+            token_tensor = torch.tensor(token_id, device=next_token_logits.device)
+            token_data.append((token_tensor, prob))
+            
+        subset_size = len(token_data)
+        
+        if self.debug_mode:
+            self.log(f"Returning {subset_size} tokens above threshold {threshold}")
+            
+        return token_data, subset_size

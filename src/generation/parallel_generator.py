@@ -1,17 +1,19 @@
 import torch
-from typing import Dict, List, Tuple, Optional, Any, Set, Callable
-from .token_generator import TokenGenerator
-from .token_selector import TokenSelector
-from .text_formatter import TextFormatter
-from .attention_manager import AttentionManager
-from .rope_modifier import RoPEModifier
-import time
-import traceback
+import random
 import logging
 import os
-from tqdm import tqdm
+import time
 import numpy as np
+import traceback
+from typing import List, Dict, Tuple, Any, Optional, Set, Callable
+from tqdm import tqdm
 
+# Import necessary components
+from src.generation.rope_modifier import RoPEModifier
+from src.generation.attention_manager import AttentionManager
+from src.generation.token_selector import TokenSelector
+from src.generation.token_generator import TokenGenerator
+from src.generation.text_formatter import TextFormatter
 
 class ParallelGenerator:
     """
@@ -27,20 +29,45 @@ class ParallelGenerator:
         device: str = "mps",
         has_custom_attention: bool = True,
         use_custom_rope: bool = True,
-        debug_mode: bool = False,
+        debug_mode: bool = True,
+        token_generator: Optional[TokenGenerator] = None,
     ):
         """
-        Initialize the parallel token generator.
+        Initialize the parallel generator.
 
         Args:
-            model: The language model
-            tokenizer: HuggingFace tokenizer
-            pruner: Optional Pruner instance
+            model: Model to use for generation
+            tokenizer: Tokenizer for the model
+            pruner: Optional pruner for generations
             device: Device to use for computation
-            has_custom_attention: Whether the model supports custom attention mask
-            use_custom_rope: Whether to use custom RoPE position mapping
-            debug_mode: Whether to enable debug mode
+            has_custom_attention: Whether the model supports custom attention masks
+            use_custom_rope: Whether to use custom RoPE modifications for parallel tokens
+            debug_mode: Enable debug mode for detailed logging
+            token_generator: Optional external TokenGenerator instance to use
         """
+        # Store parameters
+        self.model = model
+        self.tokenizer = tokenizer
+        self.pruner = pruner
+        self.device = device
+        self.has_custom_attention = has_custom_attention
+        self.use_custom_rope = use_custom_rope
+        
+        # Set debug mode FIRST so everything initialized after gets this value
+        self.debug_mode = debug_mode
+        
+        # Setup logging before other components
+        self._setup_logger()
+        
+        # Track logical layout of parallel tokens
+        self.logical_layout = []  # [(logical_pos, start_idx, end_idx)]
+        
+        # When debug mode is enabled, start with a clear log message
+        if self.debug_mode:
+            self.log("Initializing ParallelGenerator with debug mode ENABLED")
+            # Also print to stdout for immediate visibility
+            print("ParallelGenerator starting with debug mode ENABLED")
+
         # Validate required arguments
         assert model is not None, "Model cannot be None"
         assert tokenizer is not None, "Tokenizer cannot be None"
@@ -49,70 +76,70 @@ class ParallelGenerator:
         assert isinstance(use_custom_rope, bool), "use_custom_rope must be a boolean"
         assert isinstance(debug_mode, bool), "debug_mode must be a boolean"
         
-        self.model = model
-        self.tokenizer = tokenizer
-        self.pruner = pruner
-        self.device = device
-        self.has_custom_attention = has_custom_attention
-        self.use_custom_rope = use_custom_rope
-        self.debug_mode = debug_mode
-
         # Check if this is a Qwen-based model
         if hasattr(model, "config") and hasattr(model.config, "model_type"):
             self.is_qwen_model = "qwen" in model.config.model_type.lower()
         else:
             self.is_qwen_model = False
 
-        # Set up logging
-        self._setup_logger()
-
         # Initialize RoPE modifier if requested
         self.rope_modifier = None
-        rope_install_success = False
         if use_custom_rope:
             try:
-                # Try to initialize and install RoPE modifier
-                self.rope_modifier = RoPEModifier(model, device)
-                if self.rope_modifier is not None:
-                    self.rope_modifier.set_debug_mode(debug_mode)
-                    
-                    # Attempt to install the RoPE modifier
-                    self.log("Attempting to install RoPE modifier...")
-                    rope_install_success = self.rope_modifier.install()
-                    
-                    if rope_install_success:
-                        self.log("Installed custom RoPE modifier for parallel token positions")
-                    else:
-                        self.log("Warning: RoPE modifier installation failed. Continuing without parallel token position mapping.", "warning")
-                        # Set rope_modifier to None so we don't try to use it later
-                        self.rope_modifier = None
-                        # Also update use_custom_rope to reflect that we're not using it
-                        self.use_custom_rope = False
+                # Create and initialize RoPE modifier with appropriate debug mode
+                self.rope_modifier = RoPEModifier(model=model, device=device)
+                # Explicitly set debug mode based on our debug_mode value
+                self.rope_modifier.set_debug_mode(self.debug_mode)
+                
+                # Install the modifier
+                rope_install_success = self.rope_modifier.install()
+                if rope_install_success:
+                    print("Using custom RoPE modifications for parallel token positioning")
+                    if self.debug_mode:
+                        self.log("RoPE modifier initialized with debug mode ENABLED")
+                else:
+                    self.log("RoPE modifier installation failed, disabling custom RoPE", "warning") 
+                    self.rope_modifier = None
+                    self.use_custom_rope = False
             except Exception as e:
-                self.log(f"Error installing RoPE modifier: {str(e)}", "error")
-                self.log("Continuing without parallel token position mapping.", "warning")
-                # Reset these values
+                self.log(f"Warning: Failed to initialize RoPE modifier: {e}", "warning")
+                print(f"Warning: Could not initialize RoPE modifier: {e}")
                 self.rope_modifier = None
-                self.use_custom_rope = False
+                self.use_custom_rope = False  # Disable since initialization failed
 
-        # Initialize other components
-        self.token_generator = TokenGenerator(model, tokenizer, device)
+        # Initialize components (only once!) and set debug mode immediately
+        if token_generator is not None:
+            self.token_generator = token_generator
+            self.log("Using externally provided TokenGenerator instance")
+        else:
+            self.token_generator = TokenGenerator(model, tokenizer, device)
+            self.log("Created internal TokenGenerator instance")
+        
+        self.token_generator.set_debug_mode(self.debug_mode)
         assert self.token_generator is not None, "Failed to initialize TokenGenerator"
         
         self.token_selector = TokenSelector(tokenizer)
+        self.token_selector.set_debug_mode(self.debug_mode)
         assert self.token_selector is not None, "Failed to initialize TokenSelector"
         
         self.text_formatter = TextFormatter(tokenizer)
         assert self.text_formatter is not None, "Failed to initialize TextFormatter"
 
-        # Initialize attention manager with RoPE modifier reference
-        self.attention_manager = AttentionManager(device, self.rope_modifier, tokenizer)
-        assert self.attention_manager is not None, "Failed to initialize AttentionManager"
-        self.attention_manager.set_debug_mode(debug_mode)
+        # Create attention manager
+        self.attention_manager = AttentionManager(
+            device=device, rope_modifier=self.rope_modifier, tokenizer=tokenizer
+        )
+        self.attention_manager.set_debug_mode(self.debug_mode)
+        
+        # Log initialization messages only when debug mode is enabled
+        if self.debug_mode:
+            self.log("AttentionManager initialized with debug mode ENABLED")
+            self.log("TokenSelector initialized with debug mode ENABLED")
+            self.log("TokenGenerator initialized with debug mode ENABLED")
 
         # Link components for better coordination if RoPE modifier is available
-        if self.use_custom_rope and self.rope_modifier is not None and rope_install_success:
-            # Connect the rope modifier with the attention manager
+        if self.use_custom_rope and self.rope_modifier is not None:
+            # Link RoPE modifier to attention manager for enhanced capabilities
             self.attention_manager.set_rope_modifier(self.rope_modifier)
 
         # Connect TokenGenerator to pruning strategy if using CoherencePruningStrategy
@@ -155,6 +182,11 @@ class ParallelGenerator:
 
         # Create file handler
         log_file = os.path.join(log_dir, "generation_debug.log")
+        
+        # Clear the log file by opening in write mode first
+        with open(log_file, "w") as f:
+            pass
+            
         file_handler = logging.FileHandler(log_file, mode="a")
         file_handler.setLevel(logging.DEBUG)
 
@@ -247,930 +279,524 @@ class ParallelGenerator:
         self,
         prompt: str,
         max_tokens: int = 100,
-        threshold: Optional[float] = None,
+        threshold: Optional[float] = 0.1,
         return_parallel_sets: bool = False,
         use_pruning: bool = False,
-        require_custom_attention: bool = False,
         min_steps: int = 0,
         show_token_ids: bool = False,
-        debug_mode: bool = False,
+        debug_mode: Optional[bool] = None,
         disable_kv_cache: bool = False,
         system_content: Optional[str] = None,
-        optimize_pruning: bool = True,
         isolate_parallel_tokens: bool = True,
         preserve_all_isolated_tokens: Optional[bool] = None,
-        retroactive_pruner=None,
+        pruner: Optional[object] = None,
+        retroactive_pruner: Optional[object] = None,
         sequence_callback: Optional[Callable[[int, int, int], None]] = None,
     ) -> Dict[str, Any]:
         """
-        Generate text using multiple parallel tokens.
+        Generate text from prompt with parallel token generation using Sequential Layout approach.
+        
+        This implementation uses a single sequence with logical positions mapping to potentially
+        multiple physical positions in the sequence.
 
         Args:
-            prompt: Text prompt to generate from
+            prompt: The text prompt
             max_tokens: Maximum number of tokens to generate
-            threshold: Threshold for token selection
-            return_parallel_sets: Whether to return parallel token sets
-            use_pruning: Whether to use pruning for parallel tokens
-            require_custom_attention: Whether to require custom attention for KV-cache support
-            min_steps: Minimum steps to generate, even if pruning collapses to single tokens
-            show_token_ids: Whether to show token IDs in formatted output
-            debug_mode: Whether to show detailed debug information
-            disable_kv_cache: Whether to disable KV cache for better attention calculations
-            system_content: Optional system content for instruction-following models
-            optimize_pruning: Whether to enable pruning optimizations (skip reapply)
-            isolate_parallel_tokens: If True, parallel tokens cannot attend to each other
-            preserve_all_isolated_tokens: If True, skip pruning when tokens are isolated.
-                                         When None (default), automatically set to match isolate_parallel_tokens
-            retroactive_pruner: Optional RetroactivePruner instance for retroactive pruning
-            sequence_callback: Optional callback for sequence length updates
+            threshold: Probability threshold for selecting tokens (default: 0.1)
+            return_parallel_sets: Whether to return parallel token sets for visualization
+            use_pruning: Whether to use pruning on parallel groups
+            min_steps: Minimum number of steps before stopping
+            show_token_ids: Include token IDs in return for debugging
+            debug_mode: Override the instance debug_mode setting
+            disable_kv_cache: Whether to disable KV caching
+            system_content: System content for chat prompts
+            isolate_parallel_tokens: Whether tokens at the same position cannot attend to each other
+            preserve_all_isolated_tokens: Override default pruning behavior for isolated tokens
+            pruner: Pruner to use for token selection (overrides self.pruner if provided)
+            retroactive_pruner: Retroactive pruner to use for token selection
+            sequence_callback: Callback function for sequence length updates
 
         Returns:
-            Dict[str, Any]: Generated text and related information
+            Dict with generated text and metadata
         """
+        # Update debug mode if override is provided
+        original_debug_mode = self.debug_mode
+        if debug_mode is not None:
+            self.set_debug_mode(debug_mode)
+
+        # Initialize timing variables
+        generation_start = time.time()
+        pruning_time = 0.0
+        pruned_tokens_count = 0
+        pruning_steps = 0
+
         # Validate parameters
         assert prompt, "Prompt cannot be empty"
         assert max_tokens > 0, "max_tokens must be positive"
         assert threshold is None or (0.0 <= threshold <= 1.0), "threshold must be between 0.0 and 1.0"
+        if threshold is None:
+            threshold = 0.1  # Default threshold
         assert min_steps >= 0, "min_steps cannot be negative"
-        assert isinstance(return_parallel_sets, bool), "return_parallel_sets must be a boolean"
-        assert isinstance(use_pruning, bool), "use_pruning must be a boolean"
-        assert isinstance(show_token_ids, bool), "show_token_ids must be a boolean"
         
-        # If we don't have a RoPE modifier, we can't isolate parallel tokens
+        # Which pruner to use - instance pruner or parameter pruner
+        active_pruner = pruner if pruner is not None else self.pruner
+        
+        # Check RoPE isolation availability
         if isolate_parallel_tokens and (not self.use_custom_rope or self.rope_modifier is None):
             self.log("Warning: Disabling isolate_parallel_tokens because RoPE modifier is not available", "warning")
             isolate_parallel_tokens = False
-            # Print a message to the console as well
             print("Warning: Parallel token isolation disabled - RoPE modifier not available")
             
-        # Set debug mode
-        self.debug_mode = debug_mode
-
-        # Initialize pruning_time at the start
-        pruning_time = 0.0
-
         # Set default for preserve_all_isolated_tokens based on isolation mode
         if preserve_all_isolated_tokens is None:
             preserve_all_isolated_tokens = isolate_parallel_tokens
             
-        # Set debug mode if requested
-        if debug_mode:
-            # Set debug mode for this generator and all components
-            self.debug_mode = debug_mode
-            if self.rope_modifier is not None:
-                self.rope_modifier.set_debug_mode(debug_mode)
-            self.attention_manager.set_debug_mode(debug_mode)
-            # Enable debug mode for TokenSelector too
-            self.token_selector.set_debug_mode(debug_mode)
-            # Enable debug mode for TokenGenerator too
-            self.token_generator.set_debug_mode(debug_mode)
-            # Log to file instead of console
-            self.log(
-                "Debug mode enabled for generation - logging to files in logs/ directory"
-            )
-            # Print minimal console message
-            print("Debug mode enabled - logging to files in logs/ directory")
+        # If debug mode is enabled, log this information
+        if self.debug_mode:
+            print("Debug mode enabled for this generation run - logs will be written to files in logs/ directory")
 
-        # Performance tracking
-        start_time = time.time()
-
-        # Set default threshold if not specified
-        if threshold is None:
-            threshold = 0.1
-
-        # Validate custom attention requirement
-        if require_custom_attention and not self.has_custom_attention:
-            raise ValueError(
-                "Custom attention is required but model doesn't support it"
-            )
-
-        # Reset pruner if using dynamic threshold
-        if use_pruning and self.pruner is not None:
-            if hasattr(self.pruner, "reset"):
-                self.pruner.reset()
-
-            # Set max steps in pruner if using dynamic threshold
-            if (
-                hasattr(self.pruner, "use_dynamic_threshold")
-                and self.pruner.use_dynamic_threshold
-            ):
-                # Set the maximum steps for the dynamic threshold
-                self.pruner.max_steps = max_tokens
-
-        # Reset RoPE modifier position mapping if available
+        # Reset state
         if self.rope_modifier is not None:
             self.rope_modifier.reset()
-
-        # Reset attention manager
         self.attention_manager.reset_cache()
+        self.token_generator.clear_kv_cache()
+        self.logical_layout = []  # Reset logical layout tracking
 
-        # For Cogito models with thinking mode enabled, we need special handling
-        is_thinking_mode = (
-            system_content is not None and "thinking" in system_content.lower()
-        )
-        if is_thinking_mode and self.is_qwen_model:
-            if self.debug_mode:
-                self.log("Using special handling for Cogito thinking mode")
-
-            # Thinking mode works better with pruning
-            if not use_pruning:
-                self.log(
-                    "Warning: Thinking mode works better with pruning. Consider adding --use-pruning flag."
-                )
-
-            # Thinking mode may need a different threshold for stable generation
-            if threshold > 0.08:
-                self.log(
-                    f"Note: Using threshold {threshold} for thinking mode (values below 0.08 often work better)"
-                )
-
-        # Prepare input based on whether we're using chat format or raw prompt
-        if system_content is not None:
-            # Format input as chat for Cogito model
-            messages = [
-                {"role": "system", "content": system_content},
-                {"role": "user", "content": prompt},
-            ]
-
-            # DIAGNOSTIC: Print messages being sent to the model
-            self.log("\nDIAGNOSTIC - Chat messages:")
-            for msg in messages:
-                self.log(f"  {msg['role']}: {msg['content'][:100]}...")
-
-            # Check if the tokenizer supports apply_chat_template with enable_thinking
-            if hasattr(self.tokenizer, "apply_chat_template"):
-                try:
-                    # Try to use the tokenizer's chat template with enable_thinking if available
-                    if (
-                        "enable_thinking"
-                        in self.tokenizer.apply_chat_template.__code__.co_varnames
-                    ):
-                        # Use the tokenizer's chat template with enable_thinking
-                        prompt_text = self.tokenizer.apply_chat_template(
-                            messages,
-                            tokenize=False,
-                            add_generation_prompt=True,
-                            enable_thinking=True,
-                        )
-                        self.log(
-                            "\nDIAGNOSTIC - Using chat template with enable_thinking=True"
-                        )
-                    else:
-                        # Use regular chat template without enable_thinking
-                        prompt_text = self.tokenizer.apply_chat_template(
-                            messages, tokenize=False, add_generation_prompt=True
-                        )
-                        self.log(
-                            "\nDIAGNOSTIC - Using standard chat template (no enable_thinking parameter)"
-                        )
-
-                    # DIAGNOSTIC: Show the formatted prompt text
-                    self.log(
-                        f"\nDIAGNOSTIC - Formatted prompt text (first 100 chars):\n{prompt_text[:200]}..."
-                    )
-
-                    input_ids, attention_mask = (
-                        self.token_generator.prepare_input_from_prompt(prompt_text)
-                    )
-
-                    # DIAGNOSTIC: Show token IDs and decoded tokens
-                    self.log("\nDIAGNOSTIC - First 10 input token IDs:")
-                    for i in range(min(10, len(input_ids[0]))):
-                        token_id = input_ids[0, i].item()
-                        token_text = self.tokenizer.decode([token_id])
-                        self.log(f"  Token {i}: ID={token_id}, Text='{token_text}'")
-
-                    self.log(
-                        f"\nDIAGNOSTIC - Total input length: {len(input_ids[0])} tokens"
-                    )
-
-                except Exception as e:
-                    self.log(f"\nDIAGNOSTIC - Error in chat template processing: {e}")
-                    traceback.print_exc()
-                    raise RuntimeError(
-                        f"Error applying chat template: {e}. Generation failed."
-                    )
-
-            else:
-                # Invariant: Chat template must be applied successfully
-                raise RuntimeError(
-                    "Chat template application failed. The tokenizer doesn't support the required chat template functionality."
-                )
-        else:
-            # Standard input preparation
-            input_ids, attention_mask = self.token_generator.prepare_input_from_prompt(
-                prompt
-            )
-
-        # Pre-allocate storage for token sets (more memory efficient)
-        # We'll only store the minimal necessary information and convert formats as needed
-        token_sets = []  # List of (position, token_ids, token_probs) tuples
-
-        # Track positions with multiple tokens
-        original_parallel_positions = set()
-
-        # More efficient position_to_tokens mapping using direct indices
-        position_to_tokens = {}
-        prompt_length = len(input_ids[0])
-
-        # Store ALL parallel tokens for retroactive pruning
-        all_parallel_tokens = {}  # position -> list of (token_id, prob) pairs
-
-        # Add prompt tokens to the position mapping with efficient batch processing
-        # Vectorized with dictionary comprehension
-        position_to_tokens = {i: [input_ids[0, i].item()] for i in range(prompt_length)}
-
-        # Use KV cache for faster generation
-        past_key_values = None
-
-        # Position mapping for RoPE modification
-        rope_position_map = {}
-
-        # Flag to track if we're currently in a repetition loop
-        in_repetition_loop = False
-        repetition_count = 0
-        last_tokens = []
-
-        # Track total tokens across all steps
-        running_total_tokens = 0
-
-        # Iteratively generate tokens - optimized for speed
-        progress_bar = tqdm(range(max_tokens), desc="Generating tokens", unit="token")
-        for i in progress_bar:
-            # Show progress while looping
-            self.log(f"\nDIAGNOSTIC - Starting token generation step {i}")
-            self.log(f"  Input shape: {input_ids.shape}")
-
-            # Determine whether to use the standard or optimized path
-            use_optimized_path = (
-                isolate_parallel_tokens and i > 0
-            )  # Only optimize after first token
-
-            # For non-optimized path or first token, get the logits normally
-            if not use_optimized_path:
-                # Detailed timing - token logits
-                logits_start = time.time()
-                # Standard path for first token or non-isolated mode
-                next_token_logits, past_key_values = (
-                    self.token_generator.get_next_token_logits_cached(
-                        input_ids,
-                        attention_mask,
-                        None if disable_kv_cache else past_key_values,
-                        (
-                            self.attention_manager.full_attention_mask
-                            if self.has_custom_attention
-                            else None
-                        ),
-                    )
-                )
-                logits_time = time.time() - logits_start
-
-                # Detailed timing - token selection
-                select_start = time.time()
-                next_token_ids, next_token_probs = (
-                    self.token_selector.select_tokens_above_threshold(
-                        next_token_logits, threshold
-                    )
-                )
-                select_time = time.time() - select_start
-            else:
-                # For optimization path, get logits once using optimized method
-                # First get token logits using the optimized method
-                logits_start = time.time()
-                next_token_logits, past_key_values = (
-                    self.token_generator.get_next_token_logits_for_isolated_parallel(
-                        input_ids,
-                        attention_mask,
-                        None if disable_kv_cache else past_key_values,
-                        (
-                            self.attention_manager.full_attention_mask
-                            if self.has_custom_attention
-                            else None
-                        ),
-                        num_parallel_tokens=5,  # Initial estimate
-                    )
-                )
-                logits_time = time.time() - logits_start
-
-                # Select tokens
-                select_start = time.time()
-                next_token_ids, next_token_probs = (
-                    self.token_selector.select_tokens_above_threshold(
-                        next_token_logits, threshold
-                    )
-                )
-                select_time = time.time() - select_start
-
-                # When using optimized path for isolated tokens, we need to ensure that
-                # input_ids and attention_mask remain consistent, since get_next_token_logits_for_isolated_parallel
-                # may have modified the input_ids shape
-                if past_key_values is not None:
-                    # Restore consistent shapes - use only last token with proper attention mask
-                    seq_len = 1  # We're using KV cache, so we only need the last token
-                    input_ids = input_ids[:, -seq_len:]
-                    attention_mask = torch.ones(
-                        (input_ids.size(0), seq_len), device=self.device
-                    )
-
-                # Update the num_parallel_tokens in the token generator stats to reflect actual count
-                if hasattr(self.token_generator, "last_parallel_count"):
-                    self.token_generator.last_parallel_count = len(next_token_ids)
-
-            # Update running total of tokens
-            running_total_tokens += len(next_token_ids)
-
-            # Show detailed timing in the progress bar
-            progress_bar.set_postfix(
-                tokens=len(next_token_ids),
-                total_tokens=running_total_tokens,
-                logits_ms=f"{logits_time*1000:.1f}",
-                select_ms=f"{select_time*1000:.1f}",
-                prune_ms=f"{pruning_time*1000:.1f}" if use_pruning and self.pruner else "N/A",
-                top_prob=(
-                    f"{next_token_probs[0]:.4f}" if len(next_token_probs) > 0 else "N/A"
-                ),
-            )
-
-            # Invariant: Token IDs and probabilities must have same length and proper structure
-            if len(next_token_ids) != len(next_token_probs):
-                raise ValueError(
-                    f"Invariant violation: Mismatch between token IDs ({len(next_token_ids)}) and probabilities ({len(next_token_probs)})"
-                )
-
-            # Invariant: Probabilities must be valid values between 0 and 1
-            if any(prob <= 0 or prob > 1.0 for prob in next_token_probs):
-                raise ValueError(
-                    "Invariant violation: Token probabilities must be between 0 and 1"
-                )
-
-            # Invariant: If multiple tokens are selected, they must have decreasing probabilities
-            if len(next_token_ids) > 1:
-                # Vectorized check for descending order using tensor operations
-                probs_tensor = torch.tensor(next_token_probs, device=self.device)
-                if not torch.all(probs_tensor[:-1] >= probs_tensor[1:]):
-                    raise ValueError(
-                        "Invariant violation: Token probabilities must be in descending order"
-                    )
-
-            # Skip if no tokens above threshold
-            if len(next_token_ids) == 0:
-                # DEBUG: Show top tokens even when below threshold
-                top_token_ids, top_token_probs = self.token_selector.select_top_tokens(
-                    next_token_logits, top_k=5
-                )
-                top_tokens_text = [
-                    self.tokenizer.decode([int(tid)]) for tid in top_token_ids
+        # --- Initial Prompt Processing ---
+        if system_content:
+            # First check if the tokenizer has a chat template
+            if hasattr(self.tokenizer, 'apply_chat_template') and callable(getattr(self.tokenizer, 'apply_chat_template')):
+                # Use the tokenizer's built-in chat template
+                messages = [
+                    {"role": "system", "content": system_content},
+                    {"role": "user", "content": prompt}
                 ]
-
-                self.log(
-                    "\nDEBUG: No tokens above threshold. Top 5 tokens and probabilities:"
+                formatted_prompt = self.tokenizer.apply_chat_template(
+                    messages, 
+                    tokenize=False,
+                    add_generation_prompt=True
                 )
-                for idx, (token_text, token_id, prob) in enumerate(
-                    zip(top_tokens_text, top_token_ids, top_token_probs)
-                ):
-                    self.log(
-                        f"  {idx+1}. '{token_text}' (ID: {int(token_id)}): {prob:.6f}"
-                    )
-                self.log(f"Current threshold: {threshold}")
-
-                # If thinking mode is active, also show special note
-                if is_thinking_mode:
-                    self.log(
-                        "Note: Thinking mode often requires lower thresholds (0.01-0.05)"
-                    )
-                    self.log(
-                        "Try running with --threshold 0.05 or --threshold 0.03 for thinking mode"
-                    )
-
-                self.log(
-                    f"No tokens above threshold at step {i}. Treating as EOS and finishing generation."
-                )
-                break
-
-            # Skip single EOS token if this isn't the last step and we haven't reached min_steps
-            if (
-                len(next_token_ids) == 1
-                and self.token_selector.is_eos_token(int(next_token_ids[0]))
-                and i < max_tokens - 1
-                and i < min_steps
-            ):
-                continue
-
-            # Check for repetition patterns
-            current_token = int(next_token_ids[0]) if len(next_token_ids) > 0 else None
-            if current_token is not None:
-                # Add to last tokens
-                last_tokens.append(current_token)
-                if len(last_tokens) > 5:
-                    last_tokens.pop(0)
-
-                # Check for repetition
-                if len(last_tokens) >= 3:
-                    if last_tokens[-1] == last_tokens[-2] == last_tokens[-3]:
-                        repetition_count += 1
-                        if repetition_count >= 3:
-                            in_repetition_loop = True
-                            self.log(
-                                f"Detected repetition loop at step {i}, applying correction"
-                            )
-                            # For thinking mode, we need to force a diverse token
-                            if is_thinking_mode:
-                                # Remove repeated token from options
-                                repeated_token = last_tokens[-1]
-                                # Filter using NumPy masking
-                                mask = next_token_ids != repeated_token
-                                next_token_ids = next_token_ids[mask]
-                                next_token_probs = next_token_probs[mask]
-                                if len(next_token_ids) == 0:
-                                    # If no tokens left, get new ones excluding repeated token
-                                    next_token_ids, next_token_probs = (
-                                        self.token_selector.select_tokens_above_threshold_excluding(
-                                            next_token_logits,
-                                            threshold * 0.8,
-                                            [repeated_token],
-                                        )
-                                    )
-                    else:
-                        repetition_count = 0
-                        in_repetition_loop = False
-
-            # Store tokens efficiently as NumPy arrays - no conversion needed
-            original_token_ids = next_token_ids.copy()
-            original_token_probs = next_token_probs.copy()
-
-            # If we have multiple tokens, mark this as a parallel position
-            current_position = len(position_to_tokens) - prompt_length
-            if len(next_token_ids) > 1:
-                original_parallel_positions.add(current_position)
-
-                # Update RoPE position mapping for parallel tokens
-                if self.rope_modifier is not None and len(next_token_ids) > 1:
-                    try:
-                        # Create position mapping for all tokens in the parallel set
-                        position_mapping = {}
-                        current_pos = prompt_length + i
-                        for j in range(len(next_token_ids)):
-                            position_mapping[current_pos + j] = current_pos
-
-                        # Register with RoPE modifier
-                        self.rope_modifier.register_parallel_positions(position_mapping)
-                    except Exception as e:
-                        # Log the error but continue execution
-                        self.log(f"Error registering parallel positions: {str(e)}", "error")
-                        # Continue without position mapping for this step
-
-            # Create copy of original tokens for pruning
-            pruned_token_ids = next_token_ids.copy()
-            pruned_token_probs = next_token_probs.copy()
-
-            # Apply pruning if requested and available
-            pruning_start = time.time()
-            if use_pruning and self.pruner is not None and len(pruned_token_ids) > 1:
-                # Skip pruning if tokens are isolated and we want to preserve them all
-                if isolate_parallel_tokens and preserve_all_isolated_tokens:
-                    if self.debug_mode:
-                        self.log(
-                            f"Skipping pruning for isolated tokens (preserve_all_isolated_tokens=True)"
-                        )
+                self.log(f"Applied tokenizer's chat template with system content")
+            else:
+                # Fallback to a generic template based on model type
+                model_type = getattr(self.model.config, "model_type", "").lower() if hasattr(self.model, "config") else ""
+                
+                if "llama" in model_type:
+                    # Llama-style template
+                    formatted_prompt = f"<s>[INST] <<SYS>>\n{system_content}\n<</SYS>>\n\n{prompt} [/INST]"
+                elif "mistral" in model_type:
+                    # Mistral-style template
+                    formatted_prompt = f"<s>[INST] {system_content}\n\n{prompt} [/INST]"
+                elif "qwen" in model_type or getattr(self, 'is_qwen_model', False):
+                    # Qwen-style template
+                    formatted_prompt = f"<|im_start|>system\n{system_content}<|im_end|>\n<|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n"
                 else:
-                    # Pass token generator to pruner for attention reuse if not already set
-                    if (
-                        hasattr(self.pruner.strategy, "token_generator")
-                        and self.pruner.strategy.token_generator is None
-                    ):
-                        self.pruner.strategy.set_token_generator(self.token_generator)
+                    # Generic ChatML template as fallback
+                    formatted_prompt = f"<|im_start|>system\n{system_content}<|im_end|>\n<|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n"
+                
+                self.log(f"Applied generic chat template for {model_type if model_type else 'unknown'} model with system content")
+            
+            # Store original prompt and update with formatted version
+            original_prompt = prompt
+            prompt = formatted_prompt
+            
+        # Tokenize the prompt (now potentially with system content)
+        input_ids, attention_mask = self.token_generator.prepare_input_from_prompt(prompt)
+        prompt_tokens = input_ids.size(1)
+        self._init_sequence_tracking(prompt_tokens)
+        
+        if sequence_callback:
+            sequence_callback(0, 0, prompt_tokens)  # Initial callback
+            
+        # Initialize logical layout for the prompt
+        self.logical_layout.append((0, 0, prompt_tokens - 1))  # Prompt is logical step 0
 
-                    # Set the skip_reapply_threshold flag based on the optimize_pruning parameter
-                    if hasattr(self.pruner, "skip_reapply_threshold"):
-                        self.pruner.skip_reapply_threshold = optimize_pruning
+        if self.debug_mode:
+            self.log(f"Tokenized prompt length: {prompt_tokens} tokens")
+            if system_content:
+                self.log(f"Prompt includes system content")
+            self.log(f"Initial input shape: {input_ids.shape}")
 
-                    # Invariant: Pruning must succeed when requested
-                    pruned_result = self.pruner.prune_parallel_tokens(
-                        input_ids=input_ids,
-                        parallel_tokens=(pruned_token_ids, pruned_token_probs),
-                    )
+        # --- Initialize KV Cache (Crucial!) ---
+        past_key_values = None
+        if not disable_kv_cache:
+            try:
+                self.log("Priming KV cache with initial prompt...")
+                # Pass prompt through model once to get initial KV state
+                with torch.inference_mode():
+                    outputs = self.model(input_ids=input_ids, attention_mask=attention_mask, use_cache=True)
+                past_key_values = outputs.past_key_values
+                self.log(f"KV cache primed. Num layers: {len(past_key_values) if past_key_values else 'None'}")
+            except Exception as e:
+                self.log(f"Error priming KV cache: {e}. Will proceed without.", "error")
+                disable_kv_cache = True  # Force disable if priming failed
+                past_key_values = None
 
-                    # Extract results
-                    if (
-                        pruned_result
-                        and isinstance(pruned_result, tuple)
-                        and len(pruned_result) >= 1
-                    ):
-                        (pruned_token_ids, pruned_token_probs) = pruned_result[0]
-            pruning_time = time.time() - pruning_start
-            self.pruning_time += pruning_time
+        # --- Tracking Variables ---
+        all_original_token_sets = {}  # {logical_pos: [(id, prob), ...]} for originals
+        all_pruned_token_sets = {}    # {logical_pos: [(id, prob), ...]} for pruned
+        had_repetition_loop = False
 
-            # Store token set info more efficiently using NumPy arrays directly
-            token_sets.append(
-                (
-                    len(position_to_tokens) - prompt_length,  # Position
-                    (
-                        original_token_ids,
-                        original_token_probs,
-                    ),  # Original tokens as NumPy arrays
-                    (
-                        pruned_token_ids,
-                        pruned_token_probs,
-                    ),  # Pruned tokens as NumPy arrays
+        # --- Main Generation Loop ---
+        for logical_step in tqdm(range(max_tokens), desc="Generating tokens"):
+            current_physical_len = input_ids.size(1)
+            self.log(f"\n--- Logical Step {logical_step} (Physical Length: {current_physical_len}) ---")
+
+            # 1. Determine input for logit generation
+            if disable_kv_cache:
+                # Use full history
+                input_ids_for_logits = input_ids
+                attention_mask_for_logits = attention_mask
+                kv_cache_for_logits = None
+                self.log("Logit Gen: KV cache disabled, using full input.")
+            elif past_key_values is None:
+                # First step after prompt (or if cache disabled earlier)
+                input_ids_for_logits = input_ids
+                attention_mask_for_logits = attention_mask
+                kv_cache_for_logits = None
+                self.log("Logit Gen: No KV cache yet, using full input.")
+            else:
+                # Use KV cache: Input is only the *last* token(s) added
+                last_logical_pos, last_start_idx, last_end_idx = self.logical_layout[-1]
+                input_ids_for_logits = input_ids[:, last_start_idx:last_end_idx+1]
+                # Attention mask needs correct length for KV cache
+                past_len = past_key_values[0][0].shape[2]  # Length stored in cache
+                num_new = input_ids_for_logits.shape[1]
+                # Create attention mask for the *new* tokens plus the past length
+                attention_mask_for_logits = torch.ones((1, past_len + num_new), device=self.device)
+                kv_cache_for_logits = past_key_values
+                self.log(f"Logit Gen: Using KV cache. Input shape: {input_ids_for_logits.shape}. Attention mask shape: {attention_mask_for_logits.shape}. Past len: {past_len}")
+
+            # 2. Get Logits for the *next physical position*
+            try:
+                # Get next token logits with cache
+                next_token_logits, new_past_key_values = self.token_generator.generate_next_token_with_cache(
+                    input_ids=input_ids_for_logits,
+                    attention_mask=attention_mask_for_logits,
+                    past_key_values=kv_cache_for_logits,
+                    disable_kv_cache=disable_kv_cache
                 )
-            )
-
-            # Add pruned tokens to position_to_tokens mapping
-            position_to_tokens[prompt_length + i] = pruned_token_ids.tolist()
-
-            # Store all tokens for this position for retroactive pruning
-            current_position = len(position_to_tokens) - prompt_length
-            all_parallel_tokens[current_position] = [
-                (tid, prob)
-                for tid, prob in zip(original_token_ids, original_token_probs)
-            ]
-
-            # Create new input representation with the pruned tokens - more efficient approach
-            # Invariant: Attention update must succeed
-            # Pass disable_kv_cache flag to ensure proper context handling
-            attention_start = time.time()
-
-            input_ids, attention_mask, past_key_values = (
-                self.attention_manager.update_input_efficiently(
-                    input_ids=input_ids,
-                    attention_mask=attention_mask,
-                    past_key_values=(
-                        None if disable_kv_cache else past_key_values
-                    ),  # Pass None explicitly if KV cache is disabled
-                    new_token_ids=pruned_token_ids.tolist(),  # Convert to list for attention_manager compatibility
-                    is_kv_cache_disabled=disable_kv_cache,  # Pass flag for explicit handling
-                )
-            )
-            attention_time = time.time() - attention_start
-
-            # Log timing information
-            if i > 0 and i % 5 == 0:
-                self.log(
-                    f"Step {i} timing: logits={logits_time*1000:.1f}ms, select={select_time*1000:.1f}ms, prune={pruning_time*1000:.1f}ms, attention={attention_time*1000:.1f}ms"
-                )
-
-            # Special handling for thinking mode with Qwen/Cogito models
-            if is_thinking_mode and self.is_qwen_model and i > 10 and (i % 20 == 0):
-                # Periodically reset KV cache to prevent issues in long thinking chains
+                
+                # Update the main KV cache for next iteration
                 if not disable_kv_cache:
-                    self.log(
-                        f"Resetting KV cache at step {i} for thinking mode stability"
-                    )
-                    past_key_values = None
-
-            # Stop generation if all tokens are EOS and we've reached min_steps
-            if (
-                self.token_selector.all_are_eos_tokens(pruned_token_ids)
-                and len(pruned_token_ids) > 0
-                and i >= min_steps
-            ):
-                self.log(
-                    f"Stopping because all tokens are EOS after {i+1} steps (min_steps={min_steps})"
-                )
+                    past_key_values = new_past_key_values
+                    if past_key_values:
+                        self.log(f"KV Cache updated. New cache len: {past_key_values[0][0].shape[2]}")
+                    else:
+                        self.log("KV Cache is None after logit generation.", "warning")
+                        
+            except Exception as e:
+                self.log(f"Error during token generation at logical step {logical_step}: {e}", "error")
+                self.log(traceback.format_exc(), "error")
                 break
+
+            # 3. Select Parallel Candidates T
+            try:
+                # Get top token distribution
+                token_distribution, subset_size = self.token_selector.select_tokens(
+                    next_token_logits, threshold=threshold
+                )
+                
+                if not token_distribution:
+                    self.log(f"Warning: No tokens above threshold {threshold} at step {logical_step}. Falling back.", "warning")
+                    token_distribution, _ = self.token_selector.select_tokens(next_token_logits, threshold=0.0, max_tokens=1)
+                    if not token_distribution:
+                        self.log("Critical error: Still no tokens selected. Stopping.", "error")
+                        break
+                        
+                self.log(f"Selected {len(token_distribution)} candidate tokens for logical step {logical_step}.")
+                
+                # Store original candidates
+                original_candidates = [(tid.item(), float(prob)) for tid, prob in token_distribution]
+                all_original_token_sets[logical_step] = original_candidates
+                
+            except ValueError as e:
+                self.log(f"Error selecting tokens at step {logical_step}: {e}. Logits shape: {next_token_logits.shape}", "error")
+                break
+
+            # 4. Apply Pruning to get T'
+            pruned_distribution = token_distribution  # Start with original candidates
+            if use_pruning and active_pruner is not None and len(token_distribution) > 1:
+                pruning_start = time.time()
+                try:
+                    # Extract token ids and probs for pruner
+                    token_ids = [tid.item() for tid, _ in token_distribution]
+                    token_probs = [float(prob) for _, prob in token_distribution]
+                    
+                    # Get context from full input_ids
+                    context_ids = input_ids[0].tolist()
+                    
+                    # Apply pruning
+                    if hasattr(active_pruner, 'prune'):
+                        # Use the prune method if available
+                        prune_results = active_pruner.prune(
+                            token_ids=token_ids,
+                            token_probs=token_probs,
+                            token_logits=[next_token_logits[0]],
+                            step=logical_step,
+                            position_history=self.attention_manager.get_token_history() if hasattr(self.attention_manager, 'get_token_history') else []
+                        )
+                        
+                        # Extract pruned indices
+                        if isinstance(prune_results, tuple):
+                            pruned_indices = prune_results[0]
+                        else:
+                            pruned_indices = prune_results
+                            
+                        # If all tokens were pruned, this is a problem
+                        if len(pruned_indices) == len(token_distribution):
+                            self.log("Warning: All tokens were pruned, selecting the highest probability token", "warning")
+                            pruned_indices = []  # Don't prune anything
+                            
+                        # Keep only non-pruned tokens
+                        pruned_distribution = [token_distribution[i] for i in range(len(token_distribution)) if i not in pruned_indices]
+                        
+                    elif hasattr(active_pruner, 'strategy') and hasattr(active_pruner.strategy, 'prune_tokens'):
+                        # Use the strategy's prune_tokens method - IMPORTANT: Pass tensor not list
+                        pruned_tuples = active_pruner.strategy.prune_tokens(
+                            input_ids,  # Pass the tensor directly, not the list
+                            [(tid.item(), float(prob)) for tid, prob in token_distribution]
+                        )
+                        
+                        # If pruning returned some tokens
+                        if pruned_tuples:
+                            pruned_distribution = [(torch.tensor(tid, device=self.device), prob) for tid, prob in pruned_tuples]
+                            self.log(f"Pruning kept {len(pruned_distribution)} tokens out of {len(token_distribution)}.")
+                        else:
+                            self.log("Warning: Pruning removed all tokens, keeping highest prob original.", "warning")
+                            pruned_distribution = [token_distribution[0]]  # Keep best original
+                    
+                except Exception as e:
+                    self.log(f"Error during pruning at step {logical_step}: {e}", "error")
+                    self.log(traceback.format_exc(), "error")
+                    # Fallback to original distribution
+                    pruned_distribution = token_distribution
+                    
+                pruning_time += time.time() - pruning_start
+                pruning_steps += 1
+                
+                # Store pruned results for this step
+                pruned_candidates = [(tid.item(), float(prob)) for tid, prob in pruned_distribution]
+                all_pruned_token_sets[logical_step] = pruned_candidates
 
             # Apply retroactive pruning if available
-            if retroactive_pruner is not None and i > 0:  # Skip first token
-                if self.debug_mode:
-                    print(f"\nApplying retroactive pruning at step {i}")
-                    print(f"Retroactive pruner available: {retroactive_pruner is not None}")
-                    print(f"Token generator available: {self.token_generator is not None}")
-                    print(f"Number of parallel positions: {len(all_parallel_tokens)}")
+            if retroactive_pruner is not None and logical_step > 0:  # Can only prune previous steps
+                retroactive_pruning_start = time.time()
+                try:
+                    # Update retroactive pruner with current step
+                    if hasattr(retroactive_pruner, 'update_step'):
+                        retroactive_pruner.update_step(logical_step)
 
-                # Set token generator if not already set
-                if retroactive_pruner.token_generator is None:
-                    if self.debug_mode:
-                        print("Setting token generator for retroactive pruner")
-                    retroactive_pruner.set_token_generator(self.token_generator)
+                    # Prune history before adding current tokens
+                    if hasattr(retroactive_pruner, 'retroactively_prune'):
+                        pruned_history = retroactive_pruner.retroactively_prune(
+                            prompt_length=prompt_tokens,
+                            all_parallel_tokens=all_original_token_sets,  # Pass history of originals
+                            step=logical_step  # Prune based on attention from predicting this step
+                        )
+                        # Update the pruned sets history (used for formatting later)
+                        all_pruned_token_sets.update(pruned_history)
+                        self.log(f"Retroactive pruning applied up to step {logical_step-1}.")
+                
+                except Exception as e:
+                    self.log(f"Error during retroactive pruning at step {logical_step}: {e}", "error")
+                    self.log(traceback.format_exc(), "error")
+                    
+                pruning_time += time.time() - retroactive_pruning_start
 
-                # Update step for dynamic thresholding
-                if hasattr(retroactive_pruner, 'update_step'):
-                    if self.debug_mode:
-                        print(f"Updating retroactive pruner step to {i}")
-                    retroactive_pruner.update_step(i)
+            # 5. Extract token IDs from final pruned distribution
+            T_prime_ids = [tid.item() for tid, _ in pruned_distribution]
+            T_prime_probs = [float(prob) for _, prob in pruned_distribution]
+            
+            # If no tokens left after pruning (shouldn't happen due to fallbacks, but just in case)
+            if not T_prime_ids:
+                self.log("Warning: No tokens left after pruning, using top original token", "warning")
+                T_prime_ids = [token_distribution[0][0].item()]
+                T_prime_probs = [float(token_distribution[0][1])]
 
-                # Retroactively prune previous positions based on newest token's attention
-                if self.debug_mode:
-                    print("Calling retroactive_prune...")
-                pruned_parallel_tokens = retroactive_pruner.retroactively_prune(
-                    prompt_length=prompt_length, all_parallel_tokens=all_parallel_tokens
-                )
-
-                # Update all_parallel_tokens with pruned results
-                if self.debug_mode:
-                    print(f"Pruning complete. Original positions: {len(all_parallel_tokens)}, Pruned positions: {len(pruned_parallel_tokens)}")
-                all_parallel_tokens = pruned_parallel_tokens
-
-        # Close progress bar
-        progress_bar.close()
-
-        # Print detailed timing summary if available
-        if (
-            use_pruning
-            and self.pruner is not None
-            and hasattr(self.pruner, "step_timings")
-            and self.pruner.step_timings
-        ):
-            timings = self.pruner.step_timings
-            print("\n=== Timing Analysis ===")
-            print(f"Total steps: {len(timings)}")
-
-            # Group timings into bins for analysis
-            bins = min(10, len(timings))
-            bin_size = max(1, len(timings) // bins)
-
-            # Calculate averages for each bin
-            for i in range(bins):
-                start_idx = i * bin_size
-                end_idx = min((i + 1) * bin_size, len(timings))
-                bin_timings = timings[start_idx:end_idx]
-
-                avg_reapply = sum(t["reapply_ms"] for t in bin_timings) / len(
-                    bin_timings
-                )
-                avg_total = sum(t["total_ms"] for t in bin_timings) / len(bin_timings)
-                avg_tokens = sum(t["tokens_before"] for t in bin_timings) / len(
-                    bin_timings
-                )
-
-                print(
-                    f"Steps {start_idx}-{end_idx-1}: "
-                    + f"reapply={avg_reapply:.1f}ms ({avg_reapply/avg_total*100:.1f}%), "
-                    + f"total={avg_total:.1f}ms, avg_tokens={avg_tokens:.1f}"
-                )
-
-            # Show change in reapply time from beginning to end
-            if len(timings) > 1:
-                first_reapply = timings[0]["reapply_ms"]
-                last_reapply = timings[-1]["reapply_ms"]
-                reapply_increase = (
-                    (last_reapply / first_reapply)
-                    if first_reapply > 0
-                    else float("inf")
-                )
-                print(
-                    f"\nReapply time growth: {first_reapply:.1f}ms → {last_reapply:.1f}ms ({reapply_increase:.1f}x)"
-                )
-
-                # Alert if this is the likely bottleneck
-                if reapply_increase > 3.0 and last_reapply > 20.0:
-                    print(
-                        "\n⚠️ Performance bottleneck detected in threshold reapplication!"
-                    )
-                    print(
-                        "   This suggests O(n²) complexity in the dynamic thresholding."
-                    )
-
-        # Update position_to_tokens with final pruned sets if using dynamic threshold
-        if (
-            use_pruning
-            and self.pruner is not None
-            and hasattr(self.pruner, "use_dynamic_threshold")
-            and self.pruner.use_dynamic_threshold
-        ):
-            # Get final pruned sets - optimize this to avoid recomputing everything
-            final_pruned_sets = self.pruner.get_final_pruned_sets()
-
-            # Update position_to_tokens with batch update
-            for step, pruned_set in enumerate(final_pruned_sets):
-                position = prompt_length + step
-                if position in position_to_tokens:
-                    position_to_tokens[position] = [t[0] for t in pruned_set]
-
-        # Format the generated text - only decode tokens once
-        if show_token_ids:
-            formatted_text = self.text_formatter.format_with_token_ids_and_pruning(
-                prompt,
-                position_to_tokens,
-                original_parallel_positions,
-                prompt_length,
-                all_parallel_tokens,  # Pass pruned parallel sets for improved display
-            )
-        else:
-            formatted_text = self.text_formatter.format_generated_text_with_pruning(
-                prompt,
-                position_to_tokens,
-                original_parallel_positions,
-                prompt_length,
-                all_parallel_tokens,  # Pass pruned parallel sets for improved display
-            )
-
-        # Generate raw text efficiently - single decoding operation
-        # Vectorized approach to build token sequence
-        token_sequence = []
-
-        # Add prompt tokens using tensor slicing
-        if len(input_ids.shape) > 1 and input_ids.shape[1] > 0:
-            # Convert the prompt section to a list at once instead of looping
-            prompt_tokens = input_ids[
-                0, : min(prompt_length, input_ids.shape[1])
-            ].tolist()
-            token_sequence.extend(prompt_tokens)
-        elif len(input_ids.shape) == 1:
-            token_sequence.append(input_ids.item())
-        else:
-            raise ValueError("Unexpected input_ids shape")
-
-        # Add generated tokens
-        # Using a list comprehension for generated positions
-        generated_tokens = [
-            int(token)  # Ensure token IDs are integers
-            for pos in sorted(position_to_tokens.keys())
-            if pos >= prompt_length
-            for token in position_to_tokens[pos]
-        ]
-        token_sequence.extend(generated_tokens)
-
-        # Batch decode the raw generated text - much faster than token-by-token
-        raw_generated_text = self.tokenizer.decode(
-            token_sequence, skip_special_tokens=True
-        )
-
-        # Total generation time
-        self.generation_time = time.time() - start_time
-
-        # Update sequence length with total generated tokens
-        self._init_sequence_tracking(prompt_length)
-        self.update_sequence_length(running_total_tokens, sequence_callback)
+            # 6. Update Canonical State (input_ids stream)
+            physical_start_idx = input_ids.size(1)
+            new_tokens_tensor = torch.tensor([T_prime_ids], device=self.device)
+            
+            input_ids = torch.cat([input_ids, new_tokens_tensor], dim=1)
+            attention_mask = torch.cat([attention_mask, torch.ones((1, len(T_prime_ids)), device=self.device)], dim=1)
+            
+            physical_end_idx = input_ids.size(1) - 1
+            
+            # Update logical layout
+            self.logical_layout.append((logical_step, physical_start_idx, physical_end_idx))
+            self.log(f"Appended {len(T_prime_ids)} tokens. New physical length: {input_ids.size(1)}")
+            self.log(f"Logical layout updated: ({logical_step}, {physical_start_idx}, {physical_end_idx})")
+            
+            # Update sequence length tracking
+            self.update_sequence_length(input_ids.size(1) - prompt_tokens, sequence_callback)
+            
+            # 7. Configure RoPE/Attention for Next Step
+            if self.rope_modifier is not None and len(T_prime_ids) > 1:
+                # Create position mapping from physical positions to logical step
+                position_mapping = {idx: logical_step for idx in range(physical_start_idx, physical_end_idx + 1)}
+                self.rope_modifier.register_parallel_positions(position_mapping)
+                self.log(f"RoPE configured for parallel set at logical position {logical_step} (physical indices {physical_start_idx}-{physical_end_idx})")
+            
+            # Also update the attention manager with the token history
+            if hasattr(self.attention_manager, 'update_token_history'):
+                for token_id in T_prime_ids:
+                    self.attention_manager.update_token_history(token_id)
+                    
+            # 8. Termination Check
+            if logical_step >= min_steps:
+                if any(tid == self.tokenizer.eos_token_id for tid in T_prime_ids):
+                    self.log(f"EOS token generated at logical step {logical_step}, ending generation.")
+                    # Truncate input_ids at first EOS token
+                    eos_indices = [i for i, tid in enumerate(T_prime_ids) if tid == self.tokenizer.eos_token_id]
+                    if eos_indices:
+                        first_eos_physical_idx = physical_start_idx + min(eos_indices)
+                        input_ids = input_ids[:, :first_eos_physical_idx + 1]  # Include the EOS token
+                        attention_mask = attention_mask[:, :first_eos_physical_idx + 1]
+                        # Adjust logical layout
+                        if self.logical_layout[-1][0] == logical_step:
+                            self.logical_layout[-1] = (logical_step, physical_start_idx, first_eos_physical_idx)
+                        self.log(f"Truncated sequence at first EOS token (physical index {first_eos_physical_idx}).")
+                    break
+                    
+        # --- Post-Generation Cleanup ---
+        if self.rope_modifier is not None:
+            self.rope_modifier.reset()
+            
+        # Decode the generated text
+        generated_token_ids = input_ids[0][prompt_tokens:].tolist()
+        raw_generated_text = self.tokenizer.decode(generated_token_ids, skip_special_tokens=True)
+        full_text = prompt + raw_generated_text
         
-        # Prepare results dictionary - optimize for memory by only including what's needed
-        results = {
-            "generated_text": formatted_text,
+        # Build visualization data
+        token_sets_for_vis = []
+        if return_parallel_sets:
+            for logical_step in range(len(all_original_token_sets)):
+                original_set = all_original_token_sets.get(logical_step, [])
+                pruned_set = all_pruned_token_sets.get(logical_step, original_set)  # Use original if no pruned entry
+                
+                # Extract ids and probs
+                original_ids = [tid for tid, _ in original_set]
+                original_probs = [prob for _, prob in original_set]
+                
+                # Extract only the tokens that were pruned
+                pruned_ids = []
+                pruned_probs = []
+                for tid, prob in original_set:
+                    if tid not in [p_tid for p_tid, _ in pruned_set]:
+                        pruned_ids.append(tid)
+                        pruned_probs.append(prob)
+                        
+                token_sets_for_vis.append(
+                    (
+                        logical_step,  # Logical step
+                        (original_ids, original_probs),
+                        (pruned_ids, pruned_probs)
+                    )
+                )
+                
+        # Format output using the logical layout
+        formatted_output = self.text_formatter.format_using_layout(
+            prompt=prompt,
+            input_ids=input_ids[0].tolist(),
+            logical_layout=self.logical_layout,
+            prompt_length=prompt_tokens,
+            all_original_token_sets=all_original_token_sets,
+            tokenizer=self.tokenizer,
+            show_token_ids=show_token_ids
+        )
+        
+        # Check for repetition patterns
+        had_repetition_loop = False
+        
+        # Simple repetition detection
+        def check_for_repetition(text, min_length=5, max_length=20, min_repeats=3):
+            if len(text) < min_length * min_repeats:
+                return None
+                
+            for seq_len in range(min_length, min(max_length, len(text) // min_repeats)):
+                for i in range(len(text) - seq_len * min_repeats):
+                    seq = text[i:i+seq_len]
+                    # Skip sequences that are just spaces or very simple patterns
+                    if seq.isspace() or seq == seq[0] * seq_len:
+                        continue
+                    # Count non-overlapping occurrences
+                    count = 0
+                    pos = i
+                    while pos < len(text):
+                        found_pos = text.find(seq, pos)
+                        if found_pos == -1:
+                            break
+                        count += 1
+                        pos = found_pos + seq_len
+                    
+                    if count >= min_repeats:
+                        return f"'{seq}' repeats {count} times"
+            return None
+            
+        repetition_check = check_for_repetition(raw_generated_text)
+        if repetition_check:
+            had_repetition_loop = True
+            self.log(f"Repetition detected: {repetition_check}")
+            
+        # Calculate generation time
+        generation_time = time.time() - generation_start
+        self.generation_time = generation_time
+        self.pruning_time = pruning_time
+        
+        # Prepare result
+        result = {
+            "generated_text": formatted_output,
             "raw_generated_text": raw_generated_text,
+            "generation_time": generation_time,
+            "pruning_time": pruning_time,
+            "is_qwen_model": getattr(self, 'is_qwen_model', False),
+            "had_repetition_loop": had_repetition_loop,
             "prompt": prompt,
             "threshold": threshold,
             "use_pruning": use_pruning,
             "min_steps": min_steps,
-            "generation_time": self.generation_time,
-            "pruning_time": self.pruning_time,
-            "use_custom_rope": self.use_custom_rope,
-            "system_content": system_content,
-            "is_qwen_model": self.is_qwen_model,
-            "had_repetition_loop": in_repetition_loop,
-            "sequence_length": self.get_sequence_length(),
-            "total_sequence_length": self.get_total_sequence_length(),
+            "disable_kv_cache": disable_kv_cache,
+            "isolate_parallel_tokens": isolate_parallel_tokens,
+            "logical_layout": self.logical_layout,
         }
-
-        # Add isolated tokens mode information
-        if isolate_parallel_tokens:
-            results["isolate_parallel_tokens"] = True
-
-            # Count how many tokens were generated in parallel mode
-            parallel_token_count = 0
-            total_parallel_sets = 0
-            for pos in sorted(position_to_tokens.keys()):
-                if pos >= prompt_length:
-                    tokens = position_to_tokens[pos]
-                    if len(tokens) > 1:
-                        parallel_token_count += len(tokens)
-                        total_parallel_sets += 1
-
-            # Calculate efficiency gains
-            if total_parallel_sets > 0:
-                # Each parallel set with n tokens saved (n-1) forward passes
-                model_calls_saved = parallel_token_count - total_parallel_sets
-
-                # Estimate compute savings (1 forward pass per parallel set instead of 1 per token)
-                if self.token_generator.perf_stats["model_calls"] > 0:
-                    avg_forward_time = (
-                        self.token_generator.perf_stats["model_time"]
-                        / self.token_generator.perf_stats["model_calls"]
-                    )
-                    estimated_time_saved = model_calls_saved * avg_forward_time
-
-                    results["isolated_mode_stats"] = {
-                        "parallel_token_count": parallel_token_count,
-                        "parallel_sets": total_parallel_sets,
-                        "model_calls_saved": model_calls_saved,
-                        "estimated_time_saved_ms": estimated_time_saved * 1000,
-                    }
-
-                    # Print summary if in debug mode
-                    if debug_mode:
-                        print(f"\nIsolated Parallel Token Optimization:")
-                        print(f"  Parallel tokens processed: {parallel_token_count}")
-                        print(f"  Parallel token sets: {total_parallel_sets}")
-                        print(f"  Model forward passes saved: {model_calls_saved}")
-                        print(
-                            f"  Estimated compute time saved: {estimated_time_saved*1000:.1f}ms"
-                        )
-
-                        # Print efficiency improvement ratio
-                        if parallel_token_count > 0:
-                            efficiency_ratio = (
-                                parallel_token_count / total_parallel_sets
-                            )
-                            print(
-                                f"  Efficiency ratio: {efficiency_ratio:.2f}x (computed {total_parallel_sets} times instead of {parallel_token_count})"
-                            )
-
-        # Add parallel sets data only if requested to save memory
+        
+        # Add visualization data if requested
         if return_parallel_sets:
-            # Efficiently convert to human-readable format only when needed
-            token_id_map = {}
+            result["token_sets"] = token_sets_for_vis
+            result["all_original_token_sets"] = all_original_token_sets
+            result["all_pruned_token_sets"] = all_pruned_token_sets
+            
+        # Add pruning statistics
+        if use_pruning:
+            result["pruning_time"] = pruning_time
+            result["pruning_steps"] = pruning_steps
+            
+        # Restore original debug mode if needed
+        if debug_mode is not None:
+            self.set_debug_mode(original_debug_mode)
+            
+        return result
 
-            def get_token_text(token_id: int) -> str:
-                """
-                Get the text representation of a token ID, with caching.
-
-                Args:
-                    token_id: Token ID to decode
-
-                Returns:
-                    str: Decoded token text
-                """
-                # Invariant: Token ID must be a numeric type that can be converted to integer
-                if not isinstance(token_id, (int, np.integer, np.floating)):
-                    raise ValueError(
-                        f"Invariant violation: Token ID must be a numeric type, got {type(token_id)}"
-                    )
-
-                # Convert to integer to ensure type safety
-                token_id = int(token_id)
-
-                # Check cache first
-                if token_id in token_id_map:
-                    return token_id_map[token_id]
-
-                # Decode and cache
-                token_id_map[token_id] = self.tokenizer.decode(
-                    [token_id], skip_special_tokens=False
-                )
-                return token_id_map[token_id]
-
-            # Only include the minimal necessary data for visualization
-            if use_pruning and self.pruner is not None:
-                # Add pruned information in a memory-efficient way
-                position_info = {}
-                for pos, tokens in position_to_tokens.items():
-                    if pos >= prompt_length:  # Only include generated tokens
-                        # Batch decode tokens
-                        position_info[str(pos)] = [get_token_text(t) for t in tokens]
-
-                results["position_to_tokens"] = position_info
-
-                # Include raw token sets only if specifically needed
-                if (
-                    hasattr(self.pruner, "use_dynamic_threshold")
-                    and self.pruner.use_dynamic_threshold
-                ):
-                    pruned_sets = self.pruner.get_final_pruned_sets()
-                    results["final_pruned_sets"] = pruned_sets
-
-            # Add position to tokens mapping for visualization
-            position_info = {}
-            for pos, tokens in position_to_tokens.items():
-                if pos >= prompt_length:  # Only include generated tokens
-                    decoded_tokens = []
-                    for t in tokens:
-                        try:
-                            if isinstance(t, int):
-                                decoded_tokens.append(self.tokenizer.decode([t]))
-                            else:
-                                # Skip invalid tokens
-                                pass
-                        except Exception:
-                            # Skip on any decoding error
-                            pass
-                    position_info[str(pos)] = decoded_tokens
-            results["position_to_tokens"] = position_info
-
-        # Add model internal diagnostics when in debug mode
-        if self.debug_mode and hasattr(self.model, "intermediate_values"):
-            # Add keys of captured intermediate values
-            results["intermediate_value_keys"] = list(
-                self.model.intermediate_values.keys()
-            )
-
-        # Generation completed
-        results["generation_time"] = time.time() - start_time
-
-        # Print performance statistics if in debug mode
-        if debug_mode:
-            print("\nPerformance Statistics:")
-            # Print token generator stats
-            self.token_generator.print_performance_stats()
-
-            # Print attention manager stats
-            self.attention_manager.print_performance_stats()
-
-            # Print pruner stats if available
-            if (
-                use_pruning
-                and self.pruner is not None
-                and hasattr(self.pruner, "print_performance_stats")
-            ):
-                self.pruner.print_performance_stats()
-
-            # Print overall generation stats
-            print("\nOverall Generation Stats:")
-            generation_time = results["generation_time"]
-            tokens_generated = (
-                len(results["token_sets"]) if "token_sets" in results else 0
-            )
-            print(f"  Generation time: {generation_time:.2f}s")
-            print(f"  Tokens generated: {tokens_generated}")
-            if tokens_generated > 0:
-                print(f"  Tokens per second: {tokens_generated / generation_time:.2f}")
-
-        return results
+    def set_debug_mode(self, enabled: bool = True):
+        """Enable or disable debug mode for detailed logging."""
+        # Only change if the value is changing
+        if self.debug_mode != enabled:
+            self.debug_mode = enabled
+            if enabled:
+                print(f"ParallelGenerator debug mode ENABLED")
+            else:
+                print(f"ParallelGenerator debug mode disabled")
+            
+            # Propagate debug mode to components
+            if self.rope_modifier is not None:
+                self.rope_modifier.set_debug_mode(enabled)
+            
+            if hasattr(self, "attention_manager") and self.attention_manager is not None:
+                self.attention_manager.set_debug_mode(enabled)
+                
+            if hasattr(self, "token_selector") and self.token_selector is not None:
+                self.token_selector.set_debug_mode(enabled)
+                
+            if hasattr(self, "token_generator") and self.token_generator is not None:
+                self.token_generator.set_debug_mode(enabled)

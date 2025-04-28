@@ -5,17 +5,17 @@ from typing import List, Optional, Tuple, Dict, Any
 class DynamicThresholdManager:
     """
     Manages dynamic thresholds that change over the course of generation.
-    
+
     This class provides two methods for controlling threshold progression during generation:
-    
-    1. Bezier Curve (default): Creates a smooth, gradual transition from base_threshold to 
+
+    1. Bezier Curve (default): Creates a smooth, gradual transition from base_threshold to
        final_threshold using a cubic Bezier curve. This provides a continuous, organic shift
        between exploration and exploitation phases.
-       
-    2. ReLU Transition: Creates a distinct phase transition with a flat period (maintaining 
-       base_threshold) until reaching the activation point, followed by a linear increase to 
+
+    2. ReLU Transition: Creates a distinct phase transition with a flat period (maintaining
+       base_threshold) until reaching the activation point, followed by a linear increase to
        final_threshold. This creates a clear separation between exploration and exploitation.
-       
+
     The ReLU transition is particularly useful when you want to:
     - Have a well-defined exploration phase before committing to specific paths
     - Create a distinct "thinking" phase followed by a "concluding" phase
@@ -70,7 +70,7 @@ class DynamicThresholdManager:
                 raise ValueError(
                     f"Invariant violation: bezier_points must be between 0 and 1, got {bezier_points}"
                 )
-                
+
         # Invariant: ReLU activation point must be in valid range
         if not (0 <= relu_activation_point <= 1):
             raise ValueError(
@@ -80,7 +80,11 @@ class DynamicThresholdManager:
         self.base_threshold = base_threshold
         self.max_steps = max_steps or 100  # Default if not specified
         self.max_tokens_per_step = max_tokens_per_step
+
+        # This counter tracks how many token sets have been stored
+        # It will be synchronized with the external step counter in store_token_set
         self.current_step = 0
+
         self.final_threshold = final_threshold
         self.use_relu = use_relu
         self.relu_activation_point = relu_activation_point
@@ -119,11 +123,29 @@ class DynamicThresholdManager:
 
         # Cache for optimized recomputation
         self.cached_threshold = None
-        self.threshold_epsilon = 0.01  # Only recompute when threshold changes by more than this
+        self.threshold_epsilon = (
+            0.01  # Only recompute when threshold changes by more than this
+        )
 
-    def get_current_threshold(self) -> float:
+        # Print initialization information to console
+        print(f"\n*** INITIALIZING DYNAMIC THRESHOLD MANAGER ***")
+        print(f"Base threshold: {base_threshold}")
+        print(f"Final threshold: {final_threshold}")
+        print(f"Max steps: {self.max_steps}")
+        if use_relu:
+            print(
+                f"Using ReLU transition with activation point: {relu_activation_point}"
+            )
+        else:
+            print(f"Using Bezier curve with control points: {self.bezier_points}")
+        print("*" * 50)
+
+    def get_current_threshold(self, step: Optional[int] = None) -> float:
         """
         Get the current threshold value based on step progress.
+
+        Args:
+            step: The current generation step (optional, uses internal step if None)
 
         Returns:
             float: Current threshold value
@@ -131,13 +153,21 @@ class DynamicThresholdManager:
         if self.max_steps <= 1:
             return self.base_threshold
 
+        # Use provided step if given, otherwise fall back to internal counter
+        current_step = step if step is not None else self.current_step
+
         # Calculate progress as a value between 0 and 1
-        progress = min(1.0, self.current_step / self.max_steps)
+        progress = min(1.0, current_step / self.max_steps)
 
         if self.use_relu:
             # Calculate threshold using ReLU transition
             # Stay flat until activation point, then linear increase
-            relu_value = max(0, progress - self.relu_activation_point) / (1.0 - self.relu_activation_point) if self.relu_activation_point < 1.0 else 0.0
+            relu_value = (
+                max(0, progress - self.relu_activation_point)
+                / (1.0 - self.relu_activation_point)
+                if self.relu_activation_point < 1.0
+                else 0.0
+            )
             transition_value = relu_value
         else:
             # Calculate threshold using cubic Bezier curve for smooth progression
@@ -154,6 +184,30 @@ class DynamicThresholdManager:
             self.base_threshold
             + (self.final_threshold - self.base_threshold) * transition_value
         )
+
+        # Output threshold information to console every 10 steps
+        if (
+            current_step % 10 == 0 or current_step > 80
+        ):  # More debug info as we approach later steps
+            print(f"\n*** DYNAMIC THRESHOLD AT STEP {current_step} ***")
+            print(f"Progress: {progress:.4f} ({current_step}/{self.max_steps})")
+            print(f"Current threshold value: {current_threshold:.4f}")
+            if current_step > 80:  # Extra debug info near the end
+                print(
+                    f"DETAILED STATUS: Transition value = {transition_value:.4f}, Max steps setting = {self.max_steps}"
+                )
+                print(
+                    f"STOPPING CONDITIONS: Will stop if no tokens have probability >= {current_threshold:.4f}"
+                )
+                # Print whether we've reached the final threshold
+                percentage_to_final = (
+                    (current_threshold - self.base_threshold)
+                    / (self.final_threshold - self.base_threshold)
+                    * 100
+                )
+                print(
+                    f"Progress to final threshold: {percentage_to_final:.1f}% ({current_threshold:.4f}/{self.final_threshold:.4f})"
+                )
 
         return current_threshold
 
@@ -184,7 +238,10 @@ class DynamicThresholdManager:
         )
 
     def store_token_set(
-        self, token_set: List[Tuple[int, float]], token_scores: List[Tuple[int, float]]
+        self,
+        token_set: List[Tuple[int, float]],
+        token_scores: List[Tuple[int, float]],
+        step: Optional[int] = None,
     ):
         """
         Store a token set and its scores for reapplication of thresholds.
@@ -192,7 +249,11 @@ class DynamicThresholdManager:
         Args:
             token_set: List of (token_id, probability) tuples
             token_scores: List of (token_id, normalized_score) tuples
+            step: The current generation step (optional, uses internal step if None)
         """
+        # Use provided step if given, otherwise use internal counter for storage
+        storage_step = step if step is not None else self.current_step
+
         # Invariant: Token set and scores must be the same length
         if len(token_set) != len(token_scores):
             raise ValueError(
@@ -206,7 +267,7 @@ class DynamicThresholdManager:
             )
 
         # Safety check for tensor size
-        if self.current_step >= self.max_steps:
+        if storage_step >= self.max_steps:
             raise ValueError(
                 f"Exceeded maximum steps ({self.max_steps}). Increase max_steps in initialization."
             )
@@ -224,10 +285,10 @@ class DynamicThresholdManager:
 
         # Store the number of tokens for this step
         num_tokens = len(token_set)
-        self.tokens_per_step[self.current_step] = num_tokens
+        self.tokens_per_step[storage_step] = num_tokens
 
         # Update the valid mask for this step
-        self.valid_mask[self.current_step, :num_tokens] = True
+        self.valid_mask[storage_step, :num_tokens] = True
 
         # Extract token IDs, probabilities, and scores using vectorized operations
         if num_tokens > 0:
@@ -246,16 +307,62 @@ class DynamicThresholdManager:
             )
 
             # Store in pre-allocated tensors with slice assignment (vectorized)
-            self.token_ids[self.current_step, :num_tokens] = token_ids_array
-            self.token_probs[self.current_step, :num_tokens] = token_probs_array
-            self.token_scores[self.current_step, :num_tokens] = token_scores_array
+            self.token_ids[storage_step, :num_tokens] = token_ids_array
+            self.token_probs[storage_step, :num_tokens] = token_probs_array
+            self.token_scores[storage_step, :num_tokens] = token_scores_array
 
-        # Increment step counter after storing
-        self.current_step += 1
+        # Update our internal counter to match the latest step we've processed
+        # This ensures we're tracking the same step as the external counter
+        if step is not None and step >= self.current_step:
+            self.current_step = step + 1
+        else:
+            # Only increment if we're using our internal counter
+            self.current_step += 1
 
-    def reapply_threshold_to_all_sets(self) -> List[List[Tuple[int, float]]]:
+        # Get the step to use for debugging output
+        debug_step = step if step is not None else self.current_step - 1
+
+        # Extra debug output for token sets near the end of generation
+        if debug_step > 80:
+            print(f"\n*** TOKEN SET AT STEP {debug_step} ***")
+            print(f"Number of tokens stored: {num_tokens}")
+            if num_tokens > 0:
+                # Print top 3 tokens with probabilities
+                top_n = min(3, num_tokens)
+                print(f"Top {top_n} tokens with probabilities:")
+                for i in range(top_n):
+                    token_id = token_ids_array[i]
+                    token_prob = token_probs_array[i]
+                    token_score = token_scores_array[i]
+                    print(
+                        f"  Token ID: {token_id}, Probability: {token_prob:.6f}, Score: {token_score:.6f}"
+                    )
+
+                # Print highest probability token
+                max_prob_idx = np.argmax(token_probs_array)
+                print(
+                    f"Highest probability token: ID={token_ids_array[max_prob_idx]}, Prob={token_probs_array[max_prob_idx]:.6f}"
+                )
+
+                # Check if any tokens would pass the next threshold level
+                current_threshold = self.get_current_threshold(debug_step)
+                tokens_above_threshold = np.sum(token_scores_array >= current_threshold)
+                print(
+                    f"Tokens that would pass current threshold ({current_threshold:.4f}): {tokens_above_threshold}"
+                )
+                if tokens_above_threshold == 0:
+                    print(
+                        "*** WARNING: No tokens would pass the current threshold! Generation might stop at next step. ***"
+                    )
+
+    def reapply_threshold_to_all_sets(
+        self, step: Optional[int] = None
+    ) -> List[List[Tuple[int, float]]]:
         """
         Reapply the current threshold to all previously processed token sets.
+
+        Args:
+            step: The current generation step (optional, uses internal step if None)
 
         Returns:
             List[List[Tuple[int, float]]]: Updated list of pruned token sets
@@ -263,27 +370,73 @@ class DynamicThresholdManager:
         if self.current_step == 0:
             return []
 
-        current_threshold = self.get_current_threshold()
+        # Use provided step if given, otherwise fall back to internal counter
+        current_step = step if step is not None else self.current_step
 
-        # Process all steps up to current_step
+        current_threshold = self.get_current_threshold(current_step)
+
+        # Add debug output about the current threshold
+        print(
+            f"\nReapplying dynamic threshold: {current_threshold:.4f} at step {current_step}"
+        )
+        print(
+            f"  Base threshold: {self.base_threshold:.4f}, Final threshold: {self.final_threshold:.4f}"
+        )
+        print(
+            f"  Progress: {min(1.0, current_step / self.max_steps):.4f} ({current_step}/{self.max_steps} steps)"
+        )
+
+        # Determine the number of valid steps to process (only process steps we've actually stored data for)
+        max_valid_step = min(current_step, self.current_step)
+        print(
+            f"  Processing {max_valid_step} token sets (out of {self.current_step} stored)"
+        )
+
+        if self.use_relu:
+            print(
+                f"  Using ReLU transition with activation point: {self.relu_activation_point:.4f}"
+            )
+        else:
+            print(f"  Using Bezier curve with control points: {self.bezier_points}")
+
+        # For the final step before generation ends, print detailed information
+        if current_step > 80:  # We know it stops around step 86
+            print(f"FINAL STEP DEBUGGING - Step {current_step}:")
+            print(f"  Current threshold: {current_threshold:.4f}")
+            print(f"  Progress: {min(1.0, current_step / self.max_steps):.4f}")
+            print(f"  Max steps setting: {self.max_steps}")
+
+        # Process all steps up to max_valid_step
         pruned_sets = []
-        for step in range(self.current_step):
+        total_tokens_before = 0
+        total_tokens_after = 0
+
+        for step_idx in range(max_valid_step):
             # Get valid tokens for this step
-            step_valid_mask = self.valid_mask[step]
-            num_tokens = self.tokens_per_step[step]
+            step_valid_mask = self.valid_mask[step_idx]
+            num_tokens = self.tokens_per_step[step_idx]
 
             # Get token IDs and scores for this step
-            step_token_ids = self.token_ids[step, :num_tokens]
-            step_token_scores = self.token_scores[step, :num_tokens]
-            step_token_probs = self.token_probs[step, :num_tokens]
+            step_token_ids = self.token_ids[step_idx, :num_tokens]
+            step_token_scores = self.token_scores[step_idx, :num_tokens]
+            step_token_probs = self.token_probs[step_idx, :num_tokens]
 
             # Create mask for tokens above threshold
             above_threshold = step_token_scores >= current_threshold
+
+            # Count tokens before pruning
+            tokens_before = num_tokens
+            total_tokens_before += tokens_before
 
             # If no tokens would be kept, keep the highest probability token
             if not np.any(above_threshold):
                 max_prob_idx = np.argmax(step_token_probs)
                 above_threshold[max_prob_idx] = True
+                # Extra debug near the end
+                if current_step > 80:
+                    print(
+                        f"  Step {step_idx}: NO TOKENS ABOVE THRESHOLD! Keeping only max prob token (ID={step_token_ids[max_prob_idx]}, prob={step_token_probs[max_prob_idx]:.6f})"
+                    )
 
             # Create pruned set for this step
             step_pruned = []
@@ -293,16 +446,42 @@ class DynamicThresholdManager:
                         (int(step_token_ids[i]), float(step_token_probs[i]))
                     )
 
+            # Count tokens after pruning
+            tokens_after = len(step_pruned)
+            total_tokens_after += tokens_after
+
+            # Add detailed debug info for each step
+            print(
+                f"  Step {step_idx}: {tokens_before} tokens -> {tokens_after} tokens (threshold: {current_threshold:.4f})"
+            )
+
             pruned_sets.append(step_pruned)
+
+        # Summary statistics
+        print(
+            f"Total pruning: {total_tokens_before} tokens -> {total_tokens_after} tokens"
+        )
+        print(
+            f"Average tokens per position after pruning: {total_tokens_after / max(1, max_valid_step):.2f}"
+        )
 
         return pruned_sets
 
     def reset(self):
-        """Reset the dynamic threshold for a new generation."""
+        """
+        Reset the dynamic threshold manager for a new generation.
+        This resets the internal step counter and all stored token data.
+        """
+        # Reset the internal step counter to 0
         self.current_step = 0
+
         # Reset all tensors
         self.valid_mask.fill(False)
         self.pruned_mask.fill(False)
         self.tokens_per_step.fill(0)
+
         # Reset caching mechanism
         self.cached_threshold = None
+
+        # Print reset notification
+        print("*** Dynamic threshold manager reset ***")

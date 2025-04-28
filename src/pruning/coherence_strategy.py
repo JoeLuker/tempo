@@ -188,85 +188,92 @@ class CoherencePruningStrategy(PruningStrategy):
     ) -> Optional[torch.Tensor]:
         """
         Compute coherence scores using cached attention patterns.
+        MODIFIED: No longer relies on get_context_embedding or input_ids tensor.
 
         Args:
             cached_attention: Cached attention patterns from token generation
-            input_ids: Current input token IDs
+            input_ids: Current input token IDs (UNUSED in this version, but kept for signature consistency if needed elsewhere)
             token_ids: List of token IDs to evaluate
 
         Returns:
             Optional[torch.Tensor]: Coherence scores for each token or None if incompatible
         """
         try:
+            # We will use the attention pattern itself to derive context relevance,
+            # avoiding the problematic get_context_embedding call.
+
             # Get the attention patterns from all layers
             num_layers = len(cached_attention)
-
-            # Extract attention tensors from the last few layers
-            # Using multiple layers tends to give better coherence signals
-            layers_to_use = min(3, num_layers)  # Use last 3 layers or all if fewer
+            layers_to_use = min(3, num_layers)
             attention_layers = cached_attention[-layers_to_use:]
-
-            # Average attention patterns across selected layers
-            # Shape: [batch_size, num_heads, seq_len, seq_len]
             avg_layer_attention = torch.mean(
                 torch.stack([layer for layer in attention_layers]), dim=0
             )
+            last_token_attn = avg_layer_attention[0, :, -1, :-1]
+            avg_attention = last_token_attn.mean(dim=0) # Shape [seq_len-1]
 
-            # Extract attention for the last token position
-            # The last token's attention shows how it attends to previous context
-            last_token_attn = avg_layer_attention[
-                0, :, -1, :-1
-            ]  # [num_heads, seq_len-1]
+            # Use token embedding similarity as before
+            embedding_vectors = self.get_token_embeddings(token_ids) # Shape [num_tokens, embed_dim]
 
-            # Average across attention heads
-            avg_attention = last_token_attn.mean(dim=0)  # [seq_len-1]
+            # Create a simple context vector based on averaged attention context
+            # Use embeddings of the most attended-to previous tokens as context
+            if avg_attention.numel() > 0:
+                top_attn_indices = torch.topk(avg_attention, k=min(5, avg_attention.size(0))).indices
+                # Ensure indices are within the bounds of input_ids if we were to use it directly
+                # Since we're using cached attention, the indices refer to positions *before* the current one.
+                # We need the embeddings of tokens at these attended positions.
+                # This requires the full sequence history, which the strategy doesn't have directly.
+                # FALLBACK: Use average embedding of *all* previous tokens as context
+                # This is less precise but avoids needing the full input_ids history here.
+                # Let's try a simpler proxy: Average embedding of the *candidate* tokens themselves.
+                # This measures internal coherence of the candidate set.
+                if embedding_vectors.shape[0] > 0:
+                     context_vector = torch.mean(embedding_vectors, dim=0)
+                else:
+                     # Handle case with no embeddings (should not happen if token_ids is not empty)
+                     # Need embedding dim. Get it from the model config if possible.
+                     embed_dim = getattr(self.model.config, 'hidden_size', 768) # Default fallback
+                     context_vector = torch.zeros(embed_dim, device=self.device)
 
-            # Calculate entropy of attention distribution as a coherence measure
-            # Lower entropy = more focused attention = better coherence
-            normalized_attn = avg_attention / (torch.sum(avg_attention) + 1e-10)
-            entropy = -torch.sum(normalized_attn * torch.log(normalized_attn + 1e-10))
+            else: # No previous tokens attended to? Unlikely but handle.
+                embed_dim = getattr(self.model.config, 'hidden_size', 768)
+                context_vector = torch.zeros(embed_dim, device=self.device)
 
-            # We don't need to run a full forward pass for each token
-            # Instead, use token embedding similarity as a proxy for how well each token fits
-            embedding_vectors = self.get_token_embeddings(token_ids)
 
-            # Get the context representation
-            context_vector = self.get_context_embedding(input_ids)
+            # Calculate coherence scores using embedding similarity
+            if embedding_vectors.shape[0] > 0:
+                similarities = torch.nn.functional.cosine_similarity(
+                    embedding_vectors, context_vector.unsqueeze(0), dim=1
+                )
+            else:
+                similarities = torch.tensor([], device=self.device, dtype=embedding_vectors.dtype)
 
-            # Calculate coherence scores using embedding similarity combined with attention entropy
-            similarities = torch.nn.functional.cosine_similarity(
-                embedding_vectors, context_vector.unsqueeze(0), dim=1
-            )
 
             # Normalize similarities to [0,1] range
-            min_sim = torch.min(similarities)
-            max_sim = torch.max(similarities)
-            range_sim = max(1e-5, max_sim - min_sim)
-            norm_similarities = (similarities - min_sim) / range_sim
+            if similarities.numel() > 0:
+                min_sim = torch.min(similarities)
+                max_sim = torch.max(similarities)
+                range_sim = max(1e-5, (max_sim - min_sim).item()) # Use .item() for scalar range
+                coherence_scores = (similarities - min_sim) / range_sim
+            else:
+                coherence_scores = similarities # Empty tensor
 
-            # Combine similarity and entropy-based coherence
-            # Lower entropy is better, so use 1 - normalized_entropy
-            normalized_entropy = entropy / math.log(
-                avg_attention.size(0)
-            )  # Normalize by max possible entropy
-            coherence_factor = 1.0 - min(1.0, normalized_entropy.item())
-
-            # Final coherence scores combine token similarity and attention pattern coherence
-            coherence_scores = norm_similarities * coherence_factor
 
             if self.debug_mode:
-                print(f"Coherence factor from attention: {coherence_factor:.4f}")
-                print(
-                    f"Token similarities range: {min_sim.item():.4f} to {max_sim.item():.4f}"
-                )
-                print(f"Resulting coherence scores: {coherence_scores}")
+                # print(f"Coherence factor from attention: {coherence_factor:.4f}") # Removed entropy part
+                if similarities.numel() > 0:
+                    print(
+                        f"Token similarities range (against avg candidate embedding): {min_sim.item():.4f} to {max_sim.item():.4f}"
+                    )
+                else:
+                    print("Token similarities range: N/A (empty candidates)")
+                print(f"Resulting coherence scores (normalized similarity): {coherence_scores}")
 
             return coherence_scores
         except Exception as e:
             if self.debug_mode:
                 print(f"Error computing coherence from cached attention: {e}")
                 import traceback
-
                 traceback.print_exc()
             return None
 

@@ -122,7 +122,9 @@ class TextFormatter:
                 # Get all token texts first
                 token_texts = []
                 for token_id in tokens:
-                    text = self.tokenizer.decode([int(token_id)], skip_special_tokens=False)
+                    text = self.tokenizer.decode(
+                        [int(token_id)], skip_special_tokens=False
+                    )
                     token_texts.append(text)
 
                 # Now color them in order with direct ANSI codes
@@ -200,14 +202,18 @@ class TextFormatter:
                     # This might happen with Unicode replacement characters or special tokens
                     try:
                         # Try to decode with different settings in case of encoding issues
-                        alt_token_text = self.tokenizer.decode([int(token)], skip_special_tokens=False)
+                        alt_token_text = self.tokenizer.decode(
+                            [int(token)], skip_special_tokens=False
+                        )
                         search_idx = remaining_text.find(alt_token_text)
-                        
+
                         if search_idx != -1:
                             # Found with alternative decoding
                             result += remaining_text[:search_idx]
                             result += position_texts[pos]
-                            remaining_text = remaining_text[search_idx + len(alt_token_text) :]
+                            remaining_text = remaining_text[
+                                search_idx + len(alt_token_text) :
+                            ]
                         else:
                             # If we still can't find it, just append the formatted token
                             # This is a fallback to keep generation going
@@ -216,8 +222,10 @@ class TextFormatter:
                             # Skip at most the first character of remaining text
                             if len(remaining_text) > 0:
                                 remaining_text = remaining_text[1:]
-                            
-                            print(f"Warning: Token '{token_text}' (ID: {token}) not found in text. Using fallback method.")
+
+                            print(
+                                f"Warning: Token '{token_text}' (ID: {token}) not found in text. Using fallback method."
+                            )
                     except Exception as e:
                         print(f"Error processing token: {e}")
                         # Emergency fallback: just add the token and continue
@@ -233,7 +241,9 @@ class TextFormatter:
                 else:
                     # Try alternative decoding for first token
                     try:
-                        alt_token_text = self.tokenizer.decode([int(token)], skip_special_tokens=False)
+                        alt_token_text = self.tokenizer.decode(
+                            [int(token)], skip_special_tokens=False
+                        )
                         if remaining_text.startswith(alt_token_text):
                             result += position_texts[pos]
                             remaining_text = remaining_text[len(alt_token_text) :]
@@ -244,8 +254,10 @@ class TextFormatter:
                                 # Try to determine a reasonable amount to skip
                                 # For safety, skip at most one character
                                 remaining_text = remaining_text[1:]
-                            
-                            print(f"Warning: First token '{token_text}' (ID: {token}) not at start of text. Using fallback method.")
+
+                            print(
+                                f"Warning: First token '{token_text}' (ID: {token}) not at start of text. Using fallback method."
+                            )
                     except Exception as e:
                         print(f"Error processing first token: {e}")
                         # Emergency fallback
@@ -380,6 +392,29 @@ class TextFormatter:
         """
         # Create new position_to_tokens that incorporates retroactively pruned tokens
         enhanced_position_to_tokens = {}
+
+        # First identify positions with unattended or deleted tokens
+        unattended_positions = set()
+        positions_to_remove = set()
+
+        for rel_pos, tokens in all_parallel_tokens.items():
+            # Check for positions with no tokens or empty token list
+            if len(tokens) == 0:
+                positions_to_remove.add(rel_pos)
+                continue
+
+            # Check for positions with only negative probabilities (unattended tokens)
+            all_negative = all(prob < 0 for _, prob in tokens)
+            any_negative = any(prob < 0 for _, prob in tokens)
+
+            if any_negative:
+                unattended_positions.add(rel_pos)
+
+            # If all tokens have negative probabilities, consider it for removal
+            # in complete_pruning_mode="remove_position"
+            if all_negative:
+                positions_to_remove.add(rel_pos)
+
         for pos in position_to_tokens:
             if pos < prompt_length:
                 # Keep prompt tokens as is
@@ -387,14 +422,42 @@ class TextFormatter:
             else:
                 # For generated tokens, use the pruned list if available
                 rel_pos = pos - prompt_length
+
+                # Skip positions that should be completely removed
+                if rel_pos in positions_to_remove:
+                    continue
+
                 if rel_pos in all_parallel_tokens:
                     # Extract token IDs from (token_id, prob) tuples and ensure they are integers
-                    enhanced_position_to_tokens[pos] = [
-                        int(tid) for tid, _ in all_parallel_tokens[rel_pos]
-                    ]
+                    tokens_with_probs = all_parallel_tokens[rel_pos]
+
+                    # Skip positions with empty token lists (completely pruned)
+                    if not tokens_with_probs:
+                        continue
+
+                    # For unattended positions that aren't marked for removal,
+                    # include both attended and unattended tokens
+                    if (
+                        rel_pos in unattended_positions
+                        and rel_pos not in positions_to_remove
+                    ):
+                        tokens = [int(tid) for tid, _ in tokens_with_probs]
+                    else:
+                        # Only keep tokens with positive probabilities
+                        tokens = [
+                            int(tid) for tid, prob in tokens_with_probs if prob >= 0
+                        ]
+
+                    # Skip empty positions
+                    if not tokens:
+                        continue
+
+                    enhanced_position_to_tokens[pos] = tokens
                 else:
                     # Fallback to original list, ensuring integers
-                    enhanced_position_to_tokens[pos] = [int(tid) for tid in position_to_tokens[pos]]
+                    enhanced_position_to_tokens[pos] = [
+                        int(tid) for tid in position_to_tokens[pos]
+                    ]
 
         # Invariant: All token IDs must be integers
         for pos, tokens in enhanced_position_to_tokens.items():
@@ -478,3 +541,97 @@ class TextFormatter:
                 token_id_info += f"Position {rel_pos}: [{tokens_info}]\n"
 
         return formatted_text + token_id_info
+
+    def format_using_layout(self, prompt: str, input_ids: List[int], logical_layout: List[Tuple[int, int, int]], 
+                           prompt_length: int, all_original_token_sets: Dict[int, List[Tuple[int, float]]], 
+                           tokenizer=None, show_token_ids: bool = False) -> str:
+        """
+        Formats text using the logical layout and original parallel sets.
+        
+        Args:
+            prompt: Original prompt text
+            input_ids: List of token IDs (the full sequence)
+            logical_layout: List of (logical_pos, physical_start_idx, physical_end_idx) tuples
+            prompt_length: Number of tokens in the prompt
+            all_original_token_sets: Dictionary mapping logical positions to lists of (token_id, prob) tuples
+            tokenizer: Tokenizer to use (defaults to self.tokenizer if None)
+            show_token_ids: Whether to show token IDs in the output
+            
+        Returns:
+            Formatted text with bracketed parallel tokens
+        """
+        tokenizer = tokenizer or self.tokenizer
+        formatted_parts = [prompt]
+        
+        # Define ANSI color codes
+        RED = "\033[91m"      # Bright Red
+        BLUE = "\033[94m"     # Bright Blue
+        GREEN = "\033[92m"    # Bright Green
+        YELLOW = "\033[93m"   # Bright Yellow
+        MAGENTA = "\033[95m"  # Bright Magenta
+        CYAN = "\033[96m"     # Bright Cyan
+        RESET = "\033[0m"     # Reset
+        BOLD = "\033[1m"      # Bold
+        
+        colors = [RED, BLUE, GREEN, YELLOW, MAGENTA, CYAN]
+        
+        # Start processing after the prompt
+        for layout_entry in logical_layout:
+            logical_pos, start_idx, end_idx = layout_entry
+            
+            # Skip prompt part of layout if present
+            if start_idx < prompt_length:
+                continue  # Skip the prompt tokens
+            
+            if start_idx > end_idx:
+                continue  # Skip empty steps
+            
+            num_parallel = (end_idx - start_idx) + 1
+            physical_tokens_in_step = input_ids[start_idx:end_idx + 1]
+            
+            # Get the original candidates for this logical step
+            original_candidates = all_original_token_sets.get(logical_pos, [])
+            
+            if num_parallel > 1 and original_candidates:
+                # This was a parallel step, use bracket notation
+                token_texts = []
+                # Use original candidates for display
+                display_candidates = original_candidates[:num_parallel]
+                
+                for i, (token_id, prob) in enumerate(display_candidates):
+                    text = tokenizer.decode([token_id], skip_special_tokens=False)
+                    # Clean up whitespace marker if needed
+                    text = text.replace("Ġ", " ").replace("▁", " ")
+                    color = colors[i % len(colors)]
+                    text_part = f"{color}{text}{RESET}"
+                    if show_token_ids:
+                        text_part += f"({token_id})"
+                    token_texts.append(text_part)
+                    
+                joined = "/".join(token_texts)
+                formatted_parts.append(f"{BOLD}[{RESET}{joined}{BOLD}]{RESET}")
+            else:
+                # Single token step
+                for token_id in physical_tokens_in_step:
+                    text = tokenizer.decode([token_id], skip_special_tokens=False)
+                    # Clean up whitespace marker if needed
+                    text = text.replace("Ġ", " ").replace("▁", " ")
+                    
+                    # Check if it was originally parallel but pruned to one
+                    text_part = text
+                    if logical_pos in all_original_token_sets and len(all_original_token_sets[logical_pos]) > 1:
+                        # This was pruned down from multiple options
+                        text_part = f"{RED}{text}{RESET}"
+                        
+                    if show_token_ids:
+                        text_part += f"({token_id})"
+                        
+                    formatted_parts.append(text_part)
+        
+        # Join all parts, ensuring proper whitespace handling
+        result = "".join(formatted_parts)
+        
+        # Additional cleanup for different tokenizer quirks
+        result = result.replace(" ", " ")  # Replace any non-breaking spaces
+        
+        return result.strip()

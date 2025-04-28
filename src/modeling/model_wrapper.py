@@ -21,7 +21,7 @@ class TEMPOModelWrapper(nn.Module):
         assert model is not None, "Model cannot be None"
         assert hasattr(model, "forward"), "Model must have a forward method"
         assert hasattr(model, "config"), "Model must have a config attribute"
-        
+
         self.model = model
         self.intermediate_values = {}
         self.activation_hooks = []
@@ -39,7 +39,7 @@ class TEMPOModelWrapper(nn.Module):
         self.device = next(model.parameters()).device
         # Assert device is valid
         assert self.device is not None, "Model device could not be determined"
-        
+
     def _register_hooks(self):
         """
         Register hooks to capture intermediate values from key model components.
@@ -62,7 +62,9 @@ class TEMPOModelWrapper(nn.Module):
                 self.activation_hooks.append(hook)
 
         # Assert that at least one hook was registered
-        assert len(self.activation_hooks) > 0, "No hooks were registered. Check model architecture."
+        assert (
+            len(self.activation_hooks) > 0
+        ), "No hooks were registered. Check model architecture."
 
     def _create_hook(self, name):
         """
@@ -115,7 +117,7 @@ class TEMPOModelWrapper(nn.Module):
 
         # Forward pass
         outputs = self.model(*args, **kwargs)
-        
+
         # Assert outputs are not None
         assert outputs is not None, "Model forward pass returned None"
 
@@ -133,13 +135,15 @@ class TEMPOModelWrapper(nn.Module):
 
         # Assert model has generate method
         assert hasattr(self.model, "generate"), "Model does not have a generate method"
-        
+
         # Call the model's generate method
         outputs = self.model.generate(*args, **kwargs)
-        
+
         # Assert outputs are not None and have the expected shape
         assert outputs is not None, "Model generation returned None"
-        assert isinstance(outputs, torch.Tensor), "Model generation must return a tensor"
+        assert isinstance(
+            outputs, torch.Tensor
+        ), "Model generation must return a tensor"
 
         return outputs
 
@@ -155,7 +159,7 @@ class TEMPOModelWrapper(nn.Module):
         for hook in self.activation_hooks:
             hook.remove()
         self.activation_hooks = []
-        
+
         # Assert model is still valid
         assert self.model is not None, "Model was lost during unwrapping"
 
@@ -177,5 +181,7 @@ class TEMPOModelWrapper(nn.Module):
         try:
             return super().__getattr__(name)
         except AttributeError:
-            assert hasattr(self.model, name), f"Neither wrapper nor model has attribute '{name}'"
+            assert hasattr(
+                self.model, name
+            ), f"Neither wrapper nor model has attribute '{name}'"
             return getattr(self.model, name)

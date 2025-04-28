@@ -41,7 +41,7 @@ class AttentionManager:
         }
 
         # Debug mode
-        self.debug_mode = False
+        self.debug_mode = True
 
         # Setup logging to file
         self._setup_logger()
@@ -63,6 +63,11 @@ class AttentionManager:
 
         # Create file handler
         log_file = os.path.join(log_dir, "attention_debug.log")
+
+        # Clear the log file by opening in write mode first
+        with open(log_file, "w") as f:
+            pass
+
         file_handler = logging.FileHandler(log_file, mode="a")
         file_handler.setLevel(logging.DEBUG)
 
@@ -1015,3 +1020,75 @@ class AttentionManager:
             # Log before disabling debug mode
             self.logger.info(f"AttentionManager debug mode disabled")
             print(f"AttentionManager debug mode disabled")
+
+    def update_token_history(self, token_id: int):
+        """
+        Update the token history with a new token ID.
+        This maintains the history of generated tokens for use in pruning and other operations.
+
+        Args:
+            token_id: The token ID to add to the history
+        """
+        # Initialize token history if it doesn't exist
+        if not hasattr(self, "token_history"):
+            self.token_history = []
+            
+        # Add the token to the history
+        self.token_history.append(token_id)
+        
+        # Log in debug mode
+        if self.debug_mode:
+            token_text = ""
+            if self.tokenizer is not None:
+                try:
+                    token_text = f" ('{self.tokenizer.decode([token_id])}')"
+                except Exception:
+                    # If decoding fails, just use the ID
+                    token_text = ""
+                    
+            self.log(f"Token history updated with ID {token_id}{token_text}")
+            
+    def get_token_history(self) -> List[int]:
+        """
+        Get the current token history.
+        
+        Returns:
+            List[int]: List of token IDs in the history
+        """
+        # Initialize token history if it doesn't exist
+        if not hasattr(self, "token_history"):
+            self.token_history = []
+            
+        return self.token_history
+        
+    def set_parallel_state(self, active: bool = False, base_position: int = 0, tokens: List[int] = None, allow_visibility: bool = False):
+        """
+        Set the parallel token generation state.
+        This tracks when we're in parallel token generation mode.
+        
+        Args:
+            active: Whether parallel token generation is active
+            base_position: The base position for the parallel tokens
+            tokens: List of token IDs for the parallel tokens
+            allow_visibility: Whether tokens can see each other
+        """
+        self.parallel_active = active
+        
+        if active:
+            # Store the parallel tokens information
+            self.parallel_base_position = base_position
+            self.parallel_tokens = tokens if tokens is not None else []
+            self.parallel_visibility = allow_visibility
+            
+            if self.debug_mode:
+                token_count = len(self.parallel_tokens) if self.parallel_tokens else 0
+                visibility = "visible to each other" if allow_visibility else "isolated"
+                self.log(f"Parallel state activated with {token_count} tokens at position {base_position} ({visibility})")
+        else:
+            # Reset the parallel tokens information
+            if self.debug_mode and hasattr(self, "parallel_active") and self.parallel_active:
+                self.log("Parallel state deactivated")
+                
+            self.parallel_base_position = 0
+            self.parallel_tokens = []
+            self.parallel_visibility = False

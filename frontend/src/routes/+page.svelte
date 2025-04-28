@@ -93,6 +93,33 @@
   let diversityClusters = 3;
   let retroactivePruningThreshold = [0.01];
   
+  // New pruning strategy and parameters
+  let pruningStrategy = "coherence";
+  let coherenceThreshold = 0.3;
+  let diversitySteps = 5;
+  
+  // Dynamic threshold parameters
+  let useDynamicThreshold = true;
+  let finalThreshold = [1.0];
+  let useRelu = false;
+  let reluActivationPoint = [0.5];
+  let bezierP1 = [0.2];
+  let bezierP2 = [0.8];
+  
+  // Advanced retroactive pruning options
+  let noRelativeAttention = false;
+  let relativeThreshold = [0.5];
+  let noMultiScaleAttention = false;
+  let numLayersToUse = "";  // Empty string means null/None
+  let noLciDynamicThreshold = false;
+  let noSigmoidThreshold = false;
+  let sigmoidSteepness = 10.0;
+  let completePruningMode = "keep_token";
+  
+  // Additional parameters
+  let noPreserveIsolatedTokens = false;
+  let disableKvCacheConsistency = false;
+  
   // MCTS parameters
   let useMCTS = false;
   let mctsSimulations = 10;
@@ -210,8 +237,32 @@
         use_pruning: usePruning,
         use_diversity_pruning: useDiversityPruning,
         use_retroactive_pruning: useRetroactivePruning,
+        pruning_strategy: pruningStrategy,
+        coherence_threshold: coherenceThreshold.toString(),
         diversity_clusters: diversityClusters.toString(),
+        diversity_steps: diversitySteps.toString(),
         attention_threshold: retroactivePruningThreshold[0].toString(),
+        
+        // Dynamic threshold parameters
+        dynamic_threshold: useDynamicThreshold,
+        final_threshold: finalThreshold[0].toString(),
+        use_relu: useRelu,
+        relu_activation_point: reluActivationPoint[0].toString(),
+        bezier_points: [bezierP1[0], bezierP2[0]],
+        
+        // Advanced retroactive pruning parameters
+        no_relative_attention: noRelativeAttention,
+        relative_threshold: relativeThreshold[0].toString(),
+        no_multi_scale_attention: noMultiScaleAttention,
+        num_layers_to_use: numLayersToUse ? parseInt(numLayersToUse) : null,
+        no_lci_dynamic_threshold: noLciDynamicThreshold,
+        no_sigmoid_threshold: noSigmoidThreshold,
+        sigmoid_steepness: sigmoidSteepness.toString(),
+        complete_pruning_mode: completePruningMode,
+        
+        // Additional parameters
+        no_preserve_isolated_tokens: noPreserveIsolatedTokens,
+        disable_kv_cache_consistency: disableKvCacheConsistency,
         
         // MCTS parameters
         use_mcts: useMCTS,
@@ -424,6 +475,37 @@
             </div>
             
             <div>
+              <label for="pruningStrategy" class="text-sm font-medium mb-1 block">
+                Pruning Strategy
+              </label>
+              <select
+                id="pruningStrategy"
+                class="w-full px-3 py-2 border border-input bg-background text-sm rounded-md"
+                bind:value={pruningStrategy}
+                disabled={!usePruning}
+              >
+                <option value="coherence">Coherence</option>
+                <option value="diversity">Diversity</option>
+                <option value="hybrid">Hybrid</option>
+              </select>
+            </div>
+            
+            <div>
+              <label for="coherenceThreshold" class="text-sm font-medium mb-1 block">
+                Coherence Threshold
+              </label>
+              <Input 
+                id="coherenceThreshold"
+                type="number" 
+                bind:value={coherenceThreshold} 
+                min={0}
+                max={1}
+                step={0.01}
+                disabled={!usePruning || pruningStrategy === "diversity"}
+              />
+            </div>
+            
+            <div>
               <label for="diversityClusters" class="text-sm font-medium mb-1 block">
                 Diversity Clusters
               </label>
@@ -433,7 +515,20 @@
                 bind:value={diversityClusters} 
                 min={1} 
                 max={10} 
-                disabled={!usePruning || !useDiversityPruning}
+                disabled={!usePruning || pruningStrategy === "coherence"}
+              />
+            </div>
+            
+            <div>
+              <label for="diversitySteps" class="text-sm font-medium mb-1 block">
+                Diversity Steps
+              </label>
+              <Input 
+                id="diversitySteps"
+                type="number" 
+                bind:value={diversitySteps} 
+                min={0}
+                disabled={!usePruning || pruningStrategy !== "hybrid"}
               />
             </div>
             
@@ -446,6 +541,76 @@
                 bind:value={retroactivePruningThreshold} 
                 disabled={!usePruning || !useRetroactivePruning}
               />
+            </div>
+            
+            <div class="sm:col-span-2 pt-3 border-t border-border">
+              <div class="flex items-center justify-between">
+                <label for="useDynamicThreshold" class="text-sm font-medium">
+                  Use Dynamic Threshold
+                </label>
+                <Switch 
+                  id="useDynamicThreshold" 
+                  bind:checked={useDynamicThreshold}
+                  disabled={!usePruning} 
+                />
+              </div>
+              
+              <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-3 {(!usePruning || !useDynamicThreshold) ? 'opacity-50' : ''}">
+                <div>
+                  <label for="finalThreshold" class="text-sm font-medium mb-1 block">
+                    Final Threshold <span class="text-primary font-mono">{finalThreshold[0].toFixed(2)}</span>
+                  </label>
+                  <Slider 
+                    id="finalThreshold"
+                    bind:value={finalThreshold}
+                    disabled={!usePruning || !useDynamicThreshold}
+                  />
+                </div>
+                
+                <div class="flex items-center justify-between">
+                  <label for="useRelu" class="text-sm font-medium">
+                    Use ReLU Transition
+                  </label>
+                  <Switch 
+                    id="useRelu" 
+                    bind:checked={useRelu}
+                    disabled={!usePruning || !useDynamicThreshold} 
+                  />
+                </div>
+                
+                <div>
+                  <label for="reluActivationPoint" class="text-sm font-medium mb-1 block">
+                    ReLU Activation Point <span class="text-primary font-mono">{reluActivationPoint[0].toFixed(2)}</span>
+                  </label>
+                  <Slider 
+                    id="reluActivationPoint"
+                    bind:value={reluActivationPoint}
+                    disabled={!usePruning || !useDynamicThreshold || !useRelu}
+                  />
+                </div>
+                
+                <div>
+                  <label for="bezierP1" class="text-sm font-medium mb-1 block">
+                    Bezier P1 <span class="text-primary font-mono">{bezierP1[0].toFixed(2)}</span>
+                  </label>
+                  <Slider 
+                    id="bezierP1"
+                    bind:value={bezierP1}
+                    disabled={!usePruning || !useDynamicThreshold || useRelu}
+                  />
+                </div>
+                
+                <div>
+                  <label for="bezierP2" class="text-sm font-medium mb-1 block">
+                    Bezier P2 <span class="text-primary font-mono">{bezierP2[0].toFixed(2)}</span>
+                  </label>
+                  <Slider 
+                    id="bezierP2"
+                    bind:value={bezierP2}
+                    disabled={!usePruning || !useDynamicThreshold || useRelu}
+                  />
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -544,6 +709,17 @@
                   
                   <div class="flex items-center space-x-2">
                     <Checkbox 
+                      id="noPreserveIsolatedTokens"
+                      bind:checked={noPreserveIsolatedTokens} 
+                      disabled={allowIntrasetTokenVisibility}
+                    />
+                    <label for="noPreserveIsolatedTokens" class="text-sm">
+                      Don't Preserve Isolated Tokens
+                    </label>
+                  </div>
+                  
+                  <div class="flex items-center space-x-2">
+                    <Checkbox 
                       id="useCustomRope"
                       bind:checked={useCustomRope} 
                     />
@@ -560,6 +736,123 @@
                     <label for="disableKVCache" class="text-sm">
                       Disable KV Cache
                     </label>
+                  </div>
+                  
+                  <div class="flex items-center space-x-2">
+                    <Checkbox 
+                      id="disableKvCacheConsistency"
+                      bind:checked={disableKvCacheConsistency} 
+                    />
+                    <label for="disableKvCacheConsistency" class="text-sm">
+                      Disable KV Cache Consistency
+                    </label>
+                  </div>
+                </div>
+              </div>
+              
+              <!-- Advanced Retroactive Pruning Settings -->
+              <div class="{!usePruning || !useRetroactivePruning ? 'opacity-50' : ''}">
+                <h3 class="text-lg font-medium mb-4">Advanced Retroactive Pruning</h3>
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div class="flex items-center space-x-2">
+                    <Checkbox 
+                      id="noRelativeAttention"
+                      bind:checked={noRelativeAttention} 
+                      disabled={!usePruning || !useRetroactivePruning}
+                    />
+                    <label for="noRelativeAttention" class="text-sm">
+                      Disable Relative Attention
+                    </label>
+                  </div>
+                  
+                  <div>
+                    <label for="relativeThreshold" class="text-sm font-medium mb-1 block">
+                      Relative Threshold <span class="text-primary font-mono">{relativeThreshold[0].toFixed(2)}</span>
+                    </label>
+                    <Slider 
+                      id="relativeThreshold"
+                      bind:value={relativeThreshold}
+                      disabled={!usePruning || !useRetroactivePruning || noRelativeAttention}
+                    />
+                  </div>
+                  
+                  <div class="flex items-center space-x-2">
+                    <Checkbox 
+                      id="noMultiScaleAttention"
+                      bind:checked={noMultiScaleAttention} 
+                      disabled={!usePruning || !useRetroactivePruning}
+                    />
+                    <label for="noMultiScaleAttention" class="text-sm">
+                      Disable Multi-Scale Attention
+                    </label>
+                  </div>
+                  
+                  <div>
+                    <label for="numLayersToUse" class="text-sm font-medium mb-1 block">
+                      Number of Layers to Use
+                    </label>
+                    <Input 
+                      id="numLayersToUse"
+                      type="number" 
+                      bind:value={numLayersToUse}
+                      placeholder="All Layers" 
+                      disabled={!usePruning || !useRetroactivePruning}
+                    />
+                    <div class="text-xs text-muted-foreground mt-1">
+                      Leave empty to use all layers
+                    </div>
+                  </div>
+                  
+                  <div class="flex items-center space-x-2">
+                    <Checkbox 
+                      id="noLciDynamicThreshold"
+                      bind:checked={noLciDynamicThreshold} 
+                      disabled={!usePruning || !useRetroactivePruning}
+                    />
+                    <label for="noLciDynamicThreshold" class="text-sm">
+                      Disable LCI Dynamic Threshold
+                    </label>
+                  </div>
+                  
+                  <div class="flex items-center space-x-2">
+                    <Checkbox 
+                      id="noSigmoidThreshold"
+                      bind:checked={noSigmoidThreshold} 
+                      disabled={!usePruning || !useRetroactivePruning}
+                    />
+                    <label for="noSigmoidThreshold" class="text-sm">
+                      Disable Sigmoid Threshold
+                    </label>
+                  </div>
+                  
+                  <div>
+                    <label for="sigmoidSteepness" class="text-sm font-medium mb-1 block">
+                      Sigmoid Steepness
+                    </label>
+                    <Input 
+                      id="sigmoidSteepness"
+                      type="number" 
+                      bind:value={sigmoidSteepness} 
+                      min={1}
+                      step={0.5}
+                      disabled={!usePruning || !useRetroactivePruning || noSigmoidThreshold}
+                    />
+                  </div>
+                  
+                  <div>
+                    <label for="completePruningMode" class="text-sm font-medium mb-1 block">
+                      Complete Pruning Mode
+                    </label>
+                    <select
+                      id="completePruningMode"
+                      class="w-full px-3 py-2 border border-input bg-background text-sm rounded-md"
+                      bind:value={completePruningMode}
+                      disabled={!usePruning || !useRetroactivePruning}
+                    >
+                      <option value="keep_token">Keep Token</option>
+                      <option value="keep_unattended">Keep Unattended</option>
+                      <option value="remove_position">Remove Position</option>
+                    </select>
                   </div>
                 </div>
               </div>
