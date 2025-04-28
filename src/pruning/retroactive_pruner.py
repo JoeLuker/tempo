@@ -27,7 +27,6 @@ class RetroactivePruner:
         relative_threshold: float = 0.5,
         use_multi_scale_attention: bool = True,
         num_layers_to_use: Optional[int] = None,
-        use_lci_dynamic_threshold: bool = True,
         use_sigmoid_threshold: bool = True,
         sigmoid_steepness: float = 10.0,
         complete_pruning_mode: str = "keep_token",
@@ -38,7 +37,7 @@ class RetroactivePruner:
         Args:
             model: The language model
             tokenizer: HuggingFace tokenizer
-            attention_threshold: Threshold for attention-based pruning (0-1)
+            attention_threshold: Base threshold for attention-based pruning (0-1)
             device: Device to use for computation
             debug_mode: Enable detailed logging
             dynamic_threshold_manager: Optional DynamicThresholdManager for dynamic thresholding
@@ -46,7 +45,6 @@ class RetroactivePruner:
             relative_threshold: Threshold for relative attention-based pruning (0-1)
             use_multi_scale_attention: Whether to use multi-scale attention integration
             num_layers_to_use: Number of last layers to use (None means use all layers)
-            use_lci_dynamic_threshold: Whether to use LCI-based dynamic thresholding (vs. classic approach)
             use_sigmoid_threshold: Whether to use sigmoid-based decision boundary
             sigmoid_steepness: Controls how sharp the sigmoid transition is
             complete_pruning_mode: How to handle pruned positions. Options:
@@ -61,15 +59,21 @@ class RetroactivePruner:
         self.device = device
         self.debug_mode = debug_mode
         self.token_generator = None
-        self.dynamic_threshold_manager = dynamic_threshold_manager
         self.use_relative_attention = use_relative_attention
         self.relative_threshold = relative_threshold
         self.use_multi_scale_attention = use_multi_scale_attention
         self.num_layers_to_use = num_layers_to_use
-        self.use_lci_dynamic_threshold = use_lci_dynamic_threshold
         self.use_sigmoid_threshold = use_sigmoid_threshold
         self.sigmoid_steepness = sigmoid_steepness
         self.complete_pruning_mode = complete_pruning_mode
+
+        # Initialize DynamicThresholdManager if not provided
+        if dynamic_threshold_manager is None:
+            self.dynamic_threshold_manager = DynamicThresholdManager(
+                base_threshold=attention_threshold,
+            )
+        else:
+            self.dynamic_threshold_manager = dynamic_threshold_manager
 
         # For logging and debugging
         self.pruning_stats = {
@@ -85,9 +89,9 @@ class RetroactivePruner:
             print(
                 f"RetroactivePruner initialized with threshold={attention_threshold}, relative_threshold={relative_threshold}, "
                 f"use_relative_attention={use_relative_attention}, use_multi_scale_attention={use_multi_scale_attention}, "
-                f"num_layers_to_use={num_layers_to_use}, use_lci_dynamic_threshold={use_lci_dynamic_threshold}, "
-                f"use_sigmoid_threshold={use_sigmoid_threshold}, sigmoid_steepness={sigmoid_steepness}, "
-                f"complete_pruning_mode={complete_pruning_mode}, debug_mode={debug_mode}"
+                f"num_layers_to_use={num_layers_to_use}, use_sigmoid_threshold={use_sigmoid_threshold}, "
+                f"sigmoid_steepness={sigmoid_steepness}, complete_pruning_mode={complete_pruning_mode}, "
+                f"debug_mode={debug_mode}"
             )
 
     def set_token_generator(self, token_generator):
@@ -111,147 +115,33 @@ class RetroactivePruner:
         if self.debug_mode:
             print(message)
 
-    def get_pruning_threshold(self, step: int, max_steps: int) -> float:
+    def get_pruning_threshold(self, step: Optional[int] = None) -> float:
         """
-        Calculate a dynamic pruning threshold using the LCI (Linear-Convergent-Interpretive) model.
-
-        This model balances exploration and convergence based on generation progress.
+        Get the current pruning threshold based on generation progress.
+        This method now delegates to DynamicThresholdManager for all threshold calculations.
 
         Args:
-            step: Current generation step
-            max_steps: Total generation steps
+            step: Current generation step (optional)
 
         Returns:
-            float: The current pruning threshold
+            float: Current pruning threshold
         """
-        # Calculate normalized progress (0 to 1)
-        progress = min(1.0, step / max_steps)
-
-        # Define weights for each phase:
-        # - L weight: Controls linear component (constant impact)
-        # - C weight: Controls convergent component (increases with progress)
-        # - I weight: Controls interpretive component (decreases with progress)
-
-        # Linear component (constant attention to key tokens)
-        L_weight = 0.3
-
-        # Convergent component (increases as we approach completion)
-        # Starts low and increases dramatically in the last 20% of generation
-        if progress < 0.8:
-            C_weight = progress * 0.5  # Gradual increase
-        else:
-            # Accelerated increase in the final stretch
-            normalized_final_progress = (
-                progress - 0.8
-            ) / 0.2  # 0 to 1 in final stretch
-            C_weight = 0.4 + (normalized_final_progress * 0.6)  # 0.4 to 1.0
-
-        # Interpretive component (strongest in the middle, weak at start and end)
-        # This creates a "thinking" phase where we allow more divergent exploration
-        if progress < 0.3:
-            # Starting phase - building up interpretive weight
-            I_weight = progress / 0.3  # 0 to 1
-        elif progress < 0.7:
-            # Middle phase - full interpretive weight
-            I_weight = 1.0
-        else:
-            # Final phase - phasing out interpretive component
-            normalized_final_progress = (
-                progress - 0.7
-            ) / 0.3  # 0 to 1 in final stretch
-            I_weight = 1.0 - normalized_final_progress  # 1.0 to 0
-
-        # Calculate final threshold component
-        # The base is always present, but the dynamic component varies
-        base = 0.01  # Minimum threshold
-        dynamic_component = (I_weight * 0.1) - (L_weight * 0.05) + (C_weight * 0.05)
-
-        if self.debug_mode:
-            print(f"LCI weights at step {step}/{max_steps} (progress {progress:.2f}):")
-            print(
-                f"  L_weight: {L_weight:.2f}, C_weight: {C_weight:.2f}, I_weight: {I_weight:.2f}"
-            )
-            print(f"  Base: {base}, Dynamic component: {dynamic_component:.4f}")
-
-        return base + dynamic_component
+        return self.dynamic_threshold_manager.get_current_threshold(step)
 
     def update_step(self, step: int):
         """
         Update threshold based on current generation step.
-
-        This doesn't maintain an internal step counter but uses the generation step
-        directly for threshold calculations.
+        This method now delegates to DynamicThresholdManager for all threshold calculations.
 
         Args:
             step: Current generation step (source of truth)
         """
-        # Use the step directly from generation as source of truth
-        if self.dynamic_threshold_manager is not None:
-            max_steps = self.dynamic_threshold_manager.max_steps
+        self.attention_threshold = self.get_pruning_threshold(step)
 
-            if self.use_lci_dynamic_threshold:
-                # Use the LCI-based dynamic threshold calculation
-                self.attention_threshold = self.get_pruning_threshold(step, max_steps)
-
-                if self.debug_mode:
-                    print(
-                        f"Updated retroactive pruner threshold to {self.attention_threshold:.4f} using LCI model at step {step}"
-                    )
-            else:
-                # Legacy approach - Bezier or ReLU based threshold
-                progress = min(1.0, step / max_steps)
-
-                # Scale threshold differently depending on whether we're using ReLU or Bezier
-                if (
-                    hasattr(self.dynamic_threshold_manager, "use_relu")
-                    and self.dynamic_threshold_manager.use_relu
-                ):
-                    # For ReLU, use the activation point to determine when to start increasing
-                    relu_activation = (
-                        self.dynamic_threshold_manager.relu_activation_point
-                    )
-                    if progress < relu_activation:
-                        # Before activation point - use minimum threshold
-                        self.attention_threshold = 0.001
-                    else:
-                        # After activation point - linear increase
-                        relu_progress = (
-                            (progress - relu_activation) / (1.0 - relu_activation)
-                            if relu_activation < 1.0
-                            else 0.0
-                        )
-                        final_threshold = self.dynamic_threshold_manager.final_threshold
-                        min_threshold = 0.001
-                        self.attention_threshold = min_threshold + (
-                            relu_progress * (final_threshold - min_threshold)
-                        )
-                else:
-                    # Original Bezier-based scaling
-                    final_threshold = self.dynamic_threshold_manager.final_threshold
-                    min_threshold = 0.001
-                    self.attention_threshold = min_threshold + (
-                        progress * (final_threshold - min_threshold)
-                    )
-
-                if self.debug_mode:
-                    print(
-                        f"Updated retroactive pruner threshold to {self.attention_threshold:.4f} using classic model at step {step}"
-                    )
-                    print(
-                        f"  Progress: {progress:.4f}, Final threshold: {final_threshold:.4f}, Base threshold: {self.dynamic_threshold_manager.base_threshold:.4f}"
-                    )
-                    print(f"  Max steps: {max_steps}, Current step: {step}")
-                    if (
-                        hasattr(self.dynamic_threshold_manager, "use_relu")
-                        and self.dynamic_threshold_manager.use_relu
-                    ):
-                        print(
-                            f"  Using ReLU with activation point: {relu_activation:.4f}"
-                        )
-                    else:
-                        print(
-                            f"  Using Bezier with control points: {self.dynamic_threshold_manager.bezier_points}"
-                        )
+        if self.debug_mode:
+            print(
+                f"Updated retroactive pruner threshold to {self.attention_threshold:.4f} at step {step}"
+            )
 
     def apply_sigmoid_threshold(self, attention_score: float, threshold: float) -> bool:
         """
@@ -688,8 +578,6 @@ class RetroactivePruner:
             )
         if self.use_multi_scale_attention:
             print(f"  Using multi-scale attention integration")
-        if self.use_lci_dynamic_threshold:
-            print(f"  Using LCI-based dynamic thresholding")
         if self.use_sigmoid_threshold:
             print(
                 f"  Using sigmoid-based decision boundary (steepness={self.sigmoid_steepness})"

@@ -7,7 +7,6 @@ class RoPEModifier:
     """
     Custom implementation to modify RoPE (Rotary Position Embeddings) for parallel token generation.
     This implementation allows multiple tokens at the same position to share identical positional embeddings.
-    Addresses potential issues with KV cache consistency and patching all appropriate layers.
     """
 
     def __init__(self, model, device: str = "mps"):
@@ -22,9 +21,6 @@ class RoPEModifier:
         self.device = device
         self.original_forward_fns = {}  # Store original methods by module path
         self.position_map = {}  # Maps token positions to their effective positions
-        self.sequence_position_map = (
-            {}
-        )  # Tracks absolute sequence positions for KV cache consistency
         self.patched_modules = set()  # Keep track of which modules have been patched
         self.is_installed = False
 
@@ -34,8 +30,7 @@ class RoPEModifier:
         # Track parallel token sets
         self.parallel_token_sets = {}
 
-        # Configuration
-        self.enable_kv_cache_consistency = True
+        # Debug mode
         self.debug_mode = False
 
     def install(self):
@@ -214,52 +209,30 @@ class RoPEModifier:
 
     def _patch_module(self, name: str, module: Any):
         """
-        Patch a specific module with our custom forward implementation.
-
-        Args:
-            name: Module name/path
-            module: The module to patch
+        Patch a module's forward method to use custom RoPE handling.
         """
-        print(f"Patching rotary embedding in module: {name}")
+        if name in self.patched_modules:
+            return
+
+        # Store original forward method
         self.original_forward_fns[name] = module.forward
+        self.patched_modules.add(name)
 
-        # Create a closure that captures the current instance and module
-        module.forward = self._make_custom_forward(module.forward, module)
-
-    def _make_custom_forward(self, original_forward, module_instance):
-        """
-        Create a custom forward function that applies position mapping.
-
-        Args:
-            original_forward: The original forward function
-            module_instance: The module instance
-
-        Returns:
-            function: Custom forward function
-        """
-        rope_modifier = self  # Capture the current instance
+        # Create custom forward method
+        rope_modifier = self  # Capture self for closure
+        original_forward = module.forward  # Capture original forward method
 
         def custom_forward(*args, **kwargs):
             # Debug information if enabled
             if rope_modifier.debug_mode:
-                print(
-                    f"Custom forward called with {len(args)} args and {len(kwargs)} kwargs"
-                )
-                if len(args) > 0:
-                    print(
-                        f"First arg shape: {args[0].shape if hasattr(args[0], 'shape') else 'N/A'}"
-                    )
-                for k, v in list(kwargs.items())[:3]:  # Show first 3 kwargs for brevity
-                    if hasattr(v, "shape"):
-                        print(f"Kwarg {k} shape: {v.shape}")
+                print(f"Custom forward called for {name}")
+                print(f"Args: {[a.shape if hasattr(a, 'shape') else a for a in args[:3]]}")
+                print(f"Kwargs keys: {list(kwargs.keys())}")
 
-            # Deep copy args and kwargs to avoid modifying the originals
+            # Create new args and kwargs to avoid modifying originals
             new_args = list(args)
             new_kwargs = kwargs.copy()
-
-            # Handle Mistral's rotary embedding which expects position_ids as the second positional arg
             position_ids_in_args = False
-            position_ids_index = -1
 
             # Check if this is the rotary embedding forward call (has exactly 2 args with position_ids as the second)
             if len(args) == 2 and hasattr(args[1], "shape"):
@@ -285,14 +258,6 @@ class RoPEModifier:
                 mapped_position_ids = rope_modifier.apply_position_mapping(position_ids)
                 new_kwargs["position_ids"] = mapped_position_ids
 
-                # Handle KV cache consistency if enabled
-                if (
-                    rope_modifier.enable_kv_cache_consistency
-                    and "past_key_value" in kwargs
-                    and kwargs["past_key_value"] is not None
-                ):
-                    new_kwargs = rope_modifier._ensure_kv_cache_consistency(new_kwargs)
-
             # If no explicit position_ids are provided but we have seq_len in hidden_states
             elif (
                 len(args) >= 1
@@ -316,14 +281,6 @@ class RoPEModifier:
                 # Add position_ids to kwargs if not present and not expected as positional arg
                 if not position_ids_in_args:
                     new_kwargs["position_ids"] = mapped_position_ids
-
-                # Handle KV cache consistency if enabled
-                if (
-                    rope_modifier.enable_kv_cache_consistency
-                    and "past_key_value" in kwargs
-                    and kwargs["past_key_value"] is not None
-                ):
-                    new_kwargs = rope_modifier._ensure_kv_cache_consistency(new_kwargs)
 
             # Call original method with potentially modified position_ids
             try:
@@ -444,150 +401,6 @@ class RoPEModifier:
         self.position_embedding_cache[cache_key] = mapped_position_ids
         return mapped_position_ids
 
-    def _ensure_kv_cache_consistency(self, kwargs: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Ensure KV cache is consistent with the current position mapping.
-        This is critical for ensuring that queries with modified positions
-        interact correctly with keys in the cache that used different positions.
-
-        For TEMPO's parallel tokens, we don't need to completely reset the KV cache.
-        We only need to handle the specific positions that have parallel mappings.
-
-        Args:
-            kwargs: Forward function kwargs
-
-        Returns:
-            Dict[str, Any]: Updated kwargs
-        """
-        # If no KV cache, nothing to ensure consistency for
-        past_key_value = kwargs.get("past_key_value")
-        position_ids = kwargs.get("position_ids")
-
-        if past_key_value is None or not self.enable_kv_cache_consistency:
-            return kwargs
-
-        # INVARIANT: If past_key_value is provided, it must have a valid structure
-        if past_key_value is not None:
-            if not isinstance(past_key_value, list):
-                raise ValueError("Invariant violation: past_key_value must be a list")
-            if len(past_key_value) == 0:
-                raise ValueError(
-                    "Invariant violation: past_key_value must not be empty"
-                )
-            if not all(
-                isinstance(layer, tuple) and len(layer) >= 2 for layer in past_key_value
-            ):
-                raise ValueError(
-                    "Invariant violation: Each layer in past_key_value must be a tuple with at least 2 elements"
-                )
-
-            # INVARIANT: All key-value pairs must have the same sequence length
-            seq_lengths = set()
-            for layer in past_key_value:
-                if hasattr(layer[0], "size") and layer[0].dim() >= 3:
-                    seq_lengths.add(layer[0].size(2))
-
-            if len(seq_lengths) > 1:
-                raise ValueError(
-                    f"Invariant violation: Inconsistent sequence lengths in KV cache: {seq_lengths}"
-                )
-
-        # Track which positions are using parallel mapping
-        # This is all we need to know, as these positions require special handling
-        parallel_positions = {}
-        for pos, mapped_pos in self.position_map.items():
-            if pos != mapped_pos:  # Only track positions that are actually remapped
-                # INVARIANT: Position mappings must be valid
-                if not isinstance(pos, int) or pos < 0:
-                    raise ValueError(
-                        f"Invariant violation: Position {pos} must be a non-negative integer"
-                    )
-                if not isinstance(mapped_pos, int) or mapped_pos < 0:
-                    raise ValueError(
-                        f"Invariant violation: Mapped position {mapped_pos} must be a non-negative integer"
-                    )
-
-                # INVARIANT: In TEMPO, positions should only map to earlier positions
-                if mapped_pos > pos:
-                    raise ValueError(
-                        f"Invariant violation: Position {pos} maps to a later position {mapped_pos}"
-                    )
-
-                parallel_positions[pos] = mapped_pos
-
-        # No parallel positions means no special KV cache handling needed
-        if not parallel_positions:
-            return kwargs
-
-        # INVARIANT: Parallel positions must form coherent groups
-        # In TEMPO, multiple positions often map to the same target position
-        target_positions = {}
-        for pos, target in parallel_positions.items():
-            if target not in target_positions:
-                target_positions[target] = []
-            target_positions[target].append(pos)
-
-        # Ensure each group forms a contiguous range (TEMPO's parallel tokens are always adjacent)
-        for target, positions in target_positions.items():
-            if len(positions) > 1:
-                positions.sort()
-                # Check if the positions form a contiguous range
-                if positions[-1] - positions[0] + 1 != len(positions):
-                    if self.debug_mode:
-                        print(
-                            f"Warning: Non-contiguous parallel positions: {positions} mapping to {target}"
-                        )
-
-        # In TEMPO, position mappings only happen for parallel tokens
-        # And we map multiple positions to the same position
-        # This doesn't actually change once established, but we track it for clarity
-
-        if self.debug_mode and parallel_positions:
-            # Use a concise representation for debugging
-            active_mappings = [
-                (pos, mapped) for pos, mapped in parallel_positions.items()
-            ]
-            if len(active_mappings) > 10:
-                # Show abbreviated list if there are too many
-                print(
-                    f"Position mapping active for {len(active_mappings)} positions (showing first 5): {active_mappings[:5]}..."
-                )
-            else:
-                print(f"Position mapping active for positions: {active_mappings}")
-
-        # Add parallel positions metadata for other components
-        kwargs["parallel_positions"] = parallel_positions
-
-        # INVARIANT: If position_ids are provided, they must have valid dimensions
-        if position_ids is not None:
-            if not isinstance(position_ids, torch.Tensor):
-                raise ValueError(
-                    "Invariant violation: position_ids must be a torch.Tensor"
-                )
-            if position_ids.dim() < 2:
-                raise ValueError(
-                    f"Invariant violation: position_ids must have at least 2 dimensions, got {position_ids.dim()}"
-                )
-
-            # Check that parallel positions aren't out of bounds for position_ids
-            if any(pos >= position_ids.size(1) for pos in parallel_positions):
-                if self.debug_mode:
-                    print(
-                        f"Warning: Some parallel positions are out of bounds for position_ids"
-                    )
-
-        # Only reset KV cache in specific circumstances:
-        # 1. When the model doesn't support position-specific attention handling
-        # 2. When we detect that the parallel token behavior is inconsistent
-
-        # For most models with TEMPO, we DONT need to reset the KV cache at all!
-        # The position_ids modification in apply_position_mapping already handles the parallel tokens correctly
-
-        # If this were a production system, we might want to add model-specific logic here
-        # For research models with attention hook implementations, this approach works fine
-
-        return kwargs
-
     def _has_significant_position_changes(self) -> bool:
         """
         Determine if there has been a significant change in position mappings
@@ -642,19 +455,28 @@ class RoPEModifier:
             print("RoPE modifier debug mode enabled")
         else:
             print("RoPE modifier debug mode disabled")
-
-    def enable_kv_cache_consistency(self, enabled: bool = True):
+            
+    def set_attention_manager(self, attention_manager):
         """
-        Enable or disable KV cache consistency enforcement.
+        Set the attention manager for coordination.
 
         Args:
-            enabled: Whether to enable KV cache consistency
+            attention_manager: Attention manager instance
         """
-        self.enable_kv_cache_consistency = enabled
+        self.attention_manager = attention_manager
         if self.debug_mode:
-            print(
-                f"RoPE KV cache consistency {'enabled' if enabled else 'disabled'}"
-            )
+            print("RoPE modifier linked with attention manager")
+            
+    def set_token_generator(self, token_generator):
+        """
+        Set the token generator for coordination.
+
+        Args:
+            token_generator: Token generator instance
+        """
+        self.token_generator = token_generator
+        if self.debug_mode:
+            print("RoPE modifier linked with token generator")
             
     def add_parallel_position_mappings(self, position_idx: int, virtual_positions: List[int]):
         """

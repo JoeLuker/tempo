@@ -25,43 +25,40 @@ class ParallelGenerator:
         self,
         model,
         tokenizer,
-        pruner=None,
         device: str = "mps",
         has_custom_attention: bool = True,
         use_custom_rope: bool = True,
-        debug_mode: bool = True,
+        debug_mode: bool = False,
         token_generator: Optional[TokenGenerator] = None,
     ):
         """
         Initialize the parallel generator.
 
         Args:
-            model: Model to use for generation
-            tokenizer: Tokenizer for the model
-            pruner: Optional pruner for generations
+            model: The language model
+            tokenizer: HuggingFace tokenizer
             device: Device to use for computation
-            has_custom_attention: Whether the model supports custom attention masks
-            use_custom_rope: Whether to use custom RoPE modifications for parallel tokens
+            has_custom_attention: Whether to use custom attention handling
+            use_custom_rope: Whether to use custom RoPE modifications
             debug_mode: Enable debug mode for detailed logging
             token_generator: Optional external TokenGenerator instance to use
         """
         # Store parameters
         self.model = model
         self.tokenizer = tokenizer
-        self.pruner = pruner
         self.device = device
         self.has_custom_attention = has_custom_attention
         self.use_custom_rope = use_custom_rope
-        
+
         # Set debug mode FIRST so everything initialized after gets this value
         self.debug_mode = debug_mode
-        
+
         # Setup logging before other components
         self._setup_logger()
-        
+
         # Track logical layout of parallel tokens
         self.logical_layout = []  # [(logical_pos, start_idx, end_idx)]
-        
+
         # When debug mode is enabled, start with a clear log message
         if self.debug_mode:
             self.log("Initializing ParallelGenerator with debug mode ENABLED")
@@ -69,36 +66,30 @@ class ParallelGenerator:
             print("ParallelGenerator starting with debug mode ENABLED")
 
         # Validate required arguments
-        assert model is not None, "Model cannot be None"
-        assert tokenizer is not None, "Tokenizer cannot be None"
-        assert device in ["cpu", "cuda", "mps"], f"Unsupported device: {device}"
-        assert isinstance(has_custom_attention, bool), "has_custom_attention must be a boolean"
-        assert isinstance(use_custom_rope, bool), "use_custom_rope must be a boolean"
-        assert isinstance(debug_mode, bool), "debug_mode must be a boolean"
-        
+        assert model is not None, "Model must be provided"
+        assert tokenizer is not None, "Tokenizer must be provided"
+
         # Check if this is a Qwen-based model
-        if hasattr(model, "config") and hasattr(model.config, "model_type"):
-            self.is_qwen_model = "qwen" in model.config.model_type.lower()
-        else:
-            self.is_qwen_model = False
+        self.is_qwen = hasattr(model.config, "architectures") and any(
+            "Qwen" in arch for arch in model.config.architectures
+        )
 
         # Initialize RoPE modifier if requested
         self.rope_modifier = None
         if use_custom_rope:
             try:
-                # Create and initialize RoPE modifier with appropriate debug mode
+                # Create and initialize RoPE modifier
                 self.rope_modifier = RoPEModifier(model=model, device=device)
-                # Explicitly set debug mode based on our debug_mode value
                 self.rope_modifier.set_debug_mode(self.debug_mode)
-                
+
                 # Install the modifier
                 rope_install_success = self.rope_modifier.install()
                 if rope_install_success:
                     print("Using custom RoPE modifications for parallel token positioning")
                     if self.debug_mode:
-                        self.log("RoPE modifier initialized with debug mode ENABLED")
+                        self.log(f"RoPE modifier initialized with debug mode {'ENABLED' if self.debug_mode else 'DISABLED'}")
                 else:
-                    self.log("RoPE modifier installation failed, disabling custom RoPE", "warning") 
+                    self.log("RoPE modifier installation failed, disabling custom RoPE", "warning")
                     self.rope_modifier = None
                     self.use_custom_rope = False
             except Exception as e:
@@ -114,42 +105,35 @@ class ParallelGenerator:
         else:
             self.token_generator = TokenGenerator(model, tokenizer, device)
             self.log("Created internal TokenGenerator instance")
-        
+
+        # Explicitly set debug mode after creation
         self.token_generator.set_debug_mode(self.debug_mode)
         assert self.token_generator is not None, "Failed to initialize TokenGenerator"
-        
+
+        # Initialize TokenSelector with debug mode
         self.token_selector = TokenSelector(tokenizer)
         self.token_selector.set_debug_mode(self.debug_mode)
         assert self.token_selector is not None, "Failed to initialize TokenSelector"
-        
+
         self.text_formatter = TextFormatter(tokenizer)
         assert self.text_formatter is not None, "Failed to initialize TextFormatter"
 
-        # Create attention manager
+        # Create attention manager with debug mode
         self.attention_manager = AttentionManager(
             device=device, rope_modifier=self.rope_modifier, tokenizer=tokenizer
         )
         self.attention_manager.set_debug_mode(self.debug_mode)
-        
+
         # Log initialization messages only when debug mode is enabled
         if self.debug_mode:
-            self.log("AttentionManager initialized with debug mode ENABLED")
-            self.log("TokenSelector initialized with debug mode ENABLED")
-            self.log("TokenGenerator initialized with debug mode ENABLED")
+            self.log(f"AttentionManager initialized with debug mode {'ENABLED' if self.debug_mode else 'DISABLED'}")
+            self.log(f"TokenSelector initialized with debug mode {'ENABLED' if self.debug_mode else 'DISABLED'}")
+            self.log(f"TokenGenerator initialized with debug mode {'ENABLED' if self.debug_mode else 'DISABLED'}")
 
         # Link components for better coordination if RoPE modifier is available
-        if self.use_custom_rope and self.rope_modifier is not None:
-            # Link RoPE modifier to attention manager for enhanced capabilities
-            self.attention_manager.set_rope_modifier(self.rope_modifier)
-
-        # Connect TokenGenerator to pruning strategy if using CoherencePruningStrategy
-        if self.pruner is not None and hasattr(self.pruner, "strategy"):
-            if hasattr(self.pruner.strategy, "set_token_generator"):
-                self.pruner.strategy.set_token_generator(self.token_generator)
-                self.pruner.strategy.set_debug_mode(debug_mode)
-                self.log(
-                    "Connected TokenGenerator to pruning strategy for attention reuse"
-                )
+        if self.rope_modifier is not None:
+            self.rope_modifier.set_attention_manager(self.attention_manager)
+            self.rope_modifier.set_token_generator(self.token_generator)
 
         # Performance tracking
         self.generation_time = 0
@@ -279,9 +263,9 @@ class ParallelGenerator:
         self,
         prompt: str,
         max_tokens: int = 100,
-        threshold: Optional[float] = 0.1,
+        selection_threshold: Optional[float] = 0.1,
         return_parallel_sets: bool = False,
-        use_pruning: bool = False,
+        use_retroactive_pruning: bool = False,
         min_steps: int = 0,
         show_token_ids: bool = False,
         debug_mode: Optional[bool] = None,
@@ -289,9 +273,20 @@ class ParallelGenerator:
         system_content: Optional[str] = None,
         isolate_parallel_tokens: bool = True,
         preserve_all_isolated_tokens: Optional[bool] = None,
-        pruner: Optional[object] = None,
         retroactive_pruner: Optional[object] = None,
         sequence_callback: Optional[Callable[[int, int, int], None]] = None,
+        # MCTS parameters
+        use_mcts: bool = False,
+        mcts_simulations: int = 10,
+        mcts_c_puct: float = 1.0,
+        mcts_depth: int = 5,
+        # Dynamic threshold parameters
+        dynamic_threshold: bool = False,
+        final_threshold: float = 1.0,
+        bezier_p1: float = 0.2,
+        bezier_p2: float = 0.8,
+        use_relu: bool = False,
+        relu_activation_point: float = 0.5,
     ) -> Dict[str, Any]:
         """
         Generate text from prompt with parallel token generation using Sequential Layout approach.
@@ -302,9 +297,9 @@ class ParallelGenerator:
         Args:
             prompt: The text prompt
             max_tokens: Maximum number of tokens to generate
-            threshold: Probability threshold for selecting tokens (default: 0.1)
+            selection_threshold: Probability threshold for INITIAL token selection (used by TokenSelector)
             return_parallel_sets: Whether to return parallel token sets for visualization
-            use_pruning: Whether to use pruning on parallel groups
+            use_retroactive_pruning: Whether to use retroactive pruning
             min_steps: Minimum number of steps before stopping
             show_token_ids: Include token IDs in return for debugging
             debug_mode: Override the instance debug_mode setting
@@ -312,9 +307,18 @@ class ParallelGenerator:
             system_content: System content for chat prompts
             isolate_parallel_tokens: Whether tokens at the same position cannot attend to each other
             preserve_all_isolated_tokens: Override default pruning behavior for isolated tokens
-            pruner: Pruner to use for token selection (overrides self.pruner if provided)
             retroactive_pruner: Retroactive pruner to use for token selection
             sequence_callback: Callback function for sequence length updates
+            use_mcts: Whether to use Monte Carlo Tree Search for token selection
+            mcts_simulations: Number of MCTS simulations per step
+            mcts_c_puct: Exploration constant for MCTS
+            mcts_depth: Maximum depth of MCTS simulations
+            dynamic_threshold: Whether to use dynamic thresholding
+            final_threshold: Final threshold value for dynamic thresholding
+            bezier_p1: First Bezier control point for dynamic thresholding
+            bezier_p2: Second Bezier control point for dynamic thresholding
+            use_relu: Whether to use ReLU transition instead of Bezier curve
+            relu_activation_point: Point at which ReLU transition begins
 
         Returns:
             Dict with generated text and metadata
@@ -333,13 +337,10 @@ class ParallelGenerator:
         # Validate parameters
         assert prompt, "Prompt cannot be empty"
         assert max_tokens > 0, "max_tokens must be positive"
-        assert threshold is None or (0.0 <= threshold <= 1.0), "threshold must be between 0.0 and 1.0"
-        if threshold is None:
-            threshold = 0.1  # Default threshold
+        assert selection_threshold is None or (0.0 <= selection_threshold <= 1.0), "selection_threshold must be between 0.0 and 1.0"
+        if selection_threshold is None:
+            selection_threshold = 0.1  # Default threshold for token selection
         assert min_steps >= 0, "min_steps cannot be negative"
-        
-        # Which pruner to use - instance pruner or parameter pruner
-        active_pruner = pruner if pruner is not None else self.pruner
         
         # Check RoPE isolation availability
         if isolate_parallel_tokens and (not self.use_custom_rope or self.rope_modifier is None):
@@ -387,7 +388,7 @@ class ParallelGenerator:
                 elif "mistral" in model_type:
                     # Mistral-style template
                     formatted_prompt = f"<s>[INST] {system_content}\n\n{prompt} [/INST]"
-                elif "qwen" in model_type or getattr(self, 'is_qwen_model', False):
+                elif "qwen" in model_type or self.is_qwen:
                     # Qwen-style template
                     formatted_prompt = f"<|im_start|>system\n{system_content}<|im_end|>\n<|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n"
                 else:
@@ -490,21 +491,75 @@ class ParallelGenerator:
                 self.log(traceback.format_exc(), "error")
                 break
 
-            # 3. Select Parallel Candidates T
+            # 3. Select Parallel Candidates T using the SELECTION threshold
             try:
-                # Get top token distribution
-                token_distribution, subset_size = self.token_selector.select_tokens(
-                    next_token_logits, threshold=threshold
-                )
+                # Use the threshold parameter ONLY for initial token selection
+                selection_threshold = selection_threshold  # Explicitly name it for clarity
+                
+                # Apply dynamic threshold if enabled
+                if dynamic_threshold:
+                    # Calculate current progress through generation
+                    progress = logical_step / max_tokens
+                    
+                    if use_relu:
+                        # Use ReLU transition
+                        if progress < relu_activation_point:
+                            current_threshold = selection_threshold
+                        else:
+                            # Linear transition from selection_threshold to final_threshold
+                            transition_progress = (progress - relu_activation_point) / (1.0 - relu_activation_point)
+                            current_threshold = selection_threshold + (final_threshold - selection_threshold) * transition_progress
+                    else:
+                        # Use Bezier curve for smooth transition
+                        # Calculate Bezier curve point
+                        t = progress
+                        p0 = selection_threshold
+                        p3 = final_threshold
+                        current_threshold = (1-t)**3 * p0 + 3*(1-t)**2*t * bezier_p1 + 3*(1-t)*t**2 * bezier_p2 + t**3 * p3
+                    
+                    self.log(f"Dynamic threshold at step {logical_step}: {current_threshold:.4f}")
+                    selection_threshold = current_threshold
+                
+                # Use MCTS for token selection if enabled
+                if use_mcts:
+                    # Initialize MCTS state if first step
+                    if logical_step == 0:
+                        self.log("Initializing MCTS for token selection")
+                        # Create MCTS state with current context
+                        mcts_state = {
+                            'input_ids': input_ids,
+                            'attention_mask': attention_mask,
+                            'past_key_values': past_key_values,
+                            'logical_step': logical_step
+                        }
+                    
+                    # Run MCTS simulations
+                    best_tokens = []
+                    for _ in range(mcts_simulations):
+                        # Simulate MCTS rollout
+                        simulation_result = self._mcts_simulation(
+                            mcts_state,
+                            depth=mcts_depth,
+                            c_puct=mcts_c_puct
+                        )
+                        best_tokens.extend(simulation_result)
+                    
+                    # Select top tokens based on MCTS results
+                    token_distribution = self._select_from_mcts_results(best_tokens, selection_threshold)
+                else:
+                    # Use standard token selection
+                    token_distribution, subset_size = self.token_selector.select_tokens(
+                        next_token_logits, threshold=selection_threshold
+                    )
                 
                 if not token_distribution:
-                    self.log(f"Warning: No tokens above threshold {threshold} at step {logical_step}. Falling back.", "warning")
+                    self.log(f"Warning: No tokens above selection threshold {selection_threshold} at step {logical_step}. Falling back.", "warning")
                     token_distribution, _ = self.token_selector.select_tokens(next_token_logits, threshold=0.0, max_tokens=1)
                     if not token_distribution:
                         self.log("Critical error: Still no tokens selected. Stopping.", "error")
                         break
                         
-                self.log(f"Selected {len(token_distribution)} candidate tokens for logical step {logical_step}.")
+                self.log(f"Selected {len(token_distribution)} candidate tokens for logical step {logical_step} using threshold {selection_threshold}")
                 
                 # Store original candidates
                 original_candidates = [(tid.item(), float(prob)) for tid, prob in token_distribution]
@@ -514,87 +569,23 @@ class ParallelGenerator:
                 self.log(f"Error selecting tokens at step {logical_step}: {e}. Logits shape: {next_token_logits.shape}", "error")
                 break
 
-            # 4. Apply Pruning to get T'
+            # 4. Apply Pruning to get T' (pruners use their own thresholds)
             pruned_distribution = token_distribution  # Start with original candidates
-            if use_pruning and active_pruner is not None and len(token_distribution) > 1:
+            if use_retroactive_pruning and logical_step > 0:
                 pruning_start = time.time()
                 try:
-                    # Extract token ids and probs for pruner
-                    token_ids = [tid.item() for tid, _ in token_distribution]
-                    token_probs = [float(prob) for _, prob in token_distribution]
-                    
-                    # Get context from full input_ids
-                    context_ids = input_ids[0].tolist()
-                    
-                    # Apply pruning
-                    if hasattr(active_pruner, 'prune'):
-                        # Use the prune method if available
-                        prune_results = active_pruner.prune(
-                            token_ids=token_ids,
-                            token_probs=token_probs,
-                            token_logits=[next_token_logits[0]],
-                            step=logical_step,
-                            position_history=self.attention_manager.get_token_history() if hasattr(self.attention_manager, 'get_token_history') else []
-                        )
-                        
-                        # Extract pruned indices
-                        if isinstance(prune_results, tuple):
-                            pruned_indices = prune_results[0]
-                        else:
-                            pruned_indices = prune_results
-                            
-                        # If all tokens were pruned, this is a problem
-                        if len(pruned_indices) == len(token_distribution):
-                            self.log("Warning: All tokens were pruned, selecting the highest probability token", "warning")
-                            pruned_indices = []  # Don't prune anything
-                            
-                        # Keep only non-pruned tokens
-                        pruned_distribution = [token_distribution[i] for i in range(len(token_distribution)) if i not in pruned_indices]
-                        
-                    elif hasattr(active_pruner, 'strategy') and hasattr(active_pruner.strategy, 'prune_tokens'):
-                        # Use the strategy's prune_tokens method - IMPORTANT: Pass tensor not list
-                        pruned_tuples = active_pruner.strategy.prune_tokens(
-                            input_ids,  # Pass the tensor directly, not the list
-                            [(tid.item(), float(prob)) for tid, prob in token_distribution]
-                        )
-                        
-                        # If pruning returned some tokens
-                        if pruned_tuples:
-                            pruned_distribution = [(torch.tensor(tid, device=self.device), prob) for tid, prob in pruned_tuples]
-                            self.log(f"Pruning kept {len(pruned_distribution)} tokens out of {len(token_distribution)}.")
-                        else:
-                            self.log("Warning: Pruning removed all tokens, keeping highest prob original.", "warning")
-                            pruned_distribution = [token_distribution[0]]  # Keep best original
-                    
-                except Exception as e:
-                    self.log(f"Error during pruning at step {logical_step}: {e}", "error")
-                    self.log(traceback.format_exc(), "error")
-                    # Fallback to original distribution
-                    pruned_distribution = token_distribution
-                    
-                pruning_time += time.time() - pruning_start
-                pruning_steps += 1
-                
-                # Store pruned results for this step
-                pruned_candidates = [(tid.item(), float(prob)) for tid, prob in pruned_distribution]
-                all_pruned_token_sets[logical_step] = pruned_candidates
-
-            # Apply retroactive pruning if available
-            if retroactive_pruner is not None and logical_step > 0:  # Can only prune previous steps
-                retroactive_pruning_start = time.time()
-                try:
-                    # Update retroactive pruner with current step
+                    # Update retroactive pruner with current step (updates its internal threshold)
                     if hasattr(retroactive_pruner, 'update_step'):
                         retroactive_pruner.update_step(logical_step)
 
-                    # Prune history before adding current tokens
+                    # Prune history before adding current tokens (uses its own threshold)
                     if hasattr(retroactive_pruner, 'retroactively_prune'):
                         pruned_history = retroactive_pruner.retroactively_prune(
                             prompt_length=prompt_tokens,
-                            all_parallel_tokens=all_original_token_sets,  # Pass history of originals
-                            step=logical_step  # Prune based on attention from predicting this step
+                            all_parallel_tokens=all_original_token_sets,
+                            step=logical_step
                         )
-                        # Update the pruned sets history (used for formatting later)
+                        # Update the pruned sets history
                         all_pruned_token_sets.update(pruned_history)
                         self.log(f"Retroactive pruning applied up to step {logical_step-1}.")
                 
@@ -602,7 +593,12 @@ class ParallelGenerator:
                     self.log(f"Error during retroactive pruning at step {logical_step}: {e}", "error")
                     self.log(traceback.format_exc(), "error")
                     
-                pruning_time += time.time() - retroactive_pruning_start
+                pruning_time += time.time() - pruning_start
+                pruning_steps += 1
+                
+                # Store pruned results for this step
+                pruned_candidates = [(tid.item(), float(prob)) for tid, prob in pruned_distribution]
+                all_pruned_token_sets[logical_step] = pruned_candidates
 
             # 5. Extract token IDs from final pruned distribution
             T_prime_ids = [tid.item() for tid, _ in pruned_distribution]
@@ -750,11 +746,11 @@ class ParallelGenerator:
             "raw_generated_text": raw_generated_text,
             "generation_time": generation_time,
             "pruning_time": pruning_time,
-            "is_qwen_model": getattr(self, 'is_qwen_model', False),
+            "is_qwen_model": self.is_qwen,
             "had_repetition_loop": had_repetition_loop,
             "prompt": prompt,
-            "threshold": threshold,
-            "use_pruning": use_pruning,
+            "selection_threshold": selection_threshold,
+            "use_retroactive_pruning": use_retroactive_pruning,
             "min_steps": min_steps,
             "disable_kv_cache": disable_kv_cache,
             "isolate_parallel_tokens": isolate_parallel_tokens,
@@ -768,7 +764,7 @@ class ParallelGenerator:
             result["all_pruned_token_sets"] = all_pruned_token_sets
             
         # Add pruning statistics
-        if use_pruning:
+        if use_retroactive_pruning:
             result["pruning_time"] = pruning_time
             result["pruning_steps"] = pruning_steps
             
@@ -800,3 +796,96 @@ class ParallelGenerator:
                 
             if hasattr(self, "token_generator") and self.token_generator is not None:
                 self.token_generator.set_debug_mode(enabled)
+
+    def _mcts_simulation(self, state, depth, c_puct):
+        """
+        Perform a single MCTS simulation for token selection.
+        
+        Args:
+            state: Current MCTS state
+            depth: Maximum simulation depth
+            c_puct: Exploration constant
+            
+        Returns:
+            List of (token_id, probability) tuples from the simulation
+        """
+        current_state = state.copy()
+        simulation_tokens = []
+        
+        for _ in range(depth):
+            # Get next token logits
+            next_token_logits, new_past_key_values = self.token_generator.generate_next_token_with_cache(
+                input_ids=current_state['input_ids'],
+                attention_mask=current_state['attention_mask'],
+                past_key_values=current_state['past_key_values']
+            )
+            
+            # Update state
+            current_state['past_key_values'] = new_past_key_values
+            
+            # Select token using UCB1 formula
+            token_probs = torch.softmax(next_token_logits, dim=-1)
+            token_values = torch.zeros_like(token_probs)
+            
+            # Calculate UCB1 values
+            for i in range(token_probs.size(-1)):
+                if token_probs[0, i] > 0:
+                    # UCB1 formula: Q + c * sqrt(ln(N)/n)
+                    # For simplicity, we use the probability as Q
+                    token_values[0, i] = token_probs[0, i] + c_puct * torch.sqrt(
+                        torch.log(torch.tensor(current_state['logical_step'] + 1)) / 
+                        (token_probs[0, i] + 1e-8)
+                    )
+            
+            # Select token with highest UCB1 value
+            selected_token = torch.argmax(token_values).item()
+            selected_prob = token_probs[0, selected_token].item()
+            
+            simulation_tokens.append((selected_token, selected_prob))
+            
+            # Update input_ids and attention_mask
+            new_token = torch.tensor([[selected_token]], device=self.device)
+            current_state['input_ids'] = torch.cat([current_state['input_ids'], new_token], dim=1)
+            current_state['attention_mask'] = torch.cat([
+                current_state['attention_mask'],
+                torch.ones((1, 1), device=self.device)
+            ], dim=1)
+            current_state['logical_step'] += 1
+            
+        return simulation_tokens
+
+    def _select_from_mcts_results(self, mcts_tokens, threshold):
+        """
+        Select tokens from MCTS simulation results based on threshold.
+        
+        Args:
+            mcts_tokens: List of (token_id, probability) tuples from MCTS simulations
+            threshold: Probability threshold for selection
+            
+        Returns:
+            List of (token_id, probability) tuples above threshold
+        """
+        # Count occurrences of each token
+        token_counts = {}
+        for token_id, prob in mcts_tokens:
+            if token_id not in token_counts:
+                token_counts[token_id] = []
+            token_counts[token_id].append(prob)
+        
+        # Calculate average probability for each token
+        token_avg_probs = {
+            token_id: sum(probs) / len(probs)
+            for token_id, probs in token_counts.items()
+        }
+        
+        # Filter tokens above threshold
+        selected_tokens = [
+            (token_id, avg_prob)
+            for token_id, avg_prob in token_avg_probs.items()
+            if avg_prob >= threshold
+        ]
+        
+        # Sort by probability
+        selected_tokens.sort(key=lambda x: x[1], reverse=True)
+        
+        return selected_tokens

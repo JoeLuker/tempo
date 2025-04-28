@@ -25,7 +25,7 @@ class TokenVisualizer:
 
         token_sets = results["parallel_sets"]
         pruned_sets = results.get("pruned_sets", None)
-        use_pruning = results.get("use_pruning", False)
+        use_retroactive_pruning = results.get("use_retroactive_pruning", False)
         dynamic_threshold = results.get("dynamic_threshold", False)
         bezier_points = results.get("bezier_points", [0.2, 0.8])
         pruning_strategy = results.get("pruning_strategy", "coherence")
@@ -199,7 +199,7 @@ class TokenVisualizer:
         print(f"Average tokens per step: {np.mean(token_counts):.2f}")
         print(f"Max tokens in a step: {max(token_counts)}")
 
-        if results.get("use_pruning") and "pruned_sets" in results:
+        if results.get("use_retroactive_pruning") and "pruned_sets" in results:
             pruned_sets = results["pruned_sets"]
             pruned_counts = [len(s) for s in pruned_sets]
             pruning_strategy = results.get("pruning_strategy", "coherence")

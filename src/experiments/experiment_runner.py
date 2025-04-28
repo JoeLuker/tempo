@@ -5,13 +5,12 @@ from pathlib import Path
 from typing import Dict, Any, Optional
 from ..generation.parallel_generator import ParallelGenerator
 from ..generation.token_generator import TokenGenerator
-from ..pruning.pruner import Pruner
 from ..visualization.token_visualizer import TokenVisualizer
 from ..visualization.position_visualizer import PositionVisualizer
 from ..modeling.model_wrapper import TEMPOModelWrapper
 import time
 from tqdm import tqdm
-from src.pruning import Pruner, RetroactivePruner
+from src.pruning import RetroactivePruner
 from src.pruning.dynamic_threshold import DynamicThresholdManager
 
 
@@ -62,8 +61,8 @@ class ExperimentRunner:
         # Extract parameters from args
         prompt = args.get("prompt", "")
         max_tokens = args.get("max_tokens", 100)
-        threshold = args.get("threshold", 0.1)
-        use_pruning = args.get("use_pruning", False)
+        selection_threshold = args.get("selection_threshold", 0.1)
+        use_retroactive_pruning = args.get("use_retroactive_pruning", False)
         save_visualization = args.get("save_visualization", True)
         output_dir = args.get("output_dir", "./output")
         bezier_points = args.get("bezier_points", [0.2, 0.8])
@@ -106,7 +105,7 @@ class ExperimentRunner:
 
         # Only preserve isolated tokens by default if the user didn't explicitly request pruning
         if (
-            use_pruning and no_preserve_isolated_tokens is False
+            use_retroactive_pruning and no_preserve_isolated_tokens is False
         ):  # If pruning is requested and preservation wasn't explicitly disabled
             # Don't automatically preserve - user wants pruning
             preserve_all_isolated_tokens = False
@@ -140,7 +139,7 @@ class ExperimentRunner:
             with open("logs/experiment_debug.log", "a") as f:
                 f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Experiment started with debug mode ENABLED\n")
                 f.write(f"Prompt: {prompt[:100]}{'...' if len(prompt) > 100 else ''}\n")
-                f.write(f"Parameters: threshold={threshold}, max_tokens={max_tokens}\n")
+                f.write(f"Parameters: selection_threshold={selection_threshold}, max_tokens={max_tokens}\n")
                 f.write("----------------------------------------\n")
 
         # Create output directory if needed
@@ -163,33 +162,8 @@ class ExperimentRunner:
         pruner = None
         retroactive_pruner = None
 
-        if use_pruning:
+        if use_retroactive_pruning:
             attention_threshold = args.get("attention_threshold", 0.01)
-
-            # Create regular pruner with strategy from args
-            pruner = Pruner(
-                model=self.model,
-                tokenizer=self.tokenizer,
-                strategy=args.get(
-                    "pruning_strategy", "coherence"
-                ),  # Use pruning_strategy from args
-                coherence_threshold=args.get(
-                    "coherence_threshold", 0.1
-                ),  # Use coherence_threshold from args
-                diversity_clusters=args.get(
-                    "diversity_clusters", 3
-                ),  # Use diversity_clusters from args
-                diversity_steps=args.get(
-                    "diversity_steps", 0
-                ),  # Use diversity_steps from args
-                device=self.device,
-                use_dynamic_threshold=args.get("dynamic_threshold", False),
-                max_steps=args.get("max_tokens", None),
-                bezier_points=args.get("bezier_points", [0.2, 0.8]),
-                final_threshold=args.get("final_threshold", 1.0),
-                use_relu=args.get("use_relu", False),
-                relu_activation_point=args.get("relu_activation_point", 0.5),
-            )
 
             # Create retroactive pruner
             retroactive_pruner = RetroactivePruner(
@@ -198,51 +172,25 @@ class ExperimentRunner:
                 attention_threshold=attention_threshold,
                 device=self.device,
                 debug_mode=debug_mode,  # Use the debug_mode from args instead of hardcoding True
-                dynamic_threshold_manager=(
-                    pruner.threshold_manager
-                    if args.get("dynamic_threshold", False)
-                    else
-                    # Create a dummy threshold manager if dynamic threshold is not enabled
-                    DynamicThresholdManager(
-                        max_steps=args.get("max_tokens", 100),
-                        base_threshold=attention_threshold,
-                        final_threshold=attention_threshold,  # No change in threshold
-                        bezier_points=[0.5, 0.5],  # Linear interpolation
-                        use_relu=False,
-                    )
-                ),
                 use_relative_attention=not args.get("no_relative_attention", False),
                 relative_threshold=args.get("relative_threshold", 0.5),
                 use_multi_scale_attention=not args.get(
                     "no_multi_scale_attention", False
                 ),
                 num_layers_to_use=args.get("num_layers_to_use", None),
-                use_lci_dynamic_threshold=not args.get(
-                    "no_lci_dynamic_threshold", False
-                ),
                 use_sigmoid_threshold=not args.get("no_sigmoid_threshold", False),
                 sigmoid_steepness=args.get("sigmoid_steepness", 10.0),
                 complete_pruning_mode=args.get("complete_pruning_mode", "keep_token"),
             )
 
-            # Set the shared TokenGenerator instance on the pruners
-            if hasattr(pruner, "strategy") and hasattr(pruner.strategy, "set_token_generator"):
-                pruner.strategy.set_token_generator(shared_token_generator)
-                pruner.strategy.set_debug_mode(debug_mode)
-                print("Set shared TokenGenerator on Pruner strategy")
-
-            if retroactive_pruner is not None and hasattr(retroactive_pruner, "set_token_generator"):
+            # Set the shared TokenGenerator instance on the retroactive pruner
+            if hasattr(retroactive_pruner, "set_token_generator"):
                 retroactive_pruner.set_token_generator(shared_token_generator)
                 retroactive_pruner.set_debug_mode(debug_mode)
                 print("Set shared TokenGenerator on RetroactivePruner")
 
             print(
-                f"Using coherence-based pruning with retroactive pruning (attention threshold: {attention_threshold})"
-                + (
-                    ", dynamic threshold enabled"
-                    if args.get("dynamic_threshold", False)
-                    else ""
-                )
+                f"Using retroactive pruning with attention threshold: {attention_threshold}"
             )
 
         setup_progress.update(1)  # Pruning setup complete
@@ -296,40 +244,9 @@ class ExperimentRunner:
                 and hasattr(generator, "rope_modifier")
                 and generator.rope_modifier is not None
             ):
-                # ALWAYS set debug mode based on the passed debug_mode parameter, not conditionally
-                generator.rope_modifier.set_debug_mode(debug_mode)
-                if debug_mode:
-                    print("RoPE modifier debug mode ENABLED")
-                else:
-                    print("RoPE modifier debug mode disabled")
-
                 if disable_kv_cache_consistency:
                     generator.rope_modifier.enable_kv_cache_consistency(False)
                     print("RoPE modifier KV cache consistency disabled")
-
-            # ALWAYS set debug mode for AttentionManager
-            if hasattr(generator, "attention_manager"):
-                generator.attention_manager.set_debug_mode(debug_mode)
-                if debug_mode:
-                    print("AttentionManager debug mode ENABLED")
-                else:
-                    print("AttentionManager debug mode disabled")
-
-            # ALWAYS set debug mode for TokenSelector
-            if hasattr(generator, "token_selector"):
-                generator.token_selector.set_debug_mode(debug_mode)
-                if debug_mode:
-                    print("TokenSelector debug mode ENABLED")
-                else:
-                    print("TokenSelector debug mode disabled")
-
-            # ALWAYS set debug mode for TokenGenerator
-            if hasattr(generator, "token_generator"):
-                generator.token_generator.set_debug_mode(debug_mode)
-                if debug_mode:
-                    print("TokenGenerator debug mode ENABLED")
-                else:
-                    print("TokenGenerator debug mode disabled")
 
             if disable_kv_cache:
                 print("KV caching disabled for more consistent attention patterns")
@@ -341,19 +258,19 @@ class ExperimentRunner:
             else:
                 print("Parallel tokens are isolated (default: can't see each other)")
 
-                # Indicate pruning status based on use_pruning and preserve_all_isolated_tokens
-                if use_pruning:
+                # Indicate pruning status based on use_retroactive_pruning and preserve_all_isolated_tokens
+                if use_retroactive_pruning:
                     if not preserve_all_isolated_tokens:
                         print(
-                            "Pruning will evaluate isolated tokens (explicitly requested)"
+                            "Retroactive pruning will evaluate isolated tokens (explicitly requested)"
                         )
                     else:
                         print(
-                            "Isolated tokens will be preserved (pruning only evaluates non-isolated tokens)"
+                            "Isolated tokens will be preserved (retroactive pruning only evaluates non-isolated tokens)"
                         )
                 elif no_preserve_isolated_tokens:
                     print(
-                        "Warning: No-preserve flag set but pruning is disabled, has no effect"
+                        "Warning: No-preserve flag set but retroactive pruning is disabled, has no effect"
                     )
 
         # Prepare messages format for Cogito model if thinking is enabled
@@ -367,7 +284,7 @@ class ExperimentRunner:
 
         # Run generation with timing
         generation_start = time.time()
-        print(f"Starting token generation with threshold={threshold}...")
+        print(f"Starting token generation with selection_threshold={selection_threshold}...")
 
         if use_mcts:
             # Generate with MCTS generator
@@ -384,8 +301,8 @@ class ExperimentRunner:
                 "generated_text": generated_text,
                 "raw_generated_text": generated_text,
                 "prompt": prompt,
-                "threshold": threshold,
-                "use_pruning": use_pruning,
+                "selection_threshold": selection_threshold,
+                "use_retroactive_pruning": use_retroactive_pruning,
                 "min_steps": min_steps,
                 "generation_time": time.time() - generation_start,
                 "use_mcts": True,
@@ -397,9 +314,9 @@ class ExperimentRunner:
             results = generator.generate(
                 prompt=prompt,
                 max_tokens=max_tokens,
-                threshold=threshold,
+                selection_threshold=selection_threshold,
                 return_parallel_sets=save_visualization,
-                use_pruning=use_pruning,
+                use_retroactive_pruning=use_retroactive_pruning,
                 min_steps=min_steps,
                 show_token_ids=show_token_ids,
                 debug_mode=debug_mode,
@@ -413,22 +330,15 @@ class ExperimentRunner:
         generation_time = time.time() - generation_start
 
         # Add experiment parameters to results
-        if use_pruning:
-            results["pruning_strategy"] = args.get("pruning_strategy", "coherence")
-            results["coherence_threshold"] = args.get("coherence_threshold", 0.3)
-            if args.get("dynamic_threshold", False):
-                results["dynamic_threshold"] = True
-                results["bezier_points"] = bezier_points
-
-                # Add ReLU parameters if ReLU transition is enabled
-                if args.get("use_relu", False):
-                    results["use_relu"] = True
-                    results["relu_activation_point"] = args.get(
-                        "relu_activation_point", 0.5
-                    )
-
-            if args.get("pruning_strategy", "") == "hybrid":
-                results["diversity_steps"] = args.get("diversity_steps", 0)
+        if use_retroactive_pruning:
+            results["attention_threshold"] = attention_threshold
+            results["use_relative_attention"] = not args.get("no_relative_attention", False)
+            results["relative_threshold"] = args.get("relative_threshold", 0.5)
+            results["use_multi_scale_attention"] = not args.get("no_multi_scale_attention", False)
+            results["num_layers_to_use"] = args.get("num_layers_to_use", None)
+            results["use_sigmoid_threshold"] = not args.get("no_sigmoid_threshold", False)
+            results["sigmoid_steepness"] = args.get("sigmoid_steepness", 10.0)
+            results["complete_pruning_mode"] = args.get("complete_pruning_mode", "keep_token")
 
         # Add Cogito-specific parameters
         if enable_thinking:
@@ -483,8 +393,8 @@ class ExperimentRunner:
                     "raw_generated_text", results["generated_text"]
                 ),
                 "prompt": results["prompt"],
-                "threshold": results["threshold"],
-                "use_pruning": results["use_pruning"],
+                "selection_threshold": results["selection_threshold"],
+                "use_retroactive_pruning": results["use_retroactive_pruning"],
                 "enable_thinking": enable_thinking,
                 "use_mcts": use_mcts,
             }
@@ -496,25 +406,22 @@ class ExperimentRunner:
                 serializable_results["mcts_attention_threshold"] = mcts_attention_threshold
 
             # Add pruning params if available
-            if "pruning_strategy" in results:
-                serializable_results["pruning_strategy"] = results["pruning_strategy"]
-            if "coherence_threshold" in results:
-                serializable_results["coherence_threshold"] = results[
-                    "coherence_threshold"
-                ]
-            if "dynamic_threshold" in results:
-                serializable_results["dynamic_threshold"] = results["dynamic_threshold"]
-            if "bezier_points" in results:
-                serializable_results["bezier_points"] = results["bezier_points"]
-            if "diversity_steps" in results:
-                serializable_results["diversity_steps"] = results["diversity_steps"]
-            # Add ReLU parameters if available
-            if "use_relu" in results:
-                serializable_results["use_relu"] = results["use_relu"]
-            if "relu_activation_point" in results:
-                serializable_results["relu_activation_point"] = results[
-                    "relu_activation_point"
-                ]
+            if "attention_threshold" in results:
+                serializable_results["attention_threshold"] = results["attention_threshold"]
+            if "use_relative_attention" in results:
+                serializable_results["use_relative_attention"] = results["use_relative_attention"]
+            if "relative_threshold" in results:
+                serializable_results["relative_threshold"] = results["relative_threshold"]
+            if "use_multi_scale_attention" in results:
+                serializable_results["use_multi_scale_attention"] = results["use_multi_scale_attention"]
+            if "num_layers_to_use" in results:
+                serializable_results["num_layers_to_use"] = results["num_layers_to_use"]
+            if "use_sigmoid_threshold" in results:
+                serializable_results["use_sigmoid_threshold"] = results["use_sigmoid_threshold"]
+            if "sigmoid_steepness" in results:
+                serializable_results["sigmoid_steepness"] = results["sigmoid_steepness"]
+            if "complete_pruning_mode" in results:
+                serializable_results["complete_pruning_mode"] = results["complete_pruning_mode"]
 
             json.dump(serializable_results, f, indent=2)
 

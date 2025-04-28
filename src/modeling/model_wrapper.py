@@ -9,12 +9,14 @@ class TEMPOModelWrapper(nn.Module):
     Captures intermediate values during generation and provides hooks for debugging.
     """
 
-    def __init__(self, model):
+    def __init__(self, model, tokenizer=None, device=None):
         """
         Initialize the model wrapper.
 
         Args:
             model: The language model to wrap
+            tokenizer: The tokenizer to use with the model
+            device: The device to use for the model
         """
         super().__init__()
         # Assert model is not None and has the required attributes
@@ -23,6 +25,7 @@ class TEMPOModelWrapper(nn.Module):
         assert hasattr(model, "config"), "Model must have a config attribute"
 
         self.model = model
+        self.tokenizer = tokenizer
         self.intermediate_values = {}
         self.activation_hooks = []
         self._register_hooks()
@@ -36,7 +39,7 @@ class TEMPOModelWrapper(nn.Module):
             self.generation_config = model.generation_config
 
         # Store device information
-        self.device = next(model.parameters()).device
+        self.device = device if device is not None else next(model.parameters()).device
         # Assert device is valid
         assert self.device is not None, "Model device could not be determined"
 

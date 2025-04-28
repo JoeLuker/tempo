@@ -4,70 +4,80 @@
 [![GitHub stars](https://img.shields.io/github/stars/JoeLuker/tempo)](https://github.com/JoeLuker/tempo/stargazers)
 [![GitHub issues](https://img.shields.io/github/issues/JoeLuker/tempo)](https://github.com/JoeLuker/tempo/issues)
 
-This project implements and evaluates a novel text generation mechanism called **TEMPO (Threshold-Enabled Multipath Parallel Output)**. TEMPO explores generating text non-autoregressively for specific steps by processing multiple token possibilities simultaneously, using modifications to standard Transformer attention and positional encoding.
+This project implements and evaluates **TEMPO (Threshold-Enabled Multipath Parallel Output)**, an experimental approach to language model generation. TEMPO explores processing multiple token possibilities simultaneously at certain steps, aiming to understand how models might handle concurrent hypotheses within a single sequence state, differing from traditional beam search which maintains separate sequences.
+
+**Note:** This project is currently in an experimental phase, primarily focused on the `deepcogito/cogito-v1-preview-llama-3B` model.
 
 ## Table of Contents
+
 - [Overview](#overview)
+- [Target Model](#target-model)
 - [Core Mechanism](#core-mechanism)
-- [Features](#features)
+- [Key Features](#key-features)
 - [System Requirements](#system-requirements)
 - [Installation](#installation)
-- [Configuration](#configuration)
 - [Usage](#usage)
 - [Development](#development)
 - [Testing](#testing)
-- [Security](#security)
 - [Troubleshooting](#troubleshooting)
 - [Contributing](#contributing)
 - [License](#license)
 
 ## Overview
 
-Standard autoregressive text generation selects a single token at each step. TEMPO investigates an alternative approach where, at a given step, multiple tokens above a probability **Threshold** are selected. Instead of creating separate sequence branches (like beam search), TEMPO uses advanced techniques to process these parallel possibilities concurrently within a *single evolving sequence state*.
+Standard autoregressive text generation selects a single token at each step. TEMPO investigates an alternative approach where, at a given "logical" step, multiple token candidates above a probability **Selection Threshold** are identified. Instead of branching the sequence, TEMPO processes these parallel possibilities concurrently within a *single evolving sequence state* using modifications to positional embeddings.
 
 The core idea is to:
 
-1.  **Select Multiple Candidates:** Identify all tokens exceeding a probability threshold at the current generation step.
-2.  **Prune Candidates:** Optionally apply pruning strategies (coherence, diversity, retroactive attention) to refine the set of candidate tokens for the current step.
-3.  **Simulate Parallel Processing:** Use modifications to Rotary Position Embeddings (RoPE) and attention masks to perform a *single* forward pass where the chosen candidate tokens are processed *as if* they occupy the same logical position simultaneously. This allows the model to consider the combined influence of these possibilities when predicting the *next* step.
-4.  **Maintain Single Sequence:** Append *all* selected (and potentially pruned) candidate tokens sequentially to the main input tensor. The RoPE and attention modifications ensure they are treated appropriately relative to their logical position during subsequent forward passes. Parallelism at a position only collapses if pruning naturally reduces the candidate set to one token.
-5.  **Produce Output:** Generate text where positions with multiple simultaneous tokens are marked (e.g., `[tokenA/tokenB]`), revealing the model's internal parallelism or uncertainty at those steps.
+1. **Select Multiple Candidates:** Identify all tokens exceeding a `--threshold` probability at the current logical generation step.
+2. **Prune Candidates (Optional):** Apply pruning strategies (strategy-based or retroactive attention-based) to refine the candidate set for the current step.
+3. **Append Sequentially:** Append *all* selected (and potentially pruned) candidate tokens physically one after another onto the main `input_ids` tensor.
+4. **Simulate Parallelism via RoPE:** Use modifications to Rotary Position Embeddings (**`RoPEModifier`**) to assign the *same* positional embedding to all physical tokens belonging to the same logical step. This is the primary mechanism allowing the model to process them *as if* they occupy the same logical position simultaneously during the *single* forward pass for the *next* step's prediction.
+5. **Maintain Single State:** Evolve a single standard `past_key_values` (KV cache) based on this sequential processing. The RoPE modification ensures the model internally accounts for the intended logical parallelism.
+6. **Produce Output:** Generate text where positions involving multiple simultaneous tokens (before potential pruning) are marked (e.g., `[tokenA/tokenB]`), revealing the model's internal branching or uncertainty at those steps.
 
-This allows exploring how language models might internally represent and process concurrent possibilities without the full computational cost of maintaining separate sequence branches.
+## Target Model
+
+Currently, this project is focused on experimentation and validation using the **`deepcogito/cogito-v1-preview-llama-3B`** model. While the concepts might apply more broadly, the RoPE patching and default configurations are tuned for this specific Llama-based architecture. Generalization to other models is a potential future direction but is not the immediate goal.
 
 ## Core Mechanism
 
--   **Threshold Selection:** A probability threshold (`--threshold`) determines the initial set of parallel candidate tokens at each logical step.
--   **Sequential Layout:** All selected candidate tokens are appended sequentially to a single `input_ids` tensor.
--   **Logical Position Tracking:** A separate mechanism (`logical_layout`) tracks which physical indices in the `input_ids` tensor correspond to the same logical generation step.
--   **RoPE Modification (`RoPEModifier`):** Patches the model's Rotary Position Embedding calculation. Uses the `logical_layout` to assign the *same* positional embedding to all tokens belonging to the same logical step, even though they occupy different physical positions in the `input_ids` tensor.
--   **Attention Mask Modification (`AttentionManager`):** Generates custom attention masks (if the model supports explicit mask input, otherwise relies on RoPE alone) that allow tokens within the same logical step (parallel set) to attend to each other (controlled by `--allow-intraset-token-visibility`) while maintaining overall causality.
--   **Single KV Cache:** Evolves a single standard `past_key_values` cache based on the sequential processing, with the RoPE/Attention modifications influencing the internal calculations during the forward pass.
--   **Pruning:** Strategies (`--use-pruning`, `--pruning-strategy`, `--attention-threshold`, etc.) refine the set of candidate tokens considered at each step *before* they are appended to the sequence and processed simultaneously.
+- **Selection Threshold:** A probability threshold (`--threshold`) determines the initial set of parallel candidate tokens considered at each logical step.
+- **Sequential Layout:** All selected candidate tokens (potentially after pruning) are appended sequentially to a single `input_ids` tensor.
+- **Logical Position Tracking (`logical_layout`):** An internal mechanism tracks which physical indices in the `input_ids` tensor correspond to the same logical generation step.
+- **RoPE Modification (`RoPEModifier`):** (Requires `--use-custom-rope`) Patches the model's Rotary Position Embedding calculation. Uses the `logical_layout` to assign the *same* positional embedding to all tokens belonging to the same logical step, tricking the model into processing them as simultaneous alternatives.
+- **Attention Masking (`AttentionManager`):** By default, uses standard causal masking. Can generate custom masks if needed, potentially allowing parallel tokens to attend to each other (controlled by `--allow-intraset-token-visibility`, requires RoPE modification).
+- **Single KV Cache:** Evolves a single standard `past_key_values` cache. RoPE modifications influence how the query/key vectors are calculated before cache interaction. *KV Cache consistency logic has been simplified/removed as the position mapping handles the core requirement.*
+- **Pruning:**
+  - **Strategy-Based Pruning (`--use-pruning`, `--pruning-strategy`, etc.):** Refines the candidate set *before* tokens are appended, using coherence, diversity, or a hybrid approach. Uses its *own* threshold (e.g., `--coherence-threshold`).
+  - **Retroactive Pruning (`--use-retroactive-pruning`):** Refines *previously processed* parallel sets based on attention from later tokens (uses `--attention-threshold` as base for dynamic curve).
 
-## Features
+## Key Features
 
--   **Simultaneous Token Processing:** Explores parallelism by processing multiple candidate tokens per logical step using RoPE and Attention modifications within a single sequence state.
--   **Configurable Parallelism:** Control the initial candidate set size via `--threshold`.
--   **Advanced Pruning:**
-    -   Filter candidates based on semantic coherence (`coherence` strategy, uses attention patterns if available).
-    -   Select diverse candidates using embedding clustering (`diversity` strategy).
-    *   Combine strategies (`hybrid` strategy).
-    *   Retroactive Pruning (`--use-pruning --attention-threshold`): Refines *previously processed* parallel sets based on attention from later tokens (requires model attention output).
-    -   Dynamic Thresholding (`--dynamic-threshold`): Adjust pruning aggressiveness over time using Bezier or ReLU curves.
--   **Parallel Token Interaction Control:**
-    *   `--allow-intraset-token-visibility`: Lets parallel tokens attend to each other during the simultaneous processing step (requires `--use-custom-rope`). Default is isolated.
--   **Visualization:** Output indicates positions where multiple tokens were processed simultaneously (e.g., `[tokenA/tokenB]`). `token_sets` data provides detailed history.
--   **Web Interface**: Modern Svelte-based UI for interactive exploration.
--   **Early Exit Transformers**: (Optional feature) Integrates adaptive computation for potentially faster inference on compatible models (see `examples/early_exit_demo.py`).
+- **Simulated Parallel Processing:** Explores parallelism by processing multiple candidate tokens per logical step using RoPE modifications within a single sequence state.
+- **Configurable Selection:** Control the initial candidate set size via `--threshold`.
+- **Advanced Pruning:**
+  - Retroactive Pruning: Refines *previously processed* parallel sets based on attention from later tokens (uses `--attention-threshold` as base for dynamic curve).
+  - Dynamic Thresholding (`--dynamic-threshold`): Adjust retroactive pruning aggressiveness over time using Bezier (`--bezier-p1`, `--bezier-p2`) or ReLU (`--use-relu`, `--relu-activation-point`) curves.
+- **Parallel Token Interaction Control:**
+  - `--allow-intraset-token-visibility`: Lets parallel tokens attend to each other during the simultaneous processing step (requires `--use-custom-rope`). Default is isolated.
+- **Visualization:**
+  - Output text indicates positions where multiple tokens were processed simultaneously (e.g., `[tokenA/tokenB]`).
+  - Option to save plots visualizing token counts and probabilities (`--save-visualization`).
+  - Web Interface (`frontend/`): Svelte UI for interactive exploration via the API.
+- **Experimental Features (CLI):**
+  - Monte Carlo Tree Search (`--use-mcts`) generation (available in `run_tempo.py`, not API).
+  - Early Exit Transformer demo (`examples/early_exit_demo.py`).
 
 ## System Requirements
 
--   Python 3.8 or higher
--   Node.js 16 or higher (for frontend)
--   Apple Silicon Mac (M1/M2) for optimal performance
--   At least 16GB RAM
--   20GB free disk space for model and dependencies
+- Python 3.8 or higher
+- PyTorch >= 2.0
+- Transformers >= 4.30
+- Node.js 16 or higher (for frontend)
+- Target Model: `deepcogito/cogito-v1-preview-llama-3B` (tested on Apple Silicon M-series with MPS/CPU fallback)
+- RAM: 16GB+ recommended
+- Disk Space: ~20GB for model and dependencies
 
 ## Installation
 
@@ -80,9 +90,10 @@ source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 
 # Install dependencies
 pip install -r requirements.txt
+pip install -r requirements-test.txt # For testing
 
-# Start the FastAPI server
-uvicorn api:app --reload
+# Start the FastAPI server (for frontend interaction)
+uvicorn api:app --reload --port 8000
 ```
 
 ### Frontend Setup
@@ -94,242 +105,171 @@ cd frontend
 # Install dependencies
 npm install
 
-# Start the development server
+# Start the development server (connects to backend on port 8000)
 npm run dev
 ```
 
 The web interface will be available at `http://localhost:5173` and the API at `http://localhost:8000`.
 
-## Configuration
-
-### Environment Variables
-
-Create a `.env` file in the project root with the following variables:
-
-```env
-MODEL_PATH=/path/to/model
-DEVICE=mps  # or cuda for NVIDIA GPUs
-LOG_LEVEL=INFO
-API_PORT=8000
-FRONTEND_PORT=5173
-```
-
-### Model Configuration
-
-The system supports various model configurations through the API:
-
-- Model size and architecture
-- Generation parameters
-- Pruning strategies
-- Visualization options
-
-See the API documentation at `http://localhost:8000/docs` for detailed configuration options.
-
 ## Usage
 
-### Command Line Interface
+### Command Line Interface (`run_tempo.py`)
+
+The primary way to run experiments with detailed control and profiling.
 
 ```bash
-# Basic generation
-python run_tempo.py --prompt "Your prompt here" --threshold 0.1
+# Basic generation (using defaults for the target model)
+python run_tempo.py --prompt "Explain the theory of relativity simply." --threshold 0.05 --max-tokens 150
 
-# With MCTS enabled
-python run_tempo.py --prompt "Your prompt here" --threshold 0.1 --use-mcts --mcts-simulations 10
+# Enable retroactive pruning
+python run_tempo.py --prompt "Write a haiku about servers." --threshold 0.1 --use-retroactive-pruning --attention-threshold 0.02
 
-# With deep thinking mode
-python run_tempo.py --prompt "Your prompt here" --threshold 0.1 --enable-thinking
+# Use Hybrid pruning and Dynamic Threshold (Bezier) for Retroactive Pruning
+python run_tempo.py --prompt "Story about a lost robot." --threshold 0.08 --use-retroactive-pruning --attention-threshold 0.01 --bezier-p1 0.1 --bezier-p2 0.9
 
-# With custom pruning strategy
-python run_tempo.py --prompt "Your prompt here" --threshold 0.1 --use-pruning --coherence-threshold 0.7 --diversity-clusters 3
+# Enable Debug Mode for detailed logs
+python run_tempo.py --prompt "Debug this." --threshold 0.2 --max-tokens 20 --debug-mode
 
-# With early exit
-python run_tempo.py --prompt "Your prompt here" --early-exit --exit-layers "3,7,11,15" --confidence-thresholds "0.7,0.75,0.8,0.9"
+# Enable cProfile
+python run_tempo.py --prompt "Profile this run." --threshold 0.1 --max-tokens 50 --profile --use-cprofile
 ```
 
-### API Usage
+*(Note: `--model` flag exists but defaults to the target Llama-3B model)*
 
-The FastAPI backend provides the following endpoints:
+### API Usage (`api.py`)
 
-- `GET /`: API documentation
-- `GET /health`: Health check endpoint
-- `POST /generate`: Main generation endpoint with extensive configuration options
+The FastAPI backend provides endpoints for integration, primarily used by the frontend.
+
+- `GET /docs`: Interactive API documentation (Swagger UI).
+- `GET /health`: Health check endpoint.
+- `POST /generate`: Main generation endpoint. Accepts most parameters from `GenerationRequest` model (excluding MCTS flags).
 
 Example API call:
 
 ```bash
 curl -X POST "http://localhost:8000/generate" \
      -H "Content-Type: application/json" \
-     -d '{"prompt": "Your prompt here", "threshold": 0.1}'
+     -d '{
+           "prompt": "Translate to French: Hello, world!",
+           "threshold": 0.1,
+           "max_tokens": 30,
+           "use_retroactive_pruning": true,
+           "attention_threshold": 0.015
+         }'
 ```
+
+### Web Interface
+
+Run the backend (`uvicorn`) and frontend (`npm run dev`) simultaneously. Access the UI at `http://localhost:5173` for interactive generation and visualization.
 
 ## Development
 
 ### Project Structure
 
-```
+``` text
 .
 ├── api.py                 # FastAPI backend implementation
-├── run_tempo.py          # Command-line interface
+├── run_tempo.py          # Command-line interface for experiments
 ├── requirements.txt      # Python dependencies
+├── requirements-test.txt # Test dependencies
 ├── frontend/            # Svelte frontend
-│   ├── src/            # Frontend source code
-│   ├── static/         # Static assets
-│   └── package.json    # Frontend dependencies
-├── src/                # Core implementation
-│   ├── modeling/       # Model wrapper and utilities
-│   ├── generation/     # Generation strategies
-│   ├── search/        # MCTS implementation
-│   ├── pruning/       # Pruning strategies
-│   ├── visualization/ # Visualization tools
-│   └── experiments/   # Experimental features and research
-├── output/            # Generated outputs
-└── images/            # Project images and visualizations
+├── src/                # Core TEMPO implementation
+│   ├── modeling/       # Model wrapper, Early Exit
+│   ├── generation/     # ParallelGenerator, RoPE, Attention, Tokenizer, Selector, Formatter
+│   ├── pruning/       # Pruning strategies, Dynamic Threshold
+│   ├── search/        # MCTS implementation (CLI only)
+│   ├── visualization/ # Plotting tools
+│   └── experiments/   # ExperimentRunner, ArgumentParser
+├── tests/               # Unit and Integration tests
+│   ├── unit/
+│   └── integration/
+├── output/            # Default directory for generated outputs/visualizations
+└── README.md            # This file
 ```
 
 ### Development Guidelines
 
-1. Follow PEP 8 style guide for Python code
-2. Use type hints for all function parameters and return values
-3. Write docstrings for all public functions and classes
-4. Keep commits atomic and well-documented
-5. Create feature branches for new development
-6. Update documentation when adding new features
+1. Follow PEP 8 style guide.
+2. Use type hints.
+3. Write docstrings for public functions/classes.
+4. Keep commits focused. Use feature branches.
+5. Update documentation (this README) with significant changes.
+6. Add tests for new functionality.
 
 ## Testing
 
-### Backend Testing
+Use the provided `run_tests.py` script for convenience.
 
 ```bash
 # Install test dependencies
 pip install -r requirements-test.txt
 
 # Run all tests
-pytest
+python run_tests.py
 
-# Run specific test file
-pytest tests/test_generation.py
+# Run unit tests only
+python run_tests.py --unit-only
 
-# Run with coverage
-pytest --cov=src
+# Run integration tests only
+python run_tests.py --integration-only
+
+# Run tests with coverage report (saved to .coverage)
+python run_tests.py --cov
+
+# View HTML coverage report (after running with --cov)
+# pip install coverage
+# coverage html
+# open htmlcov/index.html
 ```
-
-### Frontend Testing
-
-```bash
-cd frontend
-npm test
-```
-
-## Security
-
-### Best Practices
-
-1. Never commit API keys or sensitive credentials
-2. Use environment variables for configuration
-3. Validate all user input
-4. Implement rate limiting for API endpoints
-5. Keep dependencies updated
-6. Use HTTPS in production
-
-### Security Headers
-
-The API includes security headers by default:
-- CORS protection
-- XSS protection
-- Content Security Policy
-- HSTS (in production)
 
 ## Troubleshooting
 
-### Common Issues
-
-1. **Model Loading Issues**
-   - Ensure sufficient disk space
-   - Check model path in configuration
-   - Verify GPU/CPU compatibility
-
-2. **API Connection Problems**
-   - Check if both backend and frontend servers are running
-   - Verify port configurations
-   - Check firewall settings
-
-3. **Generation Errors**
-   - Adjust threshold values
-   - Check available memory
-   - Verify model compatibility
-
-4. **Visualization Issues**
-   - Clear browser cache
-   - Check browser compatibility
-   - Verify data format
-
-### Getting Help
-
-- Check the [issues](https://github.com/JoeLuker/tempo/issues) page
-- Create a new issue with detailed error information
-- Include system information and error logs
-- Follow [@JoeLuker](https://github.com/JoeLuker) on GitHub for updates
+- **Model Loading Issues:** Ensure sufficient RAM/disk space. Check model name/path. Verify PyTorch/CUDA/MPS setup.
+- **API/Frontend Connection:** Make sure both `uvicorn` and `npm run dev` are running. Check ports (default 8000 backend, 5173 frontend).
+- **Generation Errors:** Check logs in the `logs/` directory (enable `--debug-mode`). Try adjusting the `--threshold` or pruning parameters. `RuntimeError` in `CoherencePruningStrategy` likely means attention outputs were not correctly obtained.
+- **RoPE Patching Errors:** If `RoPEModifier` fails to install, the model structure might differ significantly from the expected Llama-like architecture. Examine the debug output during installation in `run_tempo.py`.
 
 ## Contributing
 
-1. Fork the repository
-2. Create a feature branch
-3. Commit your changes
-4. Push to the branch
-5. Create a Pull Request
+Contributions are welcome, but please note the current focus on the specific target model.
 
-Please ensure your PR:
-- Follows the project's coding style
-- Includes tests for new features
-- Updates documentation
-- Has a clear description
+1. Fork the repository.
+2. Create a feature branch (`git checkout -b feature/YourFeature`).
+3. Commit your changes (`git commit -am 'Add some feature'`).
+4. Push to the branch (`git push origin feature/YourFeature`).
+5. Create a new Pull Request.
 
 ## License
 
-TEMPO is licensed under the MIT License.
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
-The MIT License is a permissive license that allows you to:
-- Use the software for any purpose
-- Modify and distribute the software
-- Use the software commercially
-- Keep modifications private
+## Pruning
 
-The only requirements are:
-- Include the original copyright notice
-- Include the license text
+TEMPO uses retroactive pruning to refine token sets based on future token attention. This means that as new tokens are generated, we look back at how they attend to previous tokens and use this information to prune out tokens that are not well-attended to.
 
-See the [LICENSE](LICENSE) file for full terms and conditions.
+### Retroactive Pruning Parameters
 
-## New Feature: Early-Exit Transformers
+- `--use-retroactive-pruning`: Enable retroactive pruning (default: false)
+- `--attention-threshold`: Attention threshold for retroactive pruning (lower means more tokens kept) (default: 0.01)
+- `--no-relative-attention`: Disable relative attention thresholds (default: false)
+- `--relative-threshold`: Threshold for relative attention-based pruning (0-1) (default: 0.5)
+- `--no-multi-scale-attention`: Disable multi-scale attention integration (default: false)
+- `--num-layers-to-use`: Number of last layers to use for attention (None means use all layers) (default: None)
+- `--no-sigmoid-threshold`: Disable sigmoid-based decision boundary (default: false)
+- `--sigmoid-steepness`: Controls how sharp the sigmoid transition is (default: 10.0)
+- `--complete-pruning-mode`: How to handle pruned positions: 'keep_token' (keep best token), 'keep_unattended' (mark as unattended), 'remove_position' (remove position) (default: 'keep_token')
 
-The latest addition to TEMPO is the Early-Exit Transformer capability, which allows models to terminate processing before completing all layers when sufficient confidence is reached, dramatically improving inference speed.
-
-### Key Benefits of Early Exits
-
-- **Adaptive Computation**: Uses just the right amount of compute based on query complexity
-- **Reduced Latency**: Simpler queries complete much faster (up to 5x speedup)
-- **Power Efficiency**: Significantly lower energy consumption (30-50% less)
-- **MPS Optimization**: Particularly well-suited to Mac's Metal architecture
-
-### Using Early Exits
-
-To enable early exits, use the following command-line flags:
+### Example
 
 ```bash
-python run_tempo.py --prompt "Your prompt here" --early-exit --exit-layers "3,7,11,15" --confidence-thresholds "0.7,0.75,0.8,0.9"
+python -m src.experiments.run_experiment \
+    --prompt "Once upon a time" \
+    --max-tokens 100 \
+    --selection-threshold 0.1 \
+    --use-retroactive-pruning \
+    --attention-threshold 0.01 \
+    --relative-threshold 0.5 \
+    --sigmoid-steepness 10.0
 ```
 
-Parameters:
-- `--early-exit`: Enable early exit capability
-- `--exit-layers`: Comma-separated list of layer indices for early exits (optional)
-- `--confidence-thresholds`: Comma-separated list of confidence thresholds (optional)
-
-If you don't specify exit layers or thresholds, sensible defaults will be used (exits every 4 layers with gradually increasing confidence requirements).
-
-You can also run a direct example:
-
-```bash
-python examples/early_exit_demo.py --model "JackFram/llama-68m" --prompt "The capital of France is" --compare
-```
-
-This will demonstrate the speedup compared to standard generation.
+This will generate text with retroactive pruning enabled, using an attention threshold of 0.01 and a relative threshold of 0.5.
