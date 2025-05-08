@@ -1,11 +1,10 @@
 import torch
-import logging
-import os
 from typing import List, Tuple, Optional, Any, Set
 import numpy as np
+from src.utils.logging_utils import LoggingMixin
 
 
-class TokenSelector:
+class TokenSelector(LoggingMixin):
     """
     Responsible for selecting tokens above threshold and related operations.
     Optimized for tensor operations and special cases handling.
@@ -18,6 +17,7 @@ class TokenSelector:
         Args:
             tokenizer: HuggingFace tokenizer
         """
+        super().__init__()
         self.tokenizer = tokenizer
 
         # Cache EOS token ID since we check it frequently
@@ -26,80 +26,8 @@ class TokenSelector:
             raise ValueError("Tokenizer must have an eos_token_id")
         self.eos_token_id = tokenizer.eos_token_id
 
-        # Setup logging
-        self._setup_logger()
-
-        # Debug mode
-        self.debug_mode = True
-
-    def _setup_logger(self):
-        """Setup logging to file."""
-        # Ensure logs directory exists
-        log_dir = os.path.join(os.getcwd(), "logs")
-        os.makedirs(log_dir, exist_ok=True)
-
-        # Configure logger
-        self.logger = logging.getLogger("token_selector")
-        self.logger.setLevel(logging.DEBUG)
-
-        # Remove any existing handlers to avoid duplicate logs
-        if self.logger.handlers:
-            for handler in self.logger.handlers:
-                self.logger.removeHandler(handler)
-
-        # Create file handler
-        log_file = os.path.join(log_dir, "token_selector_debug.log")
-
-        # Clear the log file by opening in write mode first
-        with open(log_file, "w") as f:
-            pass
-
-        file_handler = logging.FileHandler(log_file, mode="a")
-        file_handler.setLevel(logging.DEBUG)
-
-        # Create formatter
-        formatter = logging.Formatter(
-            "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-        )
-        file_handler.setFormatter(formatter)
-
-        # Add handler to logger
-        self.logger.addHandler(file_handler)
-
-    def log(self, message, level="info"):
-        """
-        Log a message to the log file if debug mode is enabled.
-
-        Args:
-            message: Message to log
-            level: Log level (info, debug, warning, error)
-        """
-        if not self.debug_mode:
-            return
-
-        if level == "info":
-            self.logger.info(message)
-        elif level == "debug":
-            self.logger.debug(message)
-        elif level == "warning":
-            self.logger.warning(message)
-        elif level == "error":
-            self.logger.error(message)
-
-    def set_debug_mode(self, enabled: bool = True):
-        """
-        Enable or disable debug mode for more verbose output.
-
-        Args:
-            enabled: Whether to enable debug mode
-        """
-        self.debug_mode = enabled
-        if enabled:
-            print(
-                f"TokenSelector debug mode enabled - logging to file at logs/token_selector_debug.log"
-            )
-        else:
-            print(f"TokenSelector debug mode disabled")
+        # Setup logging using the mixin
+        self.setup_logging("token_selector", "token_selector_debug.log")
 
     def select_tokens_above_threshold(
         self, next_token_logits: torch.Tensor, threshold: float, max_tokens: int = 25

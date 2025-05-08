@@ -1,9 +1,11 @@
 import torch
 import math
+import warnings
 from typing import List, Tuple, Optional, Dict, Any, Set
+from src.utils.logging_utils import LoggingMixin
 
 
-class RoPEModifier:
+class RoPEModifier(LoggingMixin):
     """
     Custom implementation to modify RoPE (Rotary Position Embeddings) for parallel token generation.
     This implementation allows multiple tokens at the same position to share identical positional embeddings.
@@ -17,6 +19,7 @@ class RoPEModifier:
             model: The transformer model
             device: The device for computation
         """
+        super().__init__()
         self.model = model
         self.device = device
         self.original_forward_fns = {}  # Store original methods by module path
@@ -30,8 +33,8 @@ class RoPEModifier:
         # Track parallel token sets
         self.parallel_token_sets = {}
 
-        # Debug mode
-        self.debug_mode = False
+        # Setup logging with debug mode disabled by default
+        self.setup_logging("rope_modifier", "rope_modifier_debug.log")
 
     def install(self):
         """
@@ -409,9 +412,19 @@ class RoPEModifier:
         This function is no longer needed for KV cache handling in TEMPO.
         The function is kept for backward compatibility but doesn't affect the KV cache reset logic.
 
+        Deprecated since v0.2.0: This method will be removed in a future version.
+        Position mapping for parallel tokens no longer requires KV cache resets in TEMPO.
+
         Returns:
             bool: True if significant changes detected, False otherwise
         """
+        warnings.warn(
+            "_has_significant_position_changes is deprecated and will be removed in a future version. "
+            "Position mapping for parallel tokens no longer requires KV cache resets in TEMPO.",
+            DeprecationWarning,
+            stacklevel=2
+        )
+        
         # For TEMPO's usage pattern, the position mapping for parallel tokens
         # doesn't require a complete KV cache reset, so we always return False
         return False

@@ -1,9 +1,10 @@
 import torch
 from typing import Dict, List, Tuple, Optional, Any
 from torch import nn
+from src.utils.logging_utils import LoggingMixin
 
 
-class TEMPOModelWrapper(nn.Module):
+class TEMPOModelWrapper(nn.Module, LoggingMixin):
     """
     TEMPO Model Wrapper for language models.
     Captures intermediate values during generation and provides hooks for debugging.
@@ -18,7 +19,9 @@ class TEMPOModelWrapper(nn.Module):
             tokenizer: The tokenizer to use with the model
             device: The device to use for the model
         """
-        super().__init__()
+        nn.Module.__init__(self)
+        LoggingMixin.__init__(self)
+        
         # Assert model is not None and has the required attributes
         assert model is not None, "Model cannot be None"
         assert hasattr(model, "forward"), "Model must have a forward method"
@@ -28,11 +31,7 @@ class TEMPOModelWrapper(nn.Module):
         self.tokenizer = tokenizer
         self.intermediate_values = {}
         self.activation_hooks = []
-        self._register_hooks()
-
-        # Flag for debug mode
-        self.debug_mode = False
-
+        
         # Original model attributes need to be accessible through the wrapper
         self.config = model.config
         if hasattr(model, "generation_config"):
@@ -42,6 +41,12 @@ class TEMPOModelWrapper(nn.Module):
         self.device = device if device is not None else next(model.parameters()).device
         # Assert device is valid
         assert self.device is not None, "Model device could not be determined"
+        
+        # Setup logging using the mixin with centralized config
+        self.setup_logging("model_wrapper", "model_wrapper_debug.log")
+        
+        # Register hooks after logger is set up
+        self._register_hooks()
 
     def _register_hooks(self):
         """
@@ -85,15 +90,17 @@ class TEMPOModelWrapper(nn.Module):
             # Store the output in intermediate_values
             self.intermediate_values[name] = outputs
 
-            # Print debug info if in debug mode
-            # if self.debug_mode:
-            #     if isinstance(outputs, tuple):
-            #         shapes = [
-            #             o.shape if hasattr(o, "shape") else "N/A" for o in outputs
-            #         ]
-            #         print(f"Module {name} output shapes: {shapes}")
-            #     elif hasattr(outputs, "shape"):
-            #         print(f"Module {name} output shape: {outputs.shape}")
+            # Log debug info if in debug mode
+            if self.debug_mode:
+                if isinstance(outputs, tuple):
+                    shapes = [
+                        o.shape if hasattr(o, "shape") else "N/A" for o in outputs
+                    ]
+                    self.log(f"Module {name} output shapes: {shapes}")
+                elif hasattr(outputs, "shape"):
+                    self.log(f"Module {name} output shape: {outputs.shape}")
+                else:
+                    self.log(f"Module {name} output has no shape attribute, type: {type(outputs)}")
 
             return outputs
 
@@ -177,7 +184,7 @@ class TEMPOModelWrapper(nn.Module):
         """
         assert isinstance(enabled, bool), "Debug mode must be a boolean"
         self.debug_mode = enabled
-        print(f"TEMPO Model Wrapper debug mode {'enabled' if enabled else 'disabled'}")
+        self.log(f"TEMPO Model Wrapper debug mode {'enabled' if enabled else 'disabled'}")
 
     # Forward attribute access to the wrapped model
     def __getattr__(self, name):

@@ -1,7 +1,5 @@
 import torch
 import random
-import logging
-import os
 import time
 import numpy as np
 import traceback
@@ -14,8 +12,9 @@ from src.generation.attention_manager import AttentionManager
 from src.generation.token_selector import TokenSelector
 from src.generation.token_generator import TokenGenerator
 from src.generation.text_formatter import TextFormatter
+from src.utils.logging_utils import LoggingMixin
 
-class ParallelGenerator:
+class ParallelGenerator(LoggingMixin):
     """
     Main class for parallel token generation with threshold pruning.
     Optimized for performance with batched operations.
@@ -43,6 +42,7 @@ class ParallelGenerator:
             debug_mode: Enable debug mode for detailed logging
             token_generator: Optional external TokenGenerator instance to use
         """
+        super().__init__()
         # Store parameters
         self.model = model
         self.tokenizer = tokenizer
@@ -50,11 +50,11 @@ class ParallelGenerator:
         self.has_custom_attention = has_custom_attention
         self.use_custom_rope = use_custom_rope
 
-        # Set debug mode FIRST so everything initialized after gets this value
-        self.debug_mode = debug_mode
-
-        # Setup logging before other components
-        self._setup_logger()
+        # Setup logging using the mixin with explicitly provided debug_mode if passed
+        if debug_mode is not None:
+            self.setup_logging("parallel_generator", "generation_debug.log", debug_mode)
+        else:
+            self.setup_logging("parallel_generator", "generation_debug.log")
 
         # Track logical layout of parallel tokens
         self.logical_layout = []  # [(logical_pos, start_idx, end_idx)]
@@ -149,69 +149,14 @@ class ParallelGenerator:
         assert hasattr(self.tokenizer, "encode"), "Tokenizer must have encode method"
         assert hasattr(self.tokenizer, "decode"), "Tokenizer must have decode method"
 
-    def _setup_logger(self):
-        """Setup logging to file."""
-        # Ensure logs directory exists
-        log_dir = os.path.join(os.getcwd(), "logs")
-        os.makedirs(log_dir, exist_ok=True)
-
-        # Configure logger
-        self.logger = logging.getLogger("parallel_generator")
-        self.logger.setLevel(logging.DEBUG)
-
-        # Remove any existing handlers to avoid duplicate logs
-        if self.logger.handlers:
-            for handler in self.logger.handlers:
-                self.logger.removeHandler(handler)
-
-        # Create file handler
-        log_file = os.path.join(log_dir, "generation_debug.log")
-        
-        # Clear the log file by opening in write mode first
-        with open(log_file, "w") as f:
-            pass
-            
-        file_handler = logging.FileHandler(log_file, mode="a")
-        file_handler.setLevel(logging.DEBUG)
-
-        # Create formatter
-        formatter = logging.Formatter(
-            "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-        )
-        file_handler.setFormatter(formatter)
-
-        # Add handler to logger
-        self.logger.addHandler(file_handler)
-        
-        # Verify logger setup
-        assert self.logger.handlers, "Failed to setup logger handlers"
-
-    def log(self, message, level="info"):
-        """
-        Log a message to the log file if debug mode is enabled.
-
-        Args:
-            message: Message to log
-            level: Log level (info, debug, warning, error)
-        """
-        assert message, "Log message cannot be empty"
-        assert level in ["info", "debug", "warning", "error"], f"Invalid log level: {level}"
-        
-        if not self.debug_mode and level != "error":
-            return
-
-        if level == "info":
-            self.logger.info(message)
-        elif level == "debug":
-            self.logger.debug(message)
-        elif level == "warning":
-            self.logger.warning(message)
-        elif level == "error":
-            self.logger.error(message)
-
     def _init_sequence_tracking(self, prompt_length):
         """Initialize sequence length tracking with the prompt length."""
         assert prompt_length >= 0, "Prompt length cannot be negative"
+        
+        self.sequence_length = 0
+        self.initial_prompt_length = prompt_length
+        self.step_count = 0
+        self.sequence_length_history = []
         
         self.sequence_length = 0
         self.initial_prompt_length = prompt_length

@@ -1,8 +1,6 @@
 import torch
 from typing import Dict, List, Tuple, Optional, Any
 import time
-import logging
-import os
 import torch.nn.functional as F
 import math
 import numpy as np
@@ -10,6 +8,7 @@ from pathlib import Path
 from datetime import datetime
 import traceback
 import sys
+from src.utils.logging_utils import LoggingMixin
 
 # Import the sequence tracker
 sequence_tracker = None
@@ -40,7 +39,7 @@ sequence_tracker = DummyTracker()
 print("Initialized token_generator with dummy tracker - will be replaced at runtime")
 
 
-class TokenGenerator:
+class TokenGenerator(LoggingMixin):
     """
     Responsible for generating token logits from the model.
     Optimized for performance with KV caching and efficient batching.
@@ -55,6 +54,7 @@ class TokenGenerator:
             tokenizer: HuggingFace tokenizer
             device: Device to use for computation
         """
+        super().__init__()
         # Validate required parameters
         assert model is not None, "Model cannot be None"
         assert tokenizer is not None, "Tokenizer cannot be None"
@@ -63,9 +63,6 @@ class TokenGenerator:
         self.model = model
         self.tokenizer = tokenizer
         self.device = device
-
-        # Debug mode
-        self.debug_mode = True
 
         # Cache for tokenized prompts
         self.prompt_cache = {}
@@ -79,8 +76,8 @@ class TokenGenerator:
         # Track parallel token counts for optimization
         self.last_parallel_count = 0
 
-        # Setup logging
-        self._setup_logger()
+        # Setup logging using the mixin with centralized config
+        self.setup_logging("token_generator", "token_generator_debug.log")
 
         # Performance tracking
         self.perf_stats = {
@@ -100,88 +97,6 @@ class TokenGenerator:
         assert hasattr(self.tokenizer, "encode"), "Tokenizer must have encode method"
         assert hasattr(self.tokenizer, "decode"), "Tokenizer must have decode method"
         assert hasattr(self.tokenizer, "__call__"), "Tokenizer must be callable"
-
-    def _setup_logger(self):
-        """Setup logging to file."""
-        # Ensure logs directory exists
-        log_dir = os.path.join(os.getcwd(), "logs")
-        os.makedirs(log_dir, exist_ok=True)
-
-        # Configure logger
-        self.logger = logging.getLogger("token_generator")
-        self.logger.setLevel(logging.DEBUG)
-
-        # Remove any existing handlers to avoid duplicate logs
-        if self.logger.handlers:
-            for handler in self.logger.handlers:
-                self.logger.removeHandler(handler)
-
-        # Create file handler
-        log_file = os.path.join(log_dir, "token_generator_debug.log")
-
-        # Clear the log file by opening in write mode first
-        with open(log_file, "w") as f:
-            pass
-
-        file_handler = logging.FileHandler(log_file, mode="a")
-        file_handler.setLevel(logging.DEBUG)
-
-        # Create formatter
-        formatter = logging.Formatter(
-            "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-        )
-        file_handler.setFormatter(formatter)
-
-        # Add handler to logger
-        self.logger.addHandler(file_handler)
-
-        # Verify logger setup
-        assert self.logger.handlers, "Failed to set up logger handlers"
-
-    def log(self, message, level="info"):
-        """
-        Log a message to the log file if debug mode is enabled.
-
-        Args:
-            message: Message to log
-            level: Log level (info, debug, warning, error)
-        """
-        assert message, "Log message cannot be empty"
-        assert level in [
-            "info",
-            "debug",
-            "warning",
-            "error",
-        ], f"Invalid log level: {level}"
-
-        if not self.debug_mode:
-            return
-
-        if level == "info":
-            self.logger.info(message)
-        elif level == "debug":
-            self.logger.debug(message)
-        elif level == "warning":
-            self.logger.warning(message)
-        elif level == "error":
-            self.logger.error(message)
-
-    def set_debug_mode(self, enabled: bool = True):
-        """
-        Enable or disable debug mode for more verbose output.
-
-        Args:
-            enabled: Whether to enable debug mode
-        """
-        assert isinstance(enabled, bool), "Debug mode must be a boolean"
-
-        self.debug_mode = enabled
-        if enabled:
-            print(
-                f"TokenGenerator debug mode enabled - logging to file at logs/token_generator_debug.log"
-            )
-        else:
-            print(f"TokenGenerator debug mode disabled")
 
     def prepare_input_from_prompt(
         self, prompt: str
@@ -316,28 +231,17 @@ class TokenGenerator:
         self.perf_stats["model_time"] += time.time() - start_time
         return next_token_logits
 
-    def get_next_token_logits_cached(
-        self,
-        input_ids: torch.Tensor,
-        attention_mask: torch.Tensor,
-        past_key_values: Optional[List[Tuple[torch.Tensor]]] = None,
-        custom_attention_mask: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, Optional[List[Tuple[torch.Tensor]]]]:
+    def _validate_input_tensors(self, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> None:
         """
-        Get logits for next token using the model with KV caching.
-        Improved to properly handle parallel token sets.
-
-        Args:
-            input_ids: Input token IDs
-            attention_mask: Current attention mask
-            past_key_values: Optional past key values for KV cache
-            custom_attention_mask: Optional custom attention mask
-
-        Returns:
-            tuple: (next_token_logits, past_key_values)
-        """
-        self.log(">>> ENTERING get_next_token_logits_cached <<<", level="warning")
+        Validate that input tensors meet fundamental invariants.
         
+        Args:
+            input_ids: Input token IDs tensor
+            attention_mask: Attention mask tensor
+        
+        Raises:
+            ValueError: If any invariant is violated
+        """
         # FUNDAMENTAL INVARIANT: Input tensors must be valid tensors
         if not isinstance(input_ids, torch.Tensor):
             raise ValueError("Invariant violation: input_ids must be a torch.Tensor")
@@ -366,94 +270,263 @@ class TokenGenerator:
                 "Invariant violation: attention_mask contains NaN or Inf values"
             )
 
-        # INVARIANT: Custom attention mask must be valid if provided
-        if custom_attention_mask is not None:
-            if not isinstance(custom_attention_mask, torch.Tensor):
-                raise ValueError(
-                    "Invariant violation: custom_attention_mask must be a torch.Tensor"
-                )
-            if custom_attention_mask.dim() < 3:
-                raise ValueError(
-                    f"Invariant violation: custom_attention_mask must have at least 3 dimensions, got {custom_attention_mask.dim()}"
-                )
-            if (
-                torch.isnan(custom_attention_mask).any()
-                or torch.isinf(custom_attention_mask).any()
+    def _validate_custom_attention_mask(self, custom_attention_mask: torch.Tensor) -> None:
+        """
+        Validate that custom attention mask meets invariants.
+        
+        Args:
+            custom_attention_mask: Custom attention mask tensor
+        
+        Raises:
+            ValueError: If any invariant is violated
+        """
+        if not isinstance(custom_attention_mask, torch.Tensor):
+            raise ValueError(
+                "Invariant violation: custom_attention_mask must be a torch.Tensor"
+            )
+        if custom_attention_mask.dim() < 3:
+            raise ValueError(
+                f"Invariant violation: custom_attention_mask must have at least 3 dimensions, got {custom_attention_mask.dim()}"
+            )
+        if (
+            torch.isnan(custom_attention_mask).any()
+            or torch.isinf(custom_attention_mask).any()
+        ):
+            raise ValueError(
+                "Invariant violation: custom_attention_mask contains NaN or Inf values"
+            )
+
+    def _validate_kv_cache(self, past_key_values: List[Tuple[torch.Tensor]]) -> int:
+        """
+        Validate KV cache structure and contents.
+        
+        Args:
+            past_key_values: Past key values list for KV cache
+        
+        Returns:
+            int: Current KV cache sequence length (0 if unknown)
+        
+        Raises:
+            ValueError: If any invariant is violated
+        """
+        # Structure validation
+        if not isinstance(past_key_values, list):
+            raise ValueError("Invariant violation: past_key_values must be a list")
+        if len(past_key_values) == 0:
+            raise ValueError(
+                "Invariant violation: past_key_values must not be empty"
+            )
+
+        # Each layer must be a tuple with key and value tensors
+        if not all(isinstance(layer, tuple) for layer in past_key_values):
+            raise ValueError(
+                "Invariant violation: Each element in past_key_values must be a tuple"
+            )
+
+        # Each tuple must have at least 2 elements (key and value)
+        if not all(len(layer) >= 2 for layer in past_key_values):
+            raise ValueError(
+                "Invariant violation: Each tuple in past_key_values must have at least 2 elements"
+            )
+
+        # Each key and value tensor must be a valid tensor
+        for i, layer in enumerate(past_key_values):
+            if not (
+                isinstance(layer[0], torch.Tensor)
+                and isinstance(layer[1], torch.Tensor)
             ):
                 raise ValueError(
-                    "Invariant violation: custom_attention_mask contains NaN or Inf values"
+                    f"Invariant violation: Layer {i} in past_key_values does not contain valid tensors"
                 )
 
-        # KV CACHE INVARIANT: If present, past_key_values must have valid structure
+            # Key and value tensors must have valid dimensions
+            if layer[0].dim() < 3 or layer[1].dim() < 3:
+                raise ValueError(
+                    f"Invariant violation: Key and value tensors in layer {i} must have at least 3 dimensions"
+                )
+
+            # Key and value tensors must not have NaN or Inf values
+            if torch.isnan(layer[0]).any() or torch.isinf(layer[0]).any():
+                raise ValueError(
+                    f"Invariant violation: Key tensor in layer {i} contains NaN or Inf values"
+                )
+            if torch.isnan(layer[1]).any() or torch.isinf(layer[1]).any():
+                raise ValueError(
+                    f"Invariant violation: Value tensor in layer {i} contains NaN or Inf values"
+                )
+
+        # All layers must have the same sequence length
+        seq_lengths = set()
+        for layer in past_key_values:
+            if hasattr(layer[0], "size") and layer[0].dim() >= 3:
+                seq_lengths.add(layer[0].size(2))
+
+        if len(seq_lengths) > 1:
+            raise ValueError(
+                f"Invariant violation: Inconsistent sequence lengths across KV cache layers: {seq_lengths}"
+            )
+                
+        return list(seq_lengths)[0] if seq_lengths else 0
+            
+    def _track_kv_cache_growth(self, current_size: int) -> None:
+        """
+        Track KV cache growth for performance monitoring.
+        
+        Args:
+            current_size: Current size of the KV cache
+        """
+        if not hasattr(self, "_last_kv_cache_size"):
+            self._last_kv_cache_size = 0
+
+        if current_size > self._last_kv_cache_size:
+            if self.debug_mode:
+                self.log(
+                    f"KV cache grew from {self._last_kv_cache_size} to {current_size} tokens"
+                )
+            self._last_kv_cache_size = current_size
+            
+    def _validate_model_outputs(self, outputs: Any) -> None:
+        """
+        Validate that model outputs meet expected invariants.
+        
+        Args:
+            outputs: Model output object
+            
+        Raises:
+            ValueError: If any invariant is violated
+        """
+        # INVARIANT: Ensure outputs has logits attribute
+        if not hasattr(outputs, "logits"):
+            raise ValueError(
+                "Invariant violation: Model outputs missing 'logits' attribute"
+            )
+
+        # INVARIANT: Ensure logits tensor is valid
+        if not isinstance(outputs.logits, torch.Tensor):
+            raise ValueError(
+                f"Invariant violation: outputs.logits is not a tensor, got {type(outputs.logits)}"
+            )
+
+        # INVARIANT: Ensure logits has the right shape
+        if outputs.logits.dim() < 3:
+            raise ValueError(
+                f"Invariant violation: outputs.logits has wrong dimensionality, expected at least 3, got {outputs.logits.dim()}"
+            )
+            
+    def _validate_output_logits(self, next_token_logits: torch.Tensor, input_ids: torch.Tensor) -> None:
+        """
+        Validate that the output logits tensor meets expected invariants.
+        
+        Args:
+            next_token_logits: Output logits tensor
+            input_ids: Original input tensor for reference
+            
+        Raises:
+            ValueError: If any invariant is violated
+        """
+        # INVARIANT: Output logits must be properly shaped and contain valid values
+        if next_token_logits.dim() < 2:
+            raise ValueError(
+                f"Invariant violation: Output logits have wrong dimensionality, expected at least 2, got {next_token_logits.dim()}"
+            )
+
+        if next_token_logits.size(0) != input_ids.size(0):
+            raise ValueError(
+                f"Invariant violation: Output logits have incorrect batch dimension: expected {input_ids.size(0)}, got {next_token_logits.size(0)}"
+            )
+
+        # INVARIANT: Logits must not contain NaN or Inf values
+        if torch.isnan(next_token_logits).any():
+            raise ValueError("Invariant violation: Output logits contain NaN values")
+        if torch.isinf(next_token_logits).any():
+            raise ValueError("Invariant violation: Output logits contain Inf values")
+
+        # INVARIANT: Logits must have valid vocabulary dimension
+        if hasattr(self.model.config, "vocab_size"):
+            expected_vocab_size = self.model.config.vocab_size
+            if next_token_logits.size(1) != expected_vocab_size:
+                self.log(
+                    f"Warning: Output logits vocabulary dimension {next_token_logits.size(1)} doesn't match model's vocab size {expected_vocab_size}"
+                )
+
+    def _debug_log_model_outputs(self, outputs, context=""):
+        """
+        Helper method to log debug information about model outputs.
+        
+        Args:
+            outputs: Model output object to inspect
+            context: Optional context identifier string for the logs
+        """
+        if not self.debug_mode:
+            return
+            
+        prefix = f"DEBUG {context}: " if context else "DEBUG: "
+        
+        self.log(f"{prefix}Output type = {type(outputs)}", level="warning")
+        try:
+            # Use dir() to see all available attributes/methods
+            self.log(f"{prefix}Available attributes/methods = {dir(outputs)}", level="warning")
+            # Specifically check for attentions attribute presence
+            has_attentions = hasattr(outputs, 'attentions')
+            self.log(f"{prefix}hasattr(outputs, 'attentions') = {has_attentions}", level="warning")
+            if has_attentions:
+                # Check if the attribute is None or evaluates to False (e.g., empty list)
+                is_attentions_none_or_false = outputs.attentions is None or not outputs.attentions
+                self.log(f"{prefix}outputs.attentions is None or evaluates to False = {is_attentions_none_or_false}", level="warning")
+                if not is_attentions_none_or_false:
+                    self.log(f"{prefix}Type of outputs.attentions = {type(outputs.attentions)}", level="warning")
+                    if isinstance(outputs.attentions, (list, tuple)):
+                        self.log(f"{prefix}Length of outputs.attentions = {len(outputs.attentions)}", level="warning")
+        except Exception as inspect_err:
+             self.log(f"{prefix}Error inspecting outputs object: {inspect_err}", level="error")
+             
+        # Log attention-specific debug info
+        self.log(f"--- Attention Output Check {context} ---")
+        if hasattr(outputs, 'attentions') and outputs.attentions:
+            self.log(f"Model returned {len(outputs.attentions)} attention layers.")
+            if len(outputs.attentions) > 0 and outputs.attentions[0] is not None and hasattr(outputs.attentions[0], 'shape'):
+                 self.log(f"First attention layer shape: {outputs.attentions[0].shape}")
+            else:
+                 self.log("First attention layer has no shape attribute or is invalid.")
+        elif hasattr(outputs, 'attentions'):
+             self.log("Model returned 'attentions' attribute, but it is None or empty.", level="warning")
+        else:
+            self.log("Model output object does NOT have 'attentions' attribute.", level="warning")
+        self.log("-----------------------------")
+
+    def get_next_token_logits_cached(
+        self,
+        input_ids: torch.Tensor,
+        attention_mask: torch.Tensor,
+        past_key_values: Optional[List[Tuple[torch.Tensor]]] = None,
+        custom_attention_mask: Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor, Optional[List[Tuple[torch.Tensor]]]]:
+        """
+        Get logits for next token using the model with KV caching.
+        Improved to properly handle parallel token sets.
+
+        Args:
+            input_ids: Input token IDs
+            attention_mask: Current attention mask
+            past_key_values: Optional past key values for KV cache
+            custom_attention_mask: Optional custom attention mask
+
+        Returns:
+            tuple: (next_token_logits, past_key_values)
+        """
+        self.log(">>> ENTERING get_next_token_logits_cached <<<", level="warning")
+        
+        # Validate input tensors
+        self._validate_input_tensors(input_ids, attention_mask)
+
+        # Validate custom attention mask if provided
+        if custom_attention_mask is not None:
+            self._validate_custom_attention_mask(custom_attention_mask)
+
+        # Validate KV cache if present
         if past_key_values is not None:
-            # Structure validation
-            if not isinstance(past_key_values, list):
-                raise ValueError("Invariant violation: past_key_values must be a list")
-            if len(past_key_values) == 0:
-                raise ValueError(
-                    "Invariant violation: past_key_values must not be empty"
-                )
-
-            # Each layer must be a tuple with key and value tensors
-            if not all(isinstance(layer, tuple) for layer in past_key_values):
-                raise ValueError(
-                    "Invariant violation: Each element in past_key_values must be a tuple"
-                )
-
-            # Each tuple must have at least 2 elements (key and value)
-            if not all(len(layer) >= 2 for layer in past_key_values):
-                raise ValueError(
-                    "Invariant violation: Each tuple in past_key_values must have at least 2 elements"
-                )
-
-            # Each key and value tensor must be a valid tensor
-            for i, layer in enumerate(past_key_values):
-                if not (
-                    isinstance(layer[0], torch.Tensor)
-                    and isinstance(layer[1], torch.Tensor)
-                ):
-                    raise ValueError(
-                        f"Invariant violation: Layer {i} in past_key_values does not contain valid tensors"
-                    )
-
-                # Key and value tensors must have valid dimensions
-                if layer[0].dim() < 3 or layer[1].dim() < 3:
-                    raise ValueError(
-                        f"Invariant violation: Key and value tensors in layer {i} must have at least 3 dimensions"
-                    )
-
-                # Key and value tensors must not have NaN or Inf values
-                if torch.isnan(layer[0]).any() or torch.isinf(layer[0]).any():
-                    raise ValueError(
-                        f"Invariant violation: Key tensor in layer {i} contains NaN or Inf values"
-                    )
-                if torch.isnan(layer[1]).any() or torch.isinf(layer[1]).any():
-                    raise ValueError(
-                        f"Invariant violation: Value tensor in layer {i} contains NaN or Inf values"
-                    )
-
-            # All layers must have the same sequence length
-            seq_lengths = set()
-            for layer in past_key_values:
-                if hasattr(layer[0], "size") and layer[0].dim() >= 3:
-                    seq_lengths.add(layer[0].size(2))
-
-            if len(seq_lengths) > 1:
-                raise ValueError(
-                    f"Invariant violation: Inconsistent sequence lengths across KV cache layers: {seq_lengths}"
-                )
-
-            # Track KV cache growth for performance monitoring
-            if not hasattr(self, "_last_kv_cache_size"):
-                self._last_kv_cache_size = 0
-
-            current_size = list(seq_lengths)[0] if seq_lengths else 0
-            if current_size > self._last_kv_cache_size:
-                if self.debug_mode:
-                    self.log(
-                        f"KV cache grew from {self._last_kv_cache_size} to {current_size} tokens"
-                    )
-                self._last_kv_cache_size = current_size
+            current_size = self._validate_kv_cache(past_key_values)
+            self._track_kv_cache_growth(current_size)
 
         # DIAGNOSTIC: Check first token generation
         first_token_gen = past_key_values is None and input_ids.size(1) > 1
@@ -569,27 +642,8 @@ class TokenGenerator:
 
                 outputs = self.model(**model_args)
 
-                # === START NEW DEBUG LOGGING ===
-                if self.debug_mode:
-                    self.log(f"DEBUG DIRECT: Output type = {type(outputs)}", level="warning")
-                    try:
-                        # Use dir() to see all available attributes/methods
-                        self.log(f"DEBUG DIRECT: Available attributes/methods = {dir(outputs)}", level="warning")
-                        # Specifically check for attentions attribute presence
-                        has_attentions = hasattr(outputs, 'attentions')
-                        self.log(f"DEBUG DIRECT: hasattr(outputs, 'attentions') = {has_attentions}", level="warning")
-                        if has_attentions:
-                            # Check if the attribute is None or evaluates to False (e.g., empty list)
-                            is_attentions_none_or_false = outputs.attentions is None or not outputs.attentions
-                            self.log(f"DEBUG DIRECT: outputs.attentions is None or evaluates to False = {is_attentions_none_or_false}", level="warning")
-                            if not is_attentions_none_or_false:
-                                self.log(f"DEBUG DIRECT: Type of outputs.attentions = {type(outputs.attentions)}", level="warning")
-                                if isinstance(outputs.attentions, (list, tuple)):
-                                    self.log(f"DEBUG DIRECT: Length of outputs.attentions = {len(outputs.attentions)}", level="warning")
-
-                    except Exception as inspect_err:
-                         self.log(f"DEBUG DIRECT: Error inspecting outputs object: {inspect_err}", level="error")
-                # === END NEW DEBUG LOGGING ===
+                # Use the helper method for debug logging
+                self._debug_log_model_outputs(outputs, context="DIRECT")
 
                 # Conditional logic for setting self.cached_attention based on inspection
                 if hasattr(outputs, "attentions") and outputs.attentions:
@@ -606,38 +660,8 @@ class TokenGenerator:
                          self.log("DEBUG DIRECT: self.cached_attention NOT SET - 'attentions' attribute is present but empty.", level="warning")
                      self.cached_attention = None # Explicitly set to None
 
-                # === Previous debug logging ===
-                if self.debug_mode:
-                    self.log("--- Attention Output Check ---")
-                    if hasattr(outputs, 'attentions') and outputs.attentions:
-                        self.log(f"Model returned {len(outputs.attentions)} attention layers.")
-                        if len(outputs.attentions) > 0 and outputs.attentions[0] is not None and hasattr(outputs.attentions[0], 'shape'):
-                             self.log(f"First attention layer shape: {outputs.attentions[0].shape}")
-                        else:
-                             self.log("First attention layer has no shape attribute or is invalid.")
-                    elif hasattr(outputs, 'attentions'):
-                         self.log("Model returned 'attentions' attribute, but it is None or empty.", level="warning")
-                    else:
-                        self.log("Model output object does NOT have 'attentions' attribute.", level="warning")
-                    self.log("-----------------------------")
-
-                # INVARIANT: Ensure outputs has logits attribute
-                if not hasattr(outputs, "logits"):
-                    raise ValueError(
-                        "Invariant violation: Model outputs missing 'logits' attribute"
-                    )
-
-                # INVARIANT: Ensure logits tensor is valid
-                if not isinstance(outputs.logits, torch.Tensor):
-                    raise ValueError(
-                        f"Invariant violation: outputs.logits is not a tensor, got {type(outputs.logits)}"
-                    )
-
-                # INVARIANT: Ensure logits has the right shape
-                if outputs.logits.dim() < 3:
-                    raise ValueError(
-                        f"Invariant violation: outputs.logits has wrong dimensionality, expected at least 3, got {outputs.logits.dim()}"
-                    )
+                # Validate model outputs
+                self._validate_model_outputs(outputs)
 
                 # Store attention patterns for later use in pruning
                 if hasattr(outputs, "attentions") and outputs.attentions:
@@ -681,30 +705,8 @@ class TokenGenerator:
         # Get logits for last position
         next_token_logits = outputs.logits[:, -1, :]
 
-        # INVARIANT: Output logits must be properly shaped and contain valid values
-        if next_token_logits.dim() < 2:
-            raise ValueError(
-                f"Invariant violation: Output logits have wrong dimensionality, expected at least 2, got {next_token_logits.dim()}"
-            )
-
-        if next_token_logits.size(0) != input_ids.size(0):
-            raise ValueError(
-                f"Invariant violation: Output logits have incorrect batch dimension: expected {input_ids.size(0)}, got {next_token_logits.size(0)}"
-            )
-
-        # INVARIANT: Logits must not contain NaN or Inf values
-        if torch.isnan(next_token_logits).any():
-            raise ValueError("Invariant violation: Output logits contain NaN values")
-        if torch.isinf(next_token_logits).any():
-            raise ValueError("Invariant violation: Output logits contain Inf values")
-
-        # INVARIANT: Logits must have valid vocabulary dimension
-        if hasattr(self.model.config, "vocab_size"):
-            expected_vocab_size = self.model.config.vocab_size
-            if next_token_logits.size(1) != expected_vocab_size:
-                self.log(
-                    f"Warning: Output logits vocabulary dimension {next_token_logits.size(1)} doesn't match model's vocab size {expected_vocab_size}"
-                )
+        # Validate output logits
+        self._validate_output_logits(next_token_logits, input_ids)
 
         # Safely handle past_key_values from the model outputs
         return_kvs = None
@@ -991,13 +993,17 @@ class TokenGenerator:
                 f"Using optimized isolated parallel token generation for {num_parallel_tokens} tokens"
             )
 
-        # Input validation - same as the regular method
-        if not isinstance(input_ids, torch.Tensor):
-            raise ValueError("Invariant violation: input_ids must be a torch.Tensor")
-        if not isinstance(attention_mask, torch.Tensor):
-            raise ValueError(
-                "Invariant violation: attention_mask must be a torch.Tensor"
-            )
+        # Validate input tensors using the same validators as the regular method
+        self._validate_input_tensors(input_ids, attention_mask)
+        
+        # Validate custom attention mask if provided
+        if custom_attention_mask is not None:
+            self._validate_custom_attention_mask(custom_attention_mask)
+            
+        # Validate KV cache if present
+        if past_key_values is not None:
+            current_size = self._validate_kv_cache(past_key_values)
+            self._track_kv_cache_growth(current_size)
 
         # Compute the logits only once since we're in isolated mode
         # We only need the first token of each parallel set since they all see the same context
@@ -1069,27 +1075,11 @@ class TokenGenerator:
             # Run the model forward pass just once
             outputs = self.model(**model_args)
 
-            # === START NEW DEBUG LOGGING ===
-            if self.debug_mode:
-                self.log(f"DEBUG DIRECT: Output type (isolated parallel) = {type(outputs)}", level="warning")
-                try:
-                    # Use dir() to see all available attributes/methods
-                    self.log(f"DEBUG DIRECT: Available attributes/methods = {dir(outputs)}", level="warning")
-                    # Specifically check for attentions attribute presence
-                    has_attentions = hasattr(outputs, 'attentions')
-                    self.log(f"DEBUG DIRECT: hasattr(outputs, 'attentions') = {has_attentions}", level="warning")
-                    if has_attentions:
-                        # Check if the attribute is None or evaluates to False (e.g., empty list)
-                        is_attentions_none_or_false = outputs.attentions is None or not outputs.attentions
-                        self.log(f"DEBUG DIRECT: outputs.attentions is None or evaluates to False = {is_attentions_none_or_false}", level="warning")
-                        if not is_attentions_none_or_false:
-                            self.log(f"DEBUG DIRECT: Type of outputs.attentions = {type(outputs.attentions)}", level="warning")
-                            if isinstance(outputs.attentions, (list, tuple)):
-                                self.log(f"DEBUG DIRECT: Length of outputs.attentions = {len(outputs.attentions)}", level="warning")
+            # Use the helper method for debug logging
+            self._debug_log_model_outputs(outputs, context="ISOLATED PARALLEL")
 
-                except Exception as inspect_err:
-                     self.log(f"DEBUG DIRECT: Error inspecting outputs object: {inspect_err}", level="error")
-            # === END NEW DEBUG LOGGING ===
+            # Validate model outputs
+            self._validate_model_outputs(outputs)
 
             # Conditional logic for setting self.cached_attention based on inspection
             if hasattr(outputs, "attentions") and outputs.attentions:
@@ -1106,23 +1096,11 @@ class TokenGenerator:
                      self.log("DEBUG DIRECT: self.cached_attention NOT SET - 'attentions' attribute is present but empty.", level="warning")
                  self.cached_attention = None # Explicitly set to None
 
-            # === Previous debug logging (now with warning level) ===
-            if self.debug_mode:
-                self.log("--- Attention Output Check (Isolated Parallel) ---")
-                if hasattr(outputs, 'attentions') and outputs.attentions:
-                    self.log(f"Model returned {len(outputs.attentions)} attention layers.")
-                    if len(outputs.attentions) > 0 and outputs.attentions[0] is not None and hasattr(outputs.attentions[0], 'shape'):
-                         self.log(f"First attention layer shape: {outputs.attentions[0].shape}")
-                    else:
-                         self.log("First attention layer has no shape attribute or is invalid.")
-                elif hasattr(outputs, 'attentions'):
-                     self.log("Model returned 'attentions' attribute, but it is None or empty.", level="warning")
-                else:
-                    self.log("Model output object does NOT have 'attentions' attribute.", level="warning")
-                self.log("-----------------------------")
-
             # Get logits for last position - this can be reused for all parallel tokens
             next_token_logits = outputs.logits[:, -1, :]
+            
+            # Validate output logits
+            self._validate_output_logits(next_token_logits, input_ids)
 
             # Store attention patterns for later use in pruning
             if hasattr(outputs, "attentions") and outputs.attentions:
@@ -1317,9 +1295,17 @@ class TokenGenerator:
         Returns:
             Tuple of (next_token_logits, updated_past_key_values)
         """
-        # Validate inputs
-        assert input_ids is not None, "input_ids cannot be None"
-        assert attention_mask is not None, "attention_mask cannot be None"
+        # Validate input tensors using our standard validators
+        self._validate_input_tensors(input_ids, attention_mask)
+        
+        # Validate custom attention mask if provided
+        if custom_attention_mask is not None:
+            self._validate_custom_attention_mask(custom_attention_mask)
+            
+        # Validate KV cache if present and not disabled
+        if past_key_values is not None and not disable_kv_cache:
+            current_size = self._validate_kv_cache(past_key_values)
+            self._track_kv_cache_growth(current_size)
         
         # Performance tracking
         start_time = time.time()
@@ -1356,9 +1342,15 @@ class TokenGenerator:
                 
             # Run the model
             outputs = self.model(**model_args)
+            
+            # Validate model outputs
+            self._validate_model_outputs(outputs)
         
         # Get logits for next token (last position)
         next_token_logits = outputs.logits[:, -1, :]
+        
+        # Validate output logits
+        self._validate_output_logits(next_token_logits, input_ids)
         
         # Store attention patterns if available
         if hasattr(outputs, "attentions") and outputs.attentions:
