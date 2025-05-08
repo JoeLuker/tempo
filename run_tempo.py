@@ -25,43 +25,8 @@ from pstats import SortKey
 
 # --- Helper Functions ---
 
-def get_device():
-    """
-    Determine the best available device for model execution.
-    Returns 'cuda' if an NVIDIA GPU is available, 'mps' for Apple Silicon,
-    or 'cpu' as a fallback.
-    """
-    if torch.cuda.is_available():
-        return "cuda"
-    elif torch.backends.mps.is_available():
-        return "mps"
-    return "cpu"
-
-
-def get_device_dtype(device_str=None):
-    """
-    Determine the appropriate dtype based on the device.
-
-    Args:
-        device_str: Device string ('cuda', 'mps', 'cpu')
-
-    Returns:
-        torch.dtype: The appropriate dtype for the device
-    """
-    if device_str is None:
-        device_str = get_device()
-
-    # Use bfloat16 for CUDA Ampere+, float16 for older CUDA/MPS, float32 for CPU
-    if device_str == "cuda":
-        if torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 8:
-             return torch.bfloat16 # Ampere and later GPUs
-        else:
-             return torch.float16 # Older GPUs
-    elif device_str == "mps":
-         # MPS performance with float16 can be inconsistent, float32 is safer
-         return torch.float32
-    else:  # "cpu"
-        return torch.float32
+# Import centralized utilities
+from src.utils.model_utils import get_best_device, get_device_dtype, load_model, load_tempo_components
 
 # --- Main Execution ---
 
@@ -86,66 +51,43 @@ def main():
             torch.cuda.manual_seed_all(seed)
         print(f"Using random seed: {seed}")
 
-        # 3. Determine Device and DType
-        device_str = get_device()
+        # 3. Determine Device and DType using centralized utilities
+        device_str = get_best_device()
         device = torch.device(device_str) # Use torch.device object
         dtype = get_device_dtype(device_str)
         print(f"Using device: {device} with dtype: {dtype}")
 
-        # 4. Load Model and Tokenizer
+        # 4. Load Model, Tokenizer and TEMPO components
         # User wants this hardcoded for now, but ideally use args_dict.get("model", DEFAULT_MODEL)
         model_name = "deepcogito/cogito-v1-preview-llama-3B"
         print(f"Loading model: {model_name}")
 
         load_start_time = time.time()
-
-        print("Loading tokenizer...", end="", flush=True)
-        tokenizer_start = time.time()
-        tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True)
-        if tokenizer.pad_token is None:
-            tokenizer.pad_token = tokenizer.eos_token
-        print(f" Done! ({time.time() - tokenizer_start:.2f}s)")
-
-        print("Loading model configuration...", end="", flush=True)
-        config_start = time.time()
-        config = AutoConfig.from_pretrained(model_name)
-        # Explicitly check for Qwen model type for specific logic
-        if 'qwen' in config.model_type.lower():
-             if hasattr(config, "sliding_window") and config.sliding_window is not None:
-                  print(f"\nDisabling Qwen sliding window (was {config.sliding_window})", end="")
-                  config.sliding_window = None
-        # Optionally enable attention output if needed by pruning strategies
-        # config.output_attentions = True # Enable if retroactive pruning needs it
-        print(f" Done! ({time.time() - config_start:.2f}s)")
-
-
-        print("Loading model weights...", end="", flush=True)
-        model_load_start = time.time()
-        # Recommended loading approach
-        model = AutoModelForCausalLM.from_pretrained(
-            model_name,
-            config=config,
-            torch_dtype=dtype,
-            # Use device_map for multi-GPU or very large models on CUDA
-            device_map="auto" if device_str == "cuda" else None,
-            # Use 'auto' or specific implementation like 'flash_attention_2' if available
-            attn_implementation="eager", # Stick to eager for now for stability
+        
+        print("Loading TEMPO components...")
+        # Load model and TEMPO components using the centralized function
+        components = load_tempo_components(
+            model_id=model_name,
+            device=device_str,
+            load_model_wrapper=True,
+            load_token_generator=False,  # We'll create this later with the ExperimentRunner
+            load_parallel_generator=False,  # We'll create this later with the ExperimentRunner
+            debug_mode=debug_mode,
+            use_fast_tokenizer=True,
+            attn_implementation="eager",  # Stick to eager for now for stability
             low_cpu_mem_usage=True,
         )
-        # Manually move to device if not using device_map
-        if device_str != "cuda":
-             model = model.to(device)
-
-        print(f" Done! ({time.time() - model_load_start:.2f}s)")
-        print(f"Total model loading time: {time.time() - load_start_time:.2f}s")
-
-        # Ensure model is in evaluation mode
-        model.eval()
-
-        # 5. Create Model Wrapper (passing debug_mode)
-        # TEMPOModelWrapper only needs the raw model now
-        model_wrapper = TEMPOModelWrapper(model)
-        model_wrapper.set_debug_mode(debug_mode) # Pass debug mode
+        
+        # Extract components
+        model = components["model"]
+        tokenizer = components["tokenizer"]
+        model_wrapper = components["model_wrapper"]
+        
+        print(f"Model and components loaded in {time.time() - load_start_time:.2f}s")
+        print(f"Model loaded on device: {model_wrapper.device}")
+        
+        # Ensure debug mode is set
+        model_wrapper.set_debug_mode(debug_mode)
 
         # 6. Create Experiment Runner (passing components and debug_mode)
         runner = ExperimentRunner(

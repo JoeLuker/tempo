@@ -61,16 +61,18 @@ def parse_arguments():
     return parser.parse_args()
 
 
+from src.utils.model_utils import get_best_device, get_device_dtype, load_model
+
 def detect_device(requested_device=None):
-    """Detect the best available device."""
-    if requested_device == "auto" or requested_device is None:
-        if torch.cuda.is_available():
-            return "cuda"
-        elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-            return "mps"
-        else:
-            return "cpu"
-    return requested_device
+    """
+    Detect the best available device.
+    
+    This function is kept for backward compatibility.
+    Use src.utils.model_utils.get_best_device() for new code.
+    """
+    if requested_device and requested_device != "auto":
+        return requested_device
+    return get_best_device()
 
 
 def main():
@@ -83,15 +85,19 @@ def main():
 
     try:
         print(f"Loading model {args.model}...")
-        model = AutoModelForCausalLM.from_pretrained(args.model)
+        
+        # Use centralized model loading function
+        model, tokenizer = load_model(
+            model_id=args.model,
+            device=device,
+            load_tokenizer=True,
+            use_fast_tokenizer=True,
+            low_cpu_mem_usage=True,
+            # Don't pass debug mode option to avoid log spam
+        )
+        
         print(f"Model class: {model.__class__.__name__}")
-
-        tokenizer = AutoTokenizer.from_pretrained(args.model)
-
-        # Add padding token if not present
-        if tokenizer.pad_token is None:
-            tokenizer.pad_token = tokenizer.eos_token
-            print("Added padding token (using EOS token)")
+        print(f"Model loaded on device: {next(model.parameters()).device}")
 
         # Process exit layers if provided
         exit_layers = None
@@ -137,9 +143,6 @@ def main():
             )
             print("Using default threshold calculation instead")
             confidence_thresholds = None
-
-        # Move model to specified device
-        model = model.to(device)
 
         # Create early exit transformer wrapper
         print("Creating early exit transformer...")
@@ -188,8 +191,8 @@ def main():
         if args.compare:
             print("\nComparing with standard generation...")
 
-            # Reset model
-            model = model.to(device)
+            # Model is already on the correct device thanks to load_model
+            # No need to call model.to(device) again
 
             # Generate with standard approach
             start_time = time.time()

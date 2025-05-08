@@ -21,6 +21,9 @@ logging.basicConfig(
 logger = logging.getLogger("tempo-api")
 
 
+# Import centralized model utilities
+from src.utils.model_utils import get_best_device, get_device_dtype, load_tempo_components
+
 # Singleton for model and components to keep them in memory
 class ModelSingleton:
     model_wrapper = None  # Store the wrapped model
@@ -30,10 +33,14 @@ class ModelSingleton:
     initialized = False
 
     @classmethod
-    def get_instance(cls, device="mps"):
+    def get_instance(cls, device="auto"):
         """Get or initialize model instance, maintaining the singleton invariant"""
+        # Auto-detect device if "auto" is specified
+        if device == "auto":
+            device = get_best_device()
+            
         if not cls.initialized:
-            logger.info("Loading model for the first time...")
+            logger.info(f"Loading model for the first time (device: {device})...")
             cls._initialize_model(device)
             cls.initialized = True
 
@@ -51,72 +58,33 @@ class ModelSingleton:
     def _initialize_model(cls, device):
         """Initialize model components with proper error handling"""
         try:
-            # Determine the device and precision
-            def get_device():
-                if torch.cuda.is_available():
-                    return "cuda"
-                elif torch.backends.mps.is_available():
-                    return "mps"
-                return "cpu"
-
-            def get_device_dtype(device_str):
-                if device_str == "cuda":
-                    if torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 8:
-                        return torch.bfloat16
-                    else:
-                        return torch.float16
-                elif device_str == "mps":
-                    return torch.float32
-                else:  # cpu
-                    return torch.float32
-
-            device_str = get_device()
-            dtype = get_device_dtype(device_str)
-
-            logger.info(f"Using device: {device_str} with dtype: {dtype}")
-
-            # Load model and tokenizer
+            # Load model and all TEMPO components using the centralized function
             model_name = "deepcogito/cogito-v1-preview-llama-3B"
-            tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True)
-            if tokenizer.pad_token is None:
-                tokenizer.pad_token = tokenizer.eos_token
-
-            model = AutoModelForCausalLM.from_pretrained(
-                model_name,
-                torch_dtype=dtype,
-                device_map="auto" if device_str == "cuda" else None,
+            logger.info(f"Loading TEMPO components for model '{model_name}' on device '{device}'...")
+            
+            # Use the centralized component loading function
+            components = load_tempo_components(
+                model_id=model_name,
+                device=device,
+                load_model_wrapper=True,
+                load_token_generator=True,
+                load_parallel_generator=True,
+                debug_mode=False,
+                use_custom_rope=True,
+                use_fast_tokenizer=True,
                 attn_implementation="eager"  # Force eager attention implementation
             )
-
-            if device_str != "cuda":
-                model = model.to(device_str)
-
-            # Create model wrapper
-            model_wrapper = TEMPOModelWrapper(model)
-            logger.info(f"Model wrapper created for device: {model_wrapper.device}")
-
-            # Create the SHARED TokenGenerator instance
-            cls.token_generator = TokenGenerator(
-                model=model_wrapper,
-                tokenizer=tokenizer,
-                device=device_str
-            )
-            logger.info(f"Shared TokenGenerator created for device: {cls.token_generator.device}")
-
-            # Create ParallelGenerator, passing the SHARED token_generator
-            cls.generator = ParallelGenerator(
-                model=model_wrapper,
-                tokenizer=tokenizer,
-                device=device_str,
-                use_custom_rope=True,
-                debug_mode=False,
-                token_generator=cls.token_generator  # Pass the shared instance
-            )
-            logger.info(f"ParallelGenerator created with shared TokenGenerator (ID: {id(cls.token_generator)})")
-
-            # Store components
-            cls.model_wrapper = model_wrapper
-            cls.tokenizer = tokenizer
+            
+            # Extract and store components
+            cls.model_wrapper = components["model_wrapper"]
+            cls.tokenizer = components["tokenizer"]
+            cls.token_generator = components["token_generator"]
+            cls.generator = components["parallel_generator"]
+            
+            # Log successful initialization
+            logger.info(f"ModelWrapper created on device: {cls.model_wrapper.device}")
+            logger.info(f"TokenGenerator created on device: {cls.token_generator.device}")
+            logger.info(f"ParallelGenerator created with TokenGenerator (ID: {id(cls.token_generator)})")
 
         except Exception as e:
             logger.error(f"Error initializing model: {e}")
