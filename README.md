@@ -17,6 +17,7 @@ This project implements and evaluates **TEMPO (Threshold-Enabled Multipath Paral
 - [System Requirements](#system-requirements)
 - [Installation](#installation)
 - [Usage](#usage)
+- [Configuration](#configuration)
 - [Development](#development)
 - [Testing](#testing)
 - [Troubleshooting](#troubleshooting)
@@ -26,6 +27,16 @@ This project implements and evaluates **TEMPO (Threshold-Enabled Multipath Paral
 ## Overview
 
 Standard autoregressive text generation selects a single token at each step. TEMPO investigates an alternative approach where, at a given "logical" step, multiple token candidates above a probability **Selection Threshold** are identified. Instead of branching the sequence, TEMPO processes these parallel possibilities concurrently within a *single evolving sequence state* using modifications to positional embeddings.
+
+## Motivation & Research Context
+
+TEMPO explores how language models handle uncertainty and multiple hypotheses during generation. By allowing models to process multiple token possibilities simultaneously, we can:
+
+- **Understand Model Uncertainty**: Visualize where models are genuinely uncertain vs. confident
+- **Study Attention Mechanisms**: Analyze how retroactive attention patterns reveal which tokens truly matter for coherence
+- **Interpretability Research**: The parallel token exploration provides insights into the model's internal decision-making process
+
+This work contributes to mechanistic interpretability by exposing the model's internal branching logic and attention dynamics during text generation.
 
 The core idea is to:
 
@@ -242,6 +253,134 @@ Contributions are welcome, but please note the current focus on the specific tar
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+## Configuration
+
+TEMPO provides a comprehensive configuration system to manage settings across all components of the project.
+
+### Configuration Methods
+
+1. **Environment Variables**: Set environment variables with the `TEMPO_` prefix
+   ```bash
+   # Example: Set model ID via environment variable
+   export TEMPO_MODEL_MODEL_ID="mistralai/Mistral-7B-Instruct-v0.2"
+   export TEMPO_GENERATION_MAX_LENGTH=500
+   export TEMPO_DEBUG=true
+   ```
+
+2. **Configuration File**: Create a JSON configuration file based on the provided template
+   ```bash
+   # Copy the example configuration
+   cp config.example.json config.json
+   
+   # Edit the file with your preferred settings
+   vim config.json
+   
+   # Load the configuration in your code
+   from src.utils import TempoConfig
+   config = TempoConfig.from_file("config.json")
+   ```
+
+3. **Programmatic Configuration**: Modify configuration in your code
+   ```python
+   from src.utils import config
+   
+   # Modify configuration properties
+   config.model.model_id = "meta-llama/Llama-2-7b-chat-hf"
+   config.generation.max_length = 500
+   config.debug.module_debug["token_generator"] = True
+   ```
+
+### Configuration Sections
+
+The configuration is organized into logical sections:
+
+1. **Logging Configuration**
+   - `enable_file_logging`: Enable/disable logging to files
+   - `log_dir`: Directory for log files
+   - `log_level`: Logging level (DEBUG, INFO, WARNING, ERROR)
+   - `console_logging`: Enable/disable console logging
+
+2. **Model Configuration**
+   - `model_id`: HuggingFace model ID or local path
+   - `device`: Device to use (cuda, mps, cpu, or null for auto-detect)
+   - `quantization`: Quantization level (null, "4bit", "8bit")
+   - `trust_remote_code`: Whether to trust remote code
+   - `use_fast_tokenizer`: Use fast tokenizer if available
+   - `revision`: Model revision
+   - `low_cpu_mem_usage`: Enable low CPU memory usage
+   - `torch_dtype`: PyTorch data type (float16, bfloat16, float32)
+
+3. **Generation Configuration**
+   - `max_length`: Maximum number of tokens to generate
+   - `top_k`, `top_p`, `temperature`: Common generation parameters
+   - `repetition_penalty`, `length_penalty`: Penalties
+   - `beam_width`: Beam search width (1 for greedy)
+   - `use_dynamic_thresholding`: Enable dynamic thresholding
+   - `use_retroactive_pruning`: Enable retroactive pruning
+   - `use_parallel_generation`: Enable parallel generation
+   - `max_parallel_tokens`: Maximum number of parallel tokens
+
+4. **API Configuration**
+   - `host`, `port`: API server host and port
+   - `cors_origins`: Allowed CORS origins
+   - `debug`: Enable API debug mode
+   - `enable_docs`: Enable API documentation
+   - `api_version`: API version
+   - `max_concurrent_requests`: Maximum concurrent requests
+
+5. **Debug Configuration**
+   - `global_debug`: Global debug mode
+   - `module_debug`: Per-module debug settings
+
+### Example Configuration File
+
+```json
+{
+  "logging": {
+    "enable_file_logging": true,
+    "log_dir": "logs",
+    "log_level": "INFO",
+    "console_logging": true
+  },
+  "model": {
+    "model_id": "mistralai/Mistral-7B-Instruct-v0.2",
+    "device": null,
+    "quantization": null
+  },
+  "generation": {
+    "max_length": 200,
+    "top_k": 50,
+    "top_p": 0.95,
+    "temperature": 0.8,
+    "use_retroactive_pruning": true
+  },
+  "debug": {
+    "global_debug": false,
+    "module_debug": {
+      "token_generator": true,
+      "parallel_generator": false
+    }
+  }
+}
+```
+
+### Usage in Code
+
+```python
+# Import the global configuration instance
+from src.utils import config
+
+# Access configuration values
+model_id = config.model.model_id
+debug_mode = config.get_debug_mode("token_generator")
+
+# Or create a fresh configuration from file
+from src.utils import TempoConfig
+custom_config = TempoConfig.from_file("my_config.json")
+```
+
+See `examples/config_demo.py` for a complete demonstration of the configuration system.
 
 ## Pruning
 
