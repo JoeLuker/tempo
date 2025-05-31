@@ -40,7 +40,7 @@ This work contributes to mechanistic interpretability by exposing the model's in
 
 The core idea is to:
 
-1. **Select Multiple Candidates:** Identify all tokens exceeding a `--threshold` probability at the current logical generation step.
+1. **Select Multiple Candidates:** Identify all tokens exceeding a `--selection-threshold` probability at the current logical generation step.
 2. **Prune Candidates (Optional):** Apply pruning strategies (strategy-based or retroactive attention-based) to refine the candidate set for the current step.
 3. **Append Sequentially:** Append *all* selected (and potentially pruned) candidate tokens physically one after another onto the main `input_ids` tensor.
 4. **Simulate Parallelism via RoPE:** Use modifications to Rotary Position Embeddings (**`RoPEModifier`**) to assign the *same* positional embedding to all physical tokens belonging to the same logical step. This is the primary mechanism allowing the model to process them *as if* they occupy the same logical position simultaneously during the *single* forward pass for the *next* step's prediction.
@@ -68,17 +68,24 @@ Currently, this project is focused on experimentation and validation using the *
 - **Simulated Parallel Processing:** Explores parallelism by processing multiple candidate tokens per logical step using RoPE modifications within a single sequence state.
 - **Configurable Selection:** Control the initial candidate set size via `--selection-threshold`.
 - **Advanced Pruning:**
-  - Retroactive Pruning: Refines *previously processed* parallel sets based on attention from later tokens (uses `--attention-threshold` as base for dynamic curve).
-  - Dynamic Thresholding (`--dynamic-threshold`): Adjust retroactive pruning aggressiveness over time using Bezier (`--bezier-p1`, `--bezier-p2`) or ReLU (`--use-relu`, `--relu-activation-point`) curves.
-- **Parallel Token Interaction Control:**
-  - `--allow-intraset-token-visibility`: Lets parallel tokens attend to each other during the simultaneous processing step (requires `--use-custom-rope`). Default is isolated.
-- **Visualization:**
+  - **Retroactive Pruning** (`--use-retroactive-pruning`): Refines *previously processed* parallel sets based on attention from later tokens.
+  - **Dynamic Thresholding** (`--dynamic-threshold`): Adjust retroactive pruning aggressiveness over time using Bezier (`--bezier-p1`, `--bezier-p2`) or ReLU (`--use-relu`, `--relu-activation-point`) curves.
+  - **Attention-Based Pruning**: Multiple attention mechanisms including relative thresholds (`--relative-threshold`), multi-scale attention, and sigmoid decision boundaries.
+- **Generation Modes:**
+  - **TEMPO Mode** (default): Full parallel token processing with RoPE modifications.
+  - **Default Mode** (`--default-mode`): Standard generation without TEMPO features.
+  - **MCTS Mode** (`--use-mcts`): Monte Carlo Tree Search for enhanced exploration.
+- **Model-Specific Features:**
+  - **Cogito Thinking Mode** (`--enable-thinking`): Enhanced reasoning for Cogito models.
+  - **Custom RoPE** (`--use-custom-rope`): Modify positional embeddings for parallel processing.
+- **Parallel Token Control:**
+  - `--allow-intraset-token-visibility`: Lets parallel tokens attend to each other (requires `--use-custom-rope`).
+  - `--no-preserve-isolated-tokens`: Controls pruning behavior for isolated tokens.
+- **Visualization & Analysis:**
   - Output text indicates positions where multiple tokens were processed simultaneously (e.g., `[tokenA/tokenB]`).
-  - Option to save plots visualizing token counts and probabilities (`--save-visualization`).
-  - Web Interface (`frontend/`): Svelte UI for interactive exploration via the API.
-- **Experimental Features (CLI):**
-  - Monte Carlo Tree Search (`--use-mcts`) generation (available in `run_tempo.py`, not API).
-  - Early Exit Transformer demo (`examples/early_exit_demo.py`).
+  - Comprehensive visualization tools (`--save-visualization`).
+  - Web Interface (`frontend/`): Interactive Svelte UI for real-time exploration.
+  - Performance profiling (`--profile`, `--use-cprofile`).
 
 ## System Requirements
 
@@ -128,6 +135,8 @@ The web interface will be available at `http://localhost:5173` and the API at `h
 
 The primary way to run experiments with detailed control and profiling.
 
+#### Basic Usage Examples
+
 ```bash
 # Basic generation (using defaults for the target model)
 python run_tempo.py --prompt "Explain the theory of relativity simply." --selection-threshold 0.05 --max-tokens 150
@@ -135,37 +144,100 @@ python run_tempo.py --prompt "Explain the theory of relativity simply." --select
 # Enable retroactive pruning
 python run_tempo.py --prompt "Write a haiku about servers." --selection-threshold 0.1 --use-retroactive-pruning --attention-threshold 0.02
 
-# Use Hybrid pruning and Dynamic Threshold (Bezier) for Retroactive Pruning
-python run_tempo.py --prompt "Story about a lost robot." --selection-threshold 0.08 --use-retroactive-pruning --attention-threshold 0.01 --bezier-p1 0.1 --bezier-p2 0.9
+# Use dynamic threshold with Bezier curve for retroactive pruning
+python run_tempo.py --prompt "Story about a lost robot." --selection-threshold 0.08 --use-retroactive-pruning --attention-threshold 0.01 --dynamic-threshold --bezier-p1 0.1 --bezier-p2 0.9
 
 # Enable Debug Mode for detailed logs
 python run_tempo.py --prompt "Debug this." --selection-threshold 0.2 --max-tokens 20 --debug-mode
 
-# Enable cProfile
+# Enable performance profiling
 python run_tempo.py --prompt "Profile this run." --selection-threshold 0.1 --max-tokens 50 --profile --use-cprofile
 ```
 
-*(Note: `--model` flag exists but defaults to the target Llama-3B model)*
+#### Advanced Features
+
+```bash
+# MCTS generation with exploration
+python run_tempo.py --prompt "Creative story beginning" --use-mcts --mcts-simulations 20 --mcts-c-puct 1.5 --mcts-depth 8
+
+# Cogito thinking mode for enhanced reasoning
+python run_tempo.py --prompt "Solve this logic puzzle: " --enable-thinking --selection-threshold 0.15
+
+# Advanced pruning with multiple attention mechanisms
+python run_tempo.py --prompt "Complex reasoning task" --use-retroactive-pruning --attention-threshold 0.005 --relative-threshold 0.3 --sigmoid-steepness 15.0
+
+# Default mode (standard generation without TEMPO)
+python run_tempo.py --prompt "Simple generation" --default-mode --max-tokens 100
+
+# Custom model and output directory
+python run_tempo.py --prompt "Custom setup" --model "path/to/model" --output-dir "./my_outputs" --seed 123
+```
+
+#### Technical Configuration
+
+```bash
+# Disable RoPE modifications and KV cache
+python run_tempo.py --prompt "Technical test" --no-use-custom-rope --disable-kv-cache
+
+# Allow parallel tokens to see each other
+python run_tempo.py --prompt "Parallel visibility test" --allow-intraset-token-visibility --selection-threshold 0.2
+
+# Fine-tuned pruning control
+python run_tempo.py --prompt "Precision pruning" --use-retroactive-pruning --complete-pruning-mode "keep_unattended" --num-layers-to-use 8
+```
 
 ### API Usage (`api.py`)
 
 The FastAPI backend provides endpoints for integration, primarily used by the frontend.
 
-- `GET /docs`: Interactive API documentation (Swagger UI).
-- `GET /health`: Health check endpoint.
-- `POST /generate`: Main generation endpoint. Accepts most parameters from `GenerationRequest` model (excluding MCTS flags).
+#### Available Endpoints
 
-Example API call:
+- `GET /docs`: Interactive API documentation (Swagger UI)
+- `GET /health`: Health check endpoint
+- `POST /api/generate`: Main generation endpoint (v1)
+- `POST /api/v2/generate`: v2 generation endpoint (backwards compatibility)
+
+#### API Parameters
+
+The API accepts most CLI parameters in JSON format, with these key differences:
+- CLI flags become boolean fields (e.g., `--use-retroactive-pruning` → `"use_retroactive_pruning": true`)
+- Underscore naming convention (e.g., `selection_threshold` instead of `--selection-threshold`)
+- MCTS parameters are not available via API (CLI only)
+
+#### Example API Calls
 
 ```bash
-curl -X POST "http://localhost:8000/generate" \
+# Basic generation
+curl -X POST "http://localhost:8000/api/generate" \
      -H "Content-Type: application/json" \
      -d '{
            "prompt": "Translate to French: Hello, world!",
-           "threshold": 0.1,
-           "max_tokens": 30,
+           "selection_threshold": 0.1,
+           "max_tokens": 30
+         }'
+
+# Advanced generation with retroactive pruning
+curl -X POST "http://localhost:8000/api/generate" \
+     -H "Content-Type: application/json" \
+     -d '{
+           "prompt": "Write a creative story about AI",
+           "selection_threshold": 0.08,
+           "max_tokens": 200,
            "use_retroactive_pruning": true,
-           "attention_threshold": 0.015
+           "attention_threshold": 0.015,
+           "dynamic_threshold": true,
+           "bezier_p1": 0.1,
+           "bezier_p2": 0.9
+         }'
+
+# Cogito thinking mode
+curl -X POST "http://localhost:8000/api/generate" \
+     -H "Content-Type: application/json" \
+     -d '{
+           "prompt": "Explain quantum entanglement",
+           "enable_thinking": true,
+           "selection_threshold": 0.12,
+           "max_tokens": 300
          }'
 ```
 
@@ -253,6 +325,89 @@ Contributions are welcome, but please note the current focus on the specific tar
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+## CLI Parameters Reference
+
+TEMPO provides extensive command-line configuration options organized into logical groups:
+
+### Basic Generation Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `--prompt` | str | "Once upon a time" | Text prompt to start generation |
+| `--max-tokens` | int | 100 | Maximum number of tokens to generate |
+| `--selection-threshold` | float | 0.1 | Probability threshold for initial token candidate selection |
+| `--min-steps` | int | 0 | Minimum steps to generate before considering EOS tokens |
+| `--model` | str | "deepcogito/cogito-v1-preview-llama-3B" | Model name or path to use |
+| `--output-dir` | str | "./output" | Directory to save output |
+| `--seed` | int | 42 | Random seed for reproducibility |
+
+### Pruning & Attention Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `--use-retroactive-pruning` | flag | False | Enable retroactive pruning based on future token attention |
+| `--attention-threshold` | float | 0.01 | Attention threshold for retroactive pruning (lower = more tokens kept) |
+| `--use-relative-attention` | flag | False | Use relative attention thresholds instead of absolute |
+| `--no-relative-attention` | flag | False | Disable relative attention thresholds |
+| `--relative-threshold` | float | 0.5 | Threshold for relative attention-based pruning (0-1) |
+| `--use-multi-scale-attention` | flag | False | Enable multi-scale attention integration across all layers |
+| `--no-multi-scale-attention` | flag | False | Disable multi-scale attention integration |
+| `--num-layers-to-use` | int | None | Number of last layers to use for attention (None = all layers) |
+| `--use-sigmoid-threshold` | flag | False | Enable sigmoid-based decision boundary |
+| `--no-sigmoid-threshold` | flag | False | Disable sigmoid-based decision boundary |
+| `--sigmoid-steepness` | float | 10.0 | Controls sharpness of sigmoid transition |
+| `--complete-pruning-mode` | str | "keep_token" | How to handle pruned positions: "keep_token", "keep_unattended", "remove_position" |
+
+### Dynamic Thresholding Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `--dynamic-threshold` | flag | False | Use dynamic threshold that increases over steps |
+| `--final-threshold` | float | 1.0 | Final threshold value for dynamic thresholding |
+| `--bezier-p1` | float | 0.2 | First Bezier control point for dynamic threshold |
+| `--bezier-p2` | float | 0.8 | Second Bezier control point for dynamic threshold |
+| `--use-relu` | flag | False | Use ReLU transition instead of Bezier curve |
+| `--relu-activation-point` | float | 0.5 | Point at which ReLU transition begins (0-1) |
+| `--use-lci-dynamic-threshold` | flag | False | Enable LCI-based dynamic thresholding |
+| `--no-lci-dynamic-threshold` | flag | False | Disable LCI-based dynamic thresholding |
+
+### MCTS Parameters (CLI Only)
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `--use-mcts` | flag | False | Enable Monte Carlo Tree Search for text generation |
+| `--mcts-simulations` | int | 10 | Number of MCTS simulations per step |
+| `--mcts-c-puct` | float | 1.0 | Exploration constant for MCTS |
+| `--mcts-depth` | int | 5 | Maximum depth for MCTS simulations |
+
+### Generation Mode Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `--default-mode` | flag | False | Run in standard generation mode without TEMPO |
+| `--enable-thinking` | flag | False | Enable Cogito's deep thinking mode for enhanced reasoning |
+
+### Technical Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `--use-custom-rope` | flag | True | Use custom RoPE modification for parallel token positions |
+| `--allow-intraset-token-visibility` | flag | False | Allow tokens in same parallel set to see each other |
+| `--no-preserve-isolated-tokens` | flag | False | Allow pruning to evaluate isolated tokens |
+| `--disable-kv-cache` | flag | False | Disable KV caching completely for consistent attention |
+| `--disable-kv-cache-consistency` | flag | False | Disable KV cache consistency checks for RoPE |
+
+### Debug & Visualization Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `--debug-mode` | flag | False | Enable debug mode for detailed logging |
+| `--show-token-ids` | flag | False | Show token IDs in the output |
+| `--save-visualization` | flag | True | Save visualization of token sets |
+| `--profile` | flag | False | Enable detailed performance profiling |
+| `--use-cprofile` | flag | False | Use cProfile for detailed function-level profiling |
+| `--profile-output` | str | "tempo_profile.prof" | Output file for cProfile results |
 
 ## Configuration
 
@@ -382,33 +537,92 @@ custom_config = TempoConfig.from_file("my_config.json")
 
 See `examples/config_demo.py` for a complete demonstration of the configuration system.
 
-## Pruning
+## Advanced Pruning Features
 
-TEMPO uses retroactive pruning to refine token sets based on future token attention. This means that as new tokens are generated, we look back at how they attend to previous tokens and use this information to prune out tokens that are not well-attended to.
+TEMPO implements sophisticated pruning mechanisms to refine token sets during generation, improving coherence and reducing computational overhead.
 
-### Retroactive Pruning Parameters
+### Retroactive Pruning
 
-- `--use-retroactive-pruning`: Enable retroactive pruning (default: false)
-- `--attention-threshold`: Attention threshold for retroactive pruning (lower means more tokens kept) (default: 0.01)
-- `--no-relative-attention`: Disable relative attention thresholds (default: false)
-- `--relative-threshold`: Threshold for relative attention-based pruning (0-1) (default: 0.5)
-- `--no-multi-scale-attention`: Disable multi-scale attention integration (default: false)
-- `--num-layers-to-use`: Number of last layers to use for attention (None means use all layers) (default: None)
-- `--no-sigmoid-threshold`: Disable sigmoid-based decision boundary (default: false)
-- `--sigmoid-steepness`: Controls how sharp the sigmoid transition is (default: 10.0)
-- `--complete-pruning-mode`: How to handle pruned positions: 'keep_token' (keep best token), 'keep_unattended' (mark as unattended), 'remove_position' (remove position) (default: 'keep_token')
+Retroactive pruning refines previously processed parallel token sets based on attention patterns from subsequently generated tokens. This allows the model to "look back" and remove tokens that prove to be less relevant as the context develops.
 
-### Example
+#### How It Works
+
+1. **Attention Collection**: Gather attention weights from newly generated tokens to previous parallel sets
+2. **Threshold Application**: Apply attention thresholds to identify poorly attended tokens
+3. **Dynamic Adjustment**: Use curves (Bezier/ReLU) to adjust pruning aggressiveness over time
+4. **Multi-Scale Integration**: Combine attention information across multiple transformer layers
+
+#### Key Parameters
+
+- **Basic Control**: `--use-retroactive-pruning`, `--attention-threshold`
+- **Relative Thresholding**: `--use-relative-attention`, `--relative-threshold`
+- **Multi-Scale Attention**: `--use-multi-scale-attention`, `--num-layers-to-use`
+- **Decision Boundaries**: `--use-sigmoid-threshold`, `--sigmoid-steepness`
+- **Pruning Modes**: `--complete-pruning-mode` (keep_token/keep_unattended/remove_position)
+
+### Dynamic Thresholding
+
+Dynamic thresholding adjusts pruning aggressiveness over the course of generation, typically becoming more selective as sequences develop.
+
+#### Curve Types
+
+**Bezier Curves** (`--bezier-p1`, `--bezier-p2`):
+- Smooth transitions between initial and final thresholds
+- Control points determine curve shape
+- Recommended for gradual threshold changes
+
+**ReLU Transitions** (`--use-relu`, `--relu-activation-point`):
+- Sharp threshold changes at specified points
+- Useful for distinct generation phases
+- More aggressive pruning control
+
+#### Examples
 
 ```bash
+# Basic retroactive pruning
 python run_tempo.py \
-    --prompt "Once upon a time" \
-    --max-tokens 100 \
+    --prompt "Write a story about space exploration" \
     --selection-threshold 0.1 \
     --use-retroactive-pruning \
+    --attention-threshold 0.015
+
+# Advanced pruning with dynamic thresholds
+python run_tempo.py \
+    --prompt "Explain quantum computing" \
+    --selection-threshold 0.08 \
+    --use-retroactive-pruning \
+    --attention-threshold 0.005 \
+    --dynamic-threshold \
+    --final-threshold 0.05 \
+    --bezier-p1 0.1 \
+    --bezier-p2 0.9
+
+# Multi-scale attention with relative thresholds
+python run_tempo.py \
+    --prompt "Creative writing task" \
+    --selection-threshold 0.12 \
+    --use-retroactive-pruning \
     --attention-threshold 0.01 \
-    --relative-threshold 0.5 \
-    --sigmoid-steepness 10.0
+    --use-relative-attention \
+    --relative-threshold 0.3 \
+    --use-multi-scale-attention \
+    --num-layers-to-use 8
+
+# Precision pruning with sigmoid boundaries
+python run_tempo.py \
+    --prompt "Technical explanation" \
+    --selection-threshold 0.15 \
+    --use-retroactive-pruning \
+    --attention-threshold 0.008 \
+    --use-sigmoid-threshold \
+    --sigmoid-steepness 15.0 \
+    --complete-pruning-mode "keep_unattended"
 ```
 
-This will generate text with retroactive pruning enabled, using an attention threshold of 0.01 and a relative threshold of 0.5.
+### Pruning Mode Comparison
+
+| Mode | Description | Use Case |
+|------|-------------|----------|
+| `keep_token` | Keep best token from pruned set | Standard generation (default) |
+| `keep_unattended` | Keep best token but mark as unattended | Analysis of pruning decisions |
+| `remove_position` | Completely remove position | Aggressive pruning experiments |
