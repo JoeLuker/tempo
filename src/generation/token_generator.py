@@ -296,12 +296,12 @@ class TokenGenerator(LoggingMixin):
                 "Invariant violation: custom_attention_mask contains NaN or Inf values"
             )
 
-    def _validate_kv_cache(self, past_key_values: List[Tuple[torch.Tensor]]) -> int:
+    def _validate_kv_cache(self, past_key_values) -> int:
         """
         Validate KV cache structure and contents.
         
         Args:
-            past_key_values: Past key values list for KV cache
+            past_key_values: Past key values (list of tuples or DynamicCache object)
         
         Returns:
             int: Current KV cache sequence length (0 if unknown)
@@ -309,9 +309,23 @@ class TokenGenerator(LoggingMixin):
         Raises:
             ValueError: If any invariant is violated
         """
-        # Structure validation
+        # Handle both legacy list format and new DynamicCache format
+        if hasattr(past_key_values, 'key_cache') and hasattr(past_key_values, 'value_cache'):
+            # New DynamicCache format from transformers 4.36+
+            try:
+                cache_length = past_key_values.get_seq_length()
+                if self.debug_mode:
+                    self.log(f"DynamicCache detected, sequence length: {cache_length}")
+                return cache_length if cache_length is not None else 0
+            except:
+                # Fallback if get_seq_length() fails
+                if len(past_key_values.key_cache) > 0 and past_key_values.key_cache[0] is not None:
+                    return past_key_values.key_cache[0].shape[-2]
+                return 0
+        
+        # Legacy list format validation
         if not isinstance(past_key_values, list):
-            raise ValueError("Invariant violation: past_key_values must be a list")
+            raise ValueError("Invariant violation: past_key_values must be a list or DynamicCache object")
         if len(past_key_values) == 0:
             raise ValueError(
                 "Invariant violation: past_key_values must not be empty"
