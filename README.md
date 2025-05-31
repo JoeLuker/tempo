@@ -53,7 +53,7 @@ Currently, this project is focused on experimentation and validation using the *
 
 ## Core Mechanism
 
-- **Selection Threshold:** A probability threshold (`--threshold`) determines the initial set of parallel candidate tokens considered at each logical step.
+- **Selection Threshold:** A probability threshold (`--selection-threshold`) determines the initial set of parallel candidate tokens considered at each logical step.
 - **Sequential Layout:** All selected candidate tokens (potentially after pruning) are appended sequentially to a single `input_ids` tensor.
 - **Logical Position Tracking (`logical_layout`):** An internal mechanism tracks which physical indices in the `input_ids` tensor correspond to the same logical generation step.
 - **RoPE Modification (`RoPEModifier`):** (Requires `--use-custom-rope`) Patches the model's Rotary Position Embedding calculation. Uses the `logical_layout` to assign the *same* positional embedding to all tokens belonging to the same logical step, tricking the model into processing them as simultaneous alternatives.
@@ -66,7 +66,7 @@ Currently, this project is focused on experimentation and validation using the *
 ## Key Features
 
 - **Simulated Parallel Processing:** Explores parallelism by processing multiple candidate tokens per logical step using RoPE modifications within a single sequence state.
-- **Configurable Selection:** Control the initial candidate set size via `--threshold`.
+- **Configurable Selection:** Control the initial candidate set size via `--selection-threshold`.
 - **Advanced Pruning:**
   - Retroactive Pruning: Refines *previously processed* parallel sets based on attention from later tokens (uses `--attention-threshold` as base for dynamic curve).
   - Dynamic Thresholding (`--dynamic-threshold`): Adjust retroactive pruning aggressiveness over time using Bezier (`--bezier-p1`, `--bezier-p2`) or ReLU (`--use-relu`, `--relu-activation-point`) curves.
@@ -130,19 +130,19 @@ The primary way to run experiments with detailed control and profiling.
 
 ```bash
 # Basic generation (using defaults for the target model)
-python run_tempo.py --prompt "Explain the theory of relativity simply." --threshold 0.05 --max-tokens 150
+python run_tempo.py --prompt "Explain the theory of relativity simply." --selection-threshold 0.05 --max-tokens 150
 
 # Enable retroactive pruning
-python run_tempo.py --prompt "Write a haiku about servers." --threshold 0.1 --use-retroactive-pruning --attention-threshold 0.02
+python run_tempo.py --prompt "Write a haiku about servers." --selection-threshold 0.1 --use-retroactive-pruning --attention-threshold 0.02
 
 # Use Hybrid pruning and Dynamic Threshold (Bezier) for Retroactive Pruning
-python run_tempo.py --prompt "Story about a lost robot." --threshold 0.08 --use-retroactive-pruning --attention-threshold 0.01 --bezier-p1 0.1 --bezier-p2 0.9
+python run_tempo.py --prompt "Story about a lost robot." --selection-threshold 0.08 --use-retroactive-pruning --attention-threshold 0.01 --bezier-p1 0.1 --bezier-p2 0.9
 
 # Enable Debug Mode for detailed logs
-python run_tempo.py --prompt "Debug this." --threshold 0.2 --max-tokens 20 --debug-mode
+python run_tempo.py --prompt "Debug this." --selection-threshold 0.2 --max-tokens 20 --debug-mode
 
 # Enable cProfile
-python run_tempo.py --prompt "Profile this run." --threshold 0.1 --max-tokens 50 --profile --use-cprofile
+python run_tempo.py --prompt "Profile this run." --selection-threshold 0.1 --max-tokens 50 --profile --use-cprofile
 ```
 
 *(Note: `--model` flag exists but defaults to the target Llama-3B model)*
@@ -401,7 +401,7 @@ TEMPO uses retroactive pruning to refine token sets based on future token attent
 ### Example
 
 ```bash
-python -m src.experiments.run_experiment \
+python run_tempo.py \
     --prompt "Once upon a time" \
     --max-tokens 100 \
     --selection-threshold 0.1 \

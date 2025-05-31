@@ -1,15 +1,41 @@
-<script>
+<script lang="ts">
   import '../app.css';
-  import { onMount } from 'svelte';
+  import { onMount, onDestroy } from 'svelte';
   import { theme, toggleTheme, initTheme } from '$lib/theme';
   import { Button } from '$lib/components/ui/button';
   import { Card } from '$lib/components/ui/card';
+  import ShortcutsDialog from '$lib/components/ShortcutsDialog.svelte';
+  import { registerKeyboardShortcuts } from '$lib/utils/keyboard';
   
-  // Initialize theme on mount
+  // State for shortcuts dialog
+  let showShortcutsDialog = false;
+  let unregisterShortcuts: () => void;
+  
+  // Initialize theme and keyboard shortcuts on mount
   onMount(() => {
     initTheme();
+    
+    // Register keyboard shortcuts just for the dialog
+    unregisterShortcuts = registerKeyboardShortcuts({
+      // Just handle the shortcuts dialog here, the rest in +page.svelte
+      showShortcuts: () => showShortcutsDialog = true,
+      generate: () => {}, // No-op for other shortcuts
+      reset: () => {},
+      theme: () => {},
+      basicTab: () => {},
+      mctsTab: () => {},
+      advancedTab: () => {},
+    });
+  });
+  
+  onDestroy(() => {
+    if (unregisterShortcuts) {
+      unregisterShortcuts();
+    }
   });
 </script>
+
+<ShortcutsDialog bind:open={showShortcutsDialog} />
 
 <div class="min-h-screen flex flex-col">
   <header class="border-b border-border bg-background">
@@ -43,8 +69,26 @@
   </main>
 
   <footer class="border-t border-border py-6">
-    <div class="container px-4 text-center text-sm text-muted-foreground">
-      TEMPO Visualization Tool
+    <div class="container px-4 mx-auto max-w-screen-xl">
+      <div class="flex flex-col sm:flex-row justify-between items-center">
+        <div class="text-sm text-muted-foreground mb-4 sm:mb-0">
+          TEMPO Visualization Tool
+        </div>
+        
+        <div class="text-xs text-muted-foreground flex items-center">
+          <button
+            class="inline-flex items-center gap-1 hover:text-primary transition-colors"
+            on:click={() => showShortcutsDialog = true}
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="2" y="4" width="20" height="16" rx="2" ry="2" />
+              <path d="M6 8h.001M10 8h.001M14 8h.001M18 8h.001M8 12h.001M12 12h.001M16 12h.001M7 16h10" />
+            </svg>
+            <span>Keyboard Shortcuts</span>
+            <kbd class="px-1.5 py-0.5 rounded bg-muted font-mono ml-1">Alt+?</kbd>
+          </button>
+        </div>
+      </div>
     </div>
   </footer>
 </div> 

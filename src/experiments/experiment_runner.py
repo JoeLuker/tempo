@@ -223,7 +223,6 @@ class ExperimentRunner:
             generator = ParallelGenerator(
                 model=self.model,
                 tokenizer=self.tokenizer,
-                pruner=pruner,
                 device=self.device,
                 has_custom_attention=True,
                 use_custom_rope=use_custom_rope,

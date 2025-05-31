@@ -70,7 +70,6 @@ class ModelSingleton:
                 load_token_generator=True,
                 load_parallel_generator=True,
                 debug_mode=False,
-                use_custom_rope=True,
                 use_fast_tokenizer=True,
                 attn_implementation="eager"  # Force eager attention implementation
             )
@@ -102,6 +101,9 @@ app = FastAPI(
 
 # Create API router with /api prefix
 api_router = APIRouter(prefix="/api")
+
+# Create v2 router for backwards compatibility
+v2_router = APIRouter(prefix="/api/v2")
 
 # Configure CORS
 app.add_middleware(
@@ -684,8 +686,21 @@ async def generate_text(
         raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
 
 
-# Include the API router
+@v2_router.post("/generate", response_model=GenerationResponse)
+async def generate_text_v2(
+    request: GenerationRequest,
+    components: Tuple = Depends(get_model_components)
+):
+    """
+    Generate text using TEMPO parallel generation (v2 endpoint).
+    This is a forwarding endpoint for backwards compatibility.
+    """
+    return await generate_text(request, components)
+
+
+# Include the API routers
 app.include_router(api_router)
+app.include_router(v2_router)
 
 # Run with: uvicorn api:app --host 0.0.0.0 --port 8000
 if __name__ == "__main__":
