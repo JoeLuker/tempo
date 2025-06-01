@@ -21,7 +21,7 @@ class TEMPOModelWrapper(nn.Module, LoggingMixin):
         """
         nn.Module.__init__(self)
         LoggingMixin.__init__(self)
-        
+
         # Assert model is not None and has the required attributes
         assert model is not None, "Model cannot be None"
         assert hasattr(model, "forward"), "Model must have a forward method"
@@ -31,7 +31,7 @@ class TEMPOModelWrapper(nn.Module, LoggingMixin):
         self.tokenizer = tokenizer
         self.intermediate_values = {}
         self.activation_hooks = []
-        
+
         # Original model attributes need to be accessible through the wrapper
         self.config = model.config
         if hasattr(model, "generation_config"):
@@ -41,10 +41,10 @@ class TEMPOModelWrapper(nn.Module, LoggingMixin):
         self.device = device if device is not None else next(model.parameters()).device
         # Assert device is valid
         assert self.device is not None, "Model device could not be determined"
-        
+
         # Setup logging using the mixin with centralized config
         self.setup_logging("model_wrapper", "model_wrapper_debug.log")
-        
+
         # Register hooks after logger is set up
         self._register_hooks()
 
@@ -100,7 +100,9 @@ class TEMPOModelWrapper(nn.Module, LoggingMixin):
                 elif hasattr(outputs, "shape"):
                     self.log(f"Module {name} output shape: {outputs.shape}")
                 else:
-                    self.log(f"Module {name} output has no shape attribute, type: {type(outputs)}")
+                    self.log(
+                        f"Module {name} output has no shape attribute, type: {type(outputs)}"
+                    )
 
             return outputs
 
@@ -184,7 +186,9 @@ class TEMPOModelWrapper(nn.Module, LoggingMixin):
         """
         assert isinstance(enabled, bool), "Debug mode must be a boolean"
         self.debug_mode = enabled
-        self.log(f"TEMPO Model Wrapper debug mode {'enabled' if enabled else 'disabled'}")
+        self.log(
+            f"TEMPO Model Wrapper debug mode {'enabled' if enabled else 'disabled'}"
+        )
 
     # Forward attribute access to the wrapped model
     def __getattr__(self, name):

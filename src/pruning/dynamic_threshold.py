@@ -91,7 +91,9 @@ class DynamicThresholdManager:
 
         # Cache for optimized recomputation
         self.cached_threshold = None
-        self.threshold_epsilon = 0.01  # Only recompute when threshold changes by more than this
+        self.threshold_epsilon = (
+            0.01  # Only recompute when threshold changes by more than this
+        )
 
         # Print initialization information to console
         print(f"\n*** INITIALIZING DYNAMIC THRESHOLD MANAGER ***")
@@ -99,7 +101,9 @@ class DynamicThresholdManager:
         print(f"Final threshold: {final_threshold}")
         print(f"Max steps: {self.max_steps}")
         if use_relu:
-            print(f"Using ReLU transition with activation point: {relu_activation_point}")
+            print(
+                f"Using ReLU transition with activation point: {relu_activation_point}"
+            )
         elif use_bezier:
             print(f"Using Bezier curve with control points: {self.bezier_points}")
         else:
@@ -138,11 +142,21 @@ class DynamicThresholdManager:
             print(f"Progress: {progress:.4f} ({step}/{self.max_steps})")
             print(f"Current threshold value: {current_threshold:.4f}")
             if step > 80:
-                print(f"DETAILED STATUS: Progress = {progress:.4f}, Max steps = {self.max_steps}")
-                print(f"STOPPING CONDITIONS: Will stop if no tokens have probability >= {current_threshold:.4f}")
+                print(
+                    f"DETAILED STATUS: Progress = {progress:.4f}, Max steps = {self.max_steps}"
+                )
+                print(
+                    f"STOPPING CONDITIONS: Will stop if no tokens have probability >= {current_threshold:.4f}"
+                )
                 if self.use_relu or self.use_bezier:
-                    percentage_to_final = ((current_threshold - self.base_threshold) / (self.final_threshold - self.base_threshold) * 100)
-                    print(f"Progress to final threshold: {percentage_to_final:.1f}% ({current_threshold:.4f}/{self.final_threshold:.4f})")
+                    percentage_to_final = (
+                        (current_threshold - self.base_threshold)
+                        / (self.final_threshold - self.base_threshold)
+                        * 100
+                    )
+                    print(
+                        f"Progress to final threshold: {percentage_to_final:.1f}% ({current_threshold:.4f}/{self.final_threshold:.4f})"
+                    )
 
         return current_threshold
 
@@ -163,7 +177,10 @@ class DynamicThresholdManager:
             if self.relu_activation_point < 1.0
             else 0.0
         )
-        return self.base_threshold + (self.final_threshold - self.base_threshold) * relu_value
+        return (
+            self.base_threshold
+            + (self.final_threshold - self.base_threshold) * relu_value
+        )
 
     def _get_bezier_threshold(self, progress: float) -> float:
         """
@@ -182,7 +199,10 @@ class DynamicThresholdManager:
             self.bezier_points[1],
             1.0,  # End at 1
         )
-        return self.base_threshold + (self.final_threshold - self.base_threshold) * transition_value
+        return (
+            self.base_threshold
+            + (self.final_threshold - self.base_threshold) * transition_value
+        )
 
     def _cubic_bezier(
         self, t: float, p0: float, p1: float, p2: float, p3: float

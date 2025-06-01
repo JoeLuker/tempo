@@ -22,7 +22,12 @@ logger = logging.getLogger("tempo-api")
 
 
 # Import centralized model utilities
-from src.utils.model_utils import get_best_device, get_device_dtype, load_tempo_components
+from src.utils.model_utils import (
+    get_best_device,
+    get_device_dtype,
+    load_tempo_components,
+)
+
 
 # Singleton for model and components to keep them in memory
 class ModelSingleton:
@@ -38,7 +43,7 @@ class ModelSingleton:
         # Auto-detect device if "auto" is specified
         if device == "auto":
             device = get_best_device()
-            
+
         if not cls.initialized:
             logger.info(f"Loading model for the first time (device: {device})...")
             cls._initialize_model(device)
@@ -50,7 +55,10 @@ class ModelSingleton:
         assert cls.generator is not None, "Generator initialization failed"
         assert cls.token_generator is not None, "TokenGenerator initialization failed"
         # Ensure the generator has its internal token_generator
-        assert hasattr(cls.generator, 'token_generator') and cls.generator.token_generator is not None, "Singleton Generator missing internal TokenGenerator"
+        assert (
+            hasattr(cls.generator, "token_generator")
+            and cls.generator.token_generator is not None
+        ), "Singleton Generator missing internal TokenGenerator"
 
         return cls.model_wrapper, cls.tokenizer, cls.generator, cls.token_generator
 
@@ -60,8 +68,10 @@ class ModelSingleton:
         try:
             # Load model and all TEMPO components using the centralized function
             model_name = "deepcogito/cogito-v1-preview-llama-3B"
-            logger.info(f"Loading TEMPO components for model '{model_name}' on device '{device}'...")
-            
+            logger.info(
+                f"Loading TEMPO components for model '{model_name}' on device '{device}'..."
+            )
+
             # Use the centralized component loading function
             components = load_tempo_components(
                 model_id=model_name,
@@ -71,19 +81,23 @@ class ModelSingleton:
                 load_parallel_generator=True,
                 debug_mode=False,
                 use_fast_tokenizer=True,
-                attn_implementation="eager"  # Force eager attention implementation
+                attn_implementation="eager",  # Force eager attention implementation
             )
-            
+
             # Extract and store components
             cls.model_wrapper = components["model_wrapper"]
             cls.tokenizer = components["tokenizer"]
             cls.token_generator = components["token_generator"]
             cls.generator = components["parallel_generator"]
-            
+
             # Log successful initialization
             logger.info(f"ModelWrapper created on device: {cls.model_wrapper.device}")
-            logger.info(f"TokenGenerator created on device: {cls.token_generator.device}")
-            logger.info(f"ParallelGenerator created with TokenGenerator (ID: {id(cls.token_generator)})")
+            logger.info(
+                f"TokenGenerator created on device: {cls.token_generator.device}"
+            )
+            logger.info(
+                f"ParallelGenerator created with TokenGenerator (ID: {id(cls.token_generator)})"
+            )
 
         except Exception as e:
             logger.error(f"Error initializing model: {e}")
@@ -423,7 +437,9 @@ async def health_check():
             return {"status": "initializing", "message": "Model is not yet initialized"}
 
         # Verify components exist
-        model_wrapper, tokenizer, generator, token_generator = ModelSingleton.get_instance()
+        model_wrapper, tokenizer, generator, token_generator = (
+            ModelSingleton.get_instance()
+        )
 
         return {
             "status": "healthy",
@@ -431,7 +447,8 @@ async def health_check():
             "model_name": "deepcogito/cogito-v1-preview-llama-3B",
             "device": generator.device if hasattr(generator, "device") else "unknown",
             "token_generator_initialized": token_generator is not None,
-            "generator_has_token_generator": hasattr(generator, 'token_generator') and generator.token_generator is not None
+            "generator_has_token_generator": hasattr(generator, "token_generator")
+            and generator.token_generator is not None,
         }
     except Exception as e:
         logger.error(f"Health check failed: {str(e)}")
@@ -441,7 +458,9 @@ async def health_check():
 @api_router.post("/generate", response_model=GenerationResponse)
 async def generate_text(
     request: GenerationRequest,
-    components: Tuple = Depends(get_model_components)  # components = (model_wrapper, tokenizer, generator, token_generator)
+    components: Tuple = Depends(
+        get_model_components
+    ),  # components = (model_wrapper, tokenizer, generator, token_generator)
 ):
     """
     Generate text using TEMPO parallel generation.
@@ -453,10 +472,10 @@ async def generate_text(
         # Set on the shared TokenGenerator
         shared_token_generator.set_debug_mode(request.debug_mode)
         # Set on the singleton ParallelGenerator
-        if hasattr(generator, 'set_debug_mode'):
+        if hasattr(generator, "set_debug_mode"):
             generator.set_debug_mode(request.debug_mode)
         # Set on the Model Wrapper
-        if hasattr(model_wrapper, 'set_debug_mode'):
+        if hasattr(model_wrapper, "set_debug_mode"):
             model_wrapper.set_debug_mode(request.debug_mode)
 
         # Log the request
@@ -484,27 +503,47 @@ async def generate_text(
                     complete_pruning_mode=request.complete_pruning_mode,
                 )
                 # Set the SHARED token generator on the retroactive pruner
-                if hasattr(retroactive_pruner, 'set_token_generator'):
+                if hasattr(retroactive_pruner, "set_token_generator"):
                     retroactive_pruner.set_token_generator(shared_token_generator)
-                    logger.info(f"Set shared TokenGenerator (ID: {id(shared_token_generator)}) on RetroactivePruner")
+                    logger.info(
+                        f"Set shared TokenGenerator (ID: {id(shared_token_generator)}) on RetroactivePruner"
+                    )
                 else:
-                    logger.warning("RetroactivePruner does not have set_token_generator method.")
+                    logger.warning(
+                        "RetroactivePruner does not have set_token_generator method."
+                    )
 
-                logger.info(f"Created retroactive pruner with threshold: {request.attention_threshold}")
+                logger.info(
+                    f"Created retroactive pruner with threshold: {request.attention_threshold}"
+                )
 
             except ImportError as e:
                 logger.error(f"Failed to import pruning components: {e}")
-                raise HTTPException(status_code=500, detail="Server configuration error: Pruning components not available")
+                raise HTTPException(
+                    status_code=500,
+                    detail="Server configuration error: Pruning components not available",
+                )
             except Exception as e:
                 logger.error(f"Failed to initialize retroactive pruning: {e}")
-                logger.error(traceback.format_exc())  # Log full traceback for init errors
-                raise HTTPException(status_code=500, detail=f"Failed to initialize retroactive pruning: {str(e)}")
+                logger.error(
+                    traceback.format_exc()
+                )  # Log full traceback for init errors
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Failed to initialize retroactive pruning: {str(e)}",
+                )
 
         # Configure RoPE modifier KV cache consistency if RoPE is enabled
-        if generator.use_custom_rope and hasattr(generator, "rope_modifier") and generator.rope_modifier is not None:
-            if hasattr(generator.rope_modifier, 'enable_kv_cache_consistency'):
+        if (
+            generator.use_custom_rope
+            and hasattr(generator, "rope_modifier")
+            and generator.rope_modifier is not None
+        ):
+            if hasattr(generator.rope_modifier, "enable_kv_cache_consistency"):
                 if request.disable_kv_cache_consistency:
-                    logger.info("Note: RoPE modifier KV cache consistency setting ignored (likely deprecated).")
+                    logger.info(
+                        "Note: RoPE modifier KV cache consistency setting ignored (likely deprecated)."
+                    )
             # Set debug mode on RoPE modifier instance
             generator.rope_modifier.set_debug_mode(request.debug_mode)
 
@@ -550,18 +589,25 @@ async def generate_text(
         except ValueError as e:
             logger.error(f"Value error during generation: {e}")
             logger.error(traceback.format_exc())
-            raise HTTPException(status_code=400, detail=f"Invalid generation parameters: {str(e)}")
+            raise HTTPException(
+                status_code=400, detail=f"Invalid generation parameters: {str(e)}"
+            )
         except RuntimeError as e:
             logger.error(f"Runtime error during generation: {e}")
             logger.error(traceback.format_exc())
             raise HTTPException(status_code=500, detail=f"Generation failed: {str(e)}")
         except torch.cuda.OutOfMemoryError as e:
             logger.error(f"CUDA out of memory: {e}")
-            raise HTTPException(status_code=500, detail="GPU memory exceeded. Try reducing max_tokens or batch size.")
+            raise HTTPException(
+                status_code=500,
+                detail="GPU memory exceeded. Try reducing max_tokens or batch size.",
+            )
         except Exception as e:
             logger.error(f"Unexpected error during generation: {e}")
             logger.error(traceback.format_exc())
-            raise HTTPException(status_code=500, detail=f"Generation failed unexpectedly: {str(e)}")
+            raise HTTPException(
+                status_code=500, detail=f"Generation failed unexpectedly: {str(e)}"
+            )
 
         elapsed_time = time.time() - start_time
         logger.info(f"Generation completed in {elapsed_time:.2f}s")
@@ -573,7 +619,9 @@ async def generate_text(
                 raw_generated_text=generation_result.get("raw_generated_text", ""),
                 steps=[],  # Populated below
                 timing=TimingInfo(
-                    generation_time=generation_result.get("generation_time", elapsed_time),
+                    generation_time=generation_result.get(
+                        "generation_time", elapsed_time
+                    ),
                     pruning_time=generation_result.get("pruning_time", 0.0),
                     elapsed_time=elapsed_time,
                 ),
@@ -590,7 +638,9 @@ async def generate_text(
                 system_content=system_content,
                 token_sets=[],  # Populated below
                 position_to_tokens=generation_result.get("position_to_tokens", {}),
-                original_parallel_positions=list(generation_result.get("original_parallel_positions", set())),
+                original_parallel_positions=list(
+                    generation_result.get("original_parallel_positions", set())
+                ),
                 final_pruned_sets=generation_result.get("final_pruned_sets", {}),
             )
 
@@ -603,17 +653,31 @@ async def generate_text(
                     try:
                         if isinstance(step_data, tuple) and len(step_data) == 3:
                             position, original_data, pruned_data = step_data
-                            if (isinstance(original_data, tuple) and len(original_data) == 2 and
-                                isinstance(pruned_data, tuple) and len(pruned_data) == 2):
+                            if (
+                                isinstance(original_data, tuple)
+                                and len(original_data) == 2
+                                and isinstance(pruned_data, tuple)
+                                and len(pruned_data) == 2
+                            ):
 
                                 original_ids, original_probs = original_data
                                 pruned_ids_raw, pruned_probs_raw = pruned_data
 
                                 # Convert to basic types safely
-                                original_pairs = [(int(tid), float(prob)) for tid, prob in zip(original_ids, original_probs)]
-                                pruned_pairs = [(int(tid), float(prob)) for tid, prob in zip(pruned_ids_raw, pruned_probs_raw)]
+                                original_pairs = [
+                                    (int(tid), float(prob))
+                                    for tid, prob in zip(original_ids, original_probs)
+                                ]
+                                pruned_pairs = [
+                                    (int(tid), float(prob))
+                                    for tid, prob in zip(
+                                        pruned_ids_raw, pruned_probs_raw
+                                    )
+                                ]
 
-                                formatted_token_sets.append((position, original_pairs, pruned_pairs))
+                                formatted_token_sets.append(
+                                    (position, original_pairs, pruned_pairs)
+                                )
 
                                 # Build step info
                                 try:
@@ -621,7 +685,7 @@ async def generate_text(
                                         TokenInfo(
                                             token_text=tokenizer.decode([tid]),
                                             token_id=tid,
-                                            probability=prob
+                                            probability=prob,
                                         )
                                         for tid, prob in original_pairs
                                     ]
@@ -629,22 +693,30 @@ async def generate_text(
                                         TokenInfo(
                                             token_text=tokenizer.decode([tid]),
                                             token_id=tid,
-                                            probability=prob
+                                            probability=prob,
                                         )
                                         for tid, prob in pruned_pairs
                                     ]
-                                    steps_list.append(StepInfo(
-                                        position=position,
-                                        parallel_tokens=parallel_tokens,
-                                        pruned_tokens=pruned_tokens_info
-                                    ))
+                                    steps_list.append(
+                                        StepInfo(
+                                            position=position,
+                                            parallel_tokens=parallel_tokens,
+                                            pruned_tokens=pruned_tokens_info,
+                                        )
+                                    )
                                 except Exception as e:
-                                    logger.warning(f"Error processing tokens for step {position}: {e}")
+                                    logger.warning(
+                                        f"Error processing tokens for step {position}: {e}"
+                                    )
                                     continue
                             else:
-                                logger.warning(f"Skipping malformed token_set inner data: {step_data}")
+                                logger.warning(
+                                    f"Skipping malformed token_set inner data: {step_data}"
+                                )
                         else:
-                            logger.warning(f"Skipping malformed token_set step data: {step_data}")
+                            logger.warning(
+                                f"Skipping malformed token_set step data: {step_data}"
+                            )
                     except Exception as e:
                         logger.warning(f"Error processing step data: {e}")
                         continue
@@ -670,12 +742,17 @@ async def generate_text(
         except Exception as e:
             logger.error(f"Error formatting response: {e}")
             logger.error(traceback.format_exc())
-            raise HTTPException(status_code=500, detail=f"Failed to format generation response: {str(e)}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to format generation response: {str(e)}",
+            )
 
     except ValueError as e:
         logger.error(f"Validation Error during generation: {str(e)}")
         logger.error(traceback.format_exc())
-        raise HTTPException(status_code=400, detail=f"Generation parameter error: {str(e)}")
+        raise HTTPException(
+            status_code=400, detail=f"Generation parameter error: {str(e)}"
+        )
     except RuntimeError as e:
         logger.error(f"Runtime Error during generation: {str(e)}")
         logger.error(traceback.format_exc())
@@ -683,13 +760,14 @@ async def generate_text(
     except Exception as e:
         logger.error(f"Unexpected Error during generation: {str(e)}")
         logger.error(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"An unexpected error occurred: {str(e)}"
+        )
 
 
 @v2_router.post("/generate", response_model=GenerationResponse)
 async def generate_text_v2(
-    request: GenerationRequest,
-    components: Tuple = Depends(get_model_components)
+    request: GenerationRequest, components: Tuple = Depends(get_model_components)
 ):
     """
     Generate text using TEMPO parallel generation (v2 endpoint).

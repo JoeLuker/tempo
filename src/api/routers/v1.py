@@ -18,6 +18,7 @@ from src.api.routers.v2 import generate_text as v2_generate_text
 # Create router with v1 tag
 router = APIRouter(prefix="/api/v1", tags=["v1-legacy"])
 
+
 @router.get(
     "/",
     summary="API v1 Root",
@@ -25,7 +26,7 @@ router = APIRouter(prefix="/api/v1", tags=["v1-legacy"])
     response_description="Information about API versioning.",
     response_model=Dict[str, str],
     status_code=status.HTTP_200_OK,
-    tags=["Health"]
+    tags=["Health"],
 )
 async def v1_root():
     """Legacy API v1 root endpoint."""
@@ -33,8 +34,9 @@ async def v1_root():
         "message": "You are using the legacy v1 API. Please update to v2.",
         "status": "deprecated",
         "current_version": config.api.api_version,
-        "current_prefix": f"/api/{config.api.api_version}"
+        "current_prefix": f"/api/{config.api.api_version}",
     }
+
 
 @router.post(
     "/generate",
@@ -42,22 +44,19 @@ async def v1_root():
     description="Legacy v1 API for text generation (redirects to v2).",
     response_description="Generated text and detailed token information.",
     tags=["Generation"],
-    response_model=GenerationResponse
+    response_model=GenerationResponse,
 )
-async def generate_text_v1(
-    request: dict,
-    background_tasks: BackgroundTasks
-):
+async def generate_text_v1(request: dict, background_tasks: BackgroundTasks):
     """
     Legacy v1 API endpoint for text generation.
-    
+
     Args:
         request: Raw dictionary with request parameters
         background_tasks: FastAPI background tasks
-        
+
     Returns:
         GenerationResponse: The generation response
-        
+
     Raises:
         RequestError: If the request is invalid
     """
@@ -66,23 +65,25 @@ async def generate_text_v1(
         # Basic validation
         if "prompt" not in request:
             raise RequestError(message="Missing required parameter: prompt")
-            
+
         # Create a v2 request object from the legacy request
         v2_request = GenerationRequest(**request)
-        
+
         # Get model components
         components = await get_model_components(v2_request.model_name)
-        
+
         # Forward to v2 implementation
         return await v2_generate_text(v2_request, background_tasks, components)
     except Exception as e:
         # Log the error
         import logging
+
         logger = logging.getLogger("tempo-api")
         logger.warning(f"Error in legacy v1 endpoint: {str(e)}")
-        
+
         # Re-raise APIErrors, convert other exceptions to RequestError
         from src.utils.api_errors import APIError
+
         if isinstance(e, APIError):
             raise e
         raise RequestError(message=f"Invalid request: {str(e)}")

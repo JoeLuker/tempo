@@ -128,18 +128,22 @@ class ExperimentRunner:
         self.debug_mode = debug_mode
         if debug_mode:
             print("Debug mode enabled for experiment runner")
-            
+
             # Set debug mode in the model
-            if hasattr(self.model, 'set_debug_mode'):
+            if hasattr(self.model, "set_debug_mode"):
                 self.model.set_debug_mode(True)
                 print("Model debug mode ENABLED")
-            
+
             # Log debug mode to file
             os.makedirs("logs", exist_ok=True)
             with open("logs/experiment_debug.log", "a") as f:
-                f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Experiment started with debug mode ENABLED\n")
+                f.write(
+                    f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Experiment started with debug mode ENABLED\n"
+                )
                 f.write(f"Prompt: {prompt[:100]}{'...' if len(prompt) > 100 else ''}\n")
-                f.write(f"Parameters: selection_threshold={selection_threshold}, max_tokens={max_tokens}\n")
+                f.write(
+                    f"Parameters: selection_threshold={selection_threshold}, max_tokens={max_tokens}\n"
+                )
                 f.write("----------------------------------------\n")
 
         # Create output directory if needed
@@ -152,7 +156,7 @@ class ExperimentRunner:
         shared_token_generator = TokenGenerator(
             model=self.model, tokenizer=self.tokenizer, device=self.device
         )
-        
+
         # Set debug mode on the shared token generator
         if debug_mode:
             shared_token_generator.set_debug_mode(True)
@@ -283,7 +287,9 @@ class ExperimentRunner:
 
         # Run generation with timing
         generation_start = time.time()
-        print(f"Starting token generation with selection_threshold={selection_threshold}...")
+        print(
+            f"Starting token generation with selection_threshold={selection_threshold}..."
+        )
 
         if use_mcts:
             # Generate with MCTS generator
@@ -331,13 +337,21 @@ class ExperimentRunner:
         # Add experiment parameters to results
         if use_retroactive_pruning:
             results["attention_threshold"] = attention_threshold
-            results["use_relative_attention"] = not args.get("no_relative_attention", False)
+            results["use_relative_attention"] = not args.get(
+                "no_relative_attention", False
+            )
             results["relative_threshold"] = args.get("relative_threshold", 0.5)
-            results["use_multi_scale_attention"] = not args.get("no_multi_scale_attention", False)
+            results["use_multi_scale_attention"] = not args.get(
+                "no_multi_scale_attention", False
+            )
             results["num_layers_to_use"] = args.get("num_layers_to_use", None)
-            results["use_sigmoid_threshold"] = not args.get("no_sigmoid_threshold", False)
+            results["use_sigmoid_threshold"] = not args.get(
+                "no_sigmoid_threshold", False
+            )
             results["sigmoid_steepness"] = args.get("sigmoid_steepness", 10.0)
-            results["complete_pruning_mode"] = args.get("complete_pruning_mode", "keep_token")
+            results["complete_pruning_mode"] = args.get(
+                "complete_pruning_mode", "keep_token"
+            )
 
         # Add Cogito-specific parameters
         if enable_thinking:
@@ -402,25 +416,39 @@ class ExperimentRunner:
             if use_mcts:
                 serializable_results["mcts_simulations"] = mcts_simulations
                 serializable_results["mcts_c_puct"] = mcts_c_puct
-                serializable_results["mcts_attention_threshold"] = mcts_attention_threshold
+                serializable_results["mcts_attention_threshold"] = (
+                    mcts_attention_threshold
+                )
 
             # Add pruning params if available
             if "attention_threshold" in results:
-                serializable_results["attention_threshold"] = results["attention_threshold"]
+                serializable_results["attention_threshold"] = results[
+                    "attention_threshold"
+                ]
             if "use_relative_attention" in results:
-                serializable_results["use_relative_attention"] = results["use_relative_attention"]
+                serializable_results["use_relative_attention"] = results[
+                    "use_relative_attention"
+                ]
             if "relative_threshold" in results:
-                serializable_results["relative_threshold"] = results["relative_threshold"]
+                serializable_results["relative_threshold"] = results[
+                    "relative_threshold"
+                ]
             if "use_multi_scale_attention" in results:
-                serializable_results["use_multi_scale_attention"] = results["use_multi_scale_attention"]
+                serializable_results["use_multi_scale_attention"] = results[
+                    "use_multi_scale_attention"
+                ]
             if "num_layers_to_use" in results:
                 serializable_results["num_layers_to_use"] = results["num_layers_to_use"]
             if "use_sigmoid_threshold" in results:
-                serializable_results["use_sigmoid_threshold"] = results["use_sigmoid_threshold"]
+                serializable_results["use_sigmoid_threshold"] = results[
+                    "use_sigmoid_threshold"
+                ]
             if "sigmoid_steepness" in results:
                 serializable_results["sigmoid_steepness"] = results["sigmoid_steepness"]
             if "complete_pruning_mode" in results:
-                serializable_results["complete_pruning_mode"] = results["complete_pruning_mode"]
+                serializable_results["complete_pruning_mode"] = results[
+                    "complete_pruning_mode"
+                ]
 
             json.dump(serializable_results, f, indent=2)
 

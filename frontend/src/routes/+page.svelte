@@ -589,116 +589,7 @@
               <TabsTrigger value="mcts" class="text-sm sm:text-base">MCTS</TabsTrigger>
               <TabsTrigger value="advanced" class="text-sm sm:text-base">Advanced</TabsTrigger>
             </TabsList>
-        {:else}
-          <!-- Progressive disclosure for beginner/intermediate -->
-          <div class="space-y-4">
-
-            <!-- Prompt Input - Always Visible -->
-            <SettingSection 
-              title="Prompt & Generation" 
-              description="Enter your prompt and control basic generation parameters"
-              icon="💬"
-              category="core"
-              importance="essential"
-              defaultOpen={true}
-            >
-              <div class="space-y-4">
-                <div>
-                  <label for="prompt" class="block text-sm font-medium mb-2">Prompt</label>
-                  <Textarea
-                    id="prompt"
-                    bind:value={prompt}
-                    placeholder="Enter your prompt here..."
-                    rows={4}
-                    class="w-full min-h-[120px] text-base"
-                  />
-                </div>
-
-                <div>
-                  <div class="flex items-center gap-1 mb-1">
-                    <label for="maxTokens" class="block text-sm font-medium">Max Tokens</label>
-                    {#if getHelp('maxTokens')}
-                      <RichTooltip helpContent={getHelp('maxTokens')} />
-                    {/if}
-                  </div>
-                  <Slider
-                    id="maxTokens"
-                    bind:value={maxTokensSlider}
-                    min={1}
-                    max={500}
-                    step={1}
-                  />
-                  <div class="text-sm text-gray-500 mt-1">{maxTokensSlider[0]} tokens (~{Math.round(maxTokensSlider[0] * 0.75)} words)</div>
-                </div>
-
-                <div>
-                  <div class="flex items-center gap-1 mb-1">
-                    <label for="selectionThreshold" class="block text-sm font-medium">Selection Threshold</label>
-                    {#if getHelp('selectionThreshold')}
-                      <RichTooltip helpContent={getHelp('selectionThreshold')} />
-                    {/if}
-                  </div>
-                  <Slider
-                    id="selectionThreshold"
-                    bind:value={selectionThresholdSlider}
-                    min={0.01}
-                    max={0.5}
-                    step={0.01}
-                  />
-                  <div class="text-sm text-gray-500 mt-1">{selectionThresholdSlider[0].toFixed(2)}</div>
-                </div>
-              </div>
-            </SettingSection>
-
-            <!-- Core Settings for Intermediate+ -->
-            {#if interfaceMode !== 'beginner'}
-              <SettingSection 
-                title="Pruning & Refinement" 
-                description="Control how TEMPO refines and improves generated content"
-                icon="✂️"
-                category="pruning"
-                importance="important"
-                defaultOpen={interfaceMode === 'intermediate'}
-              >
-                <div class="space-y-4">
-                  <div class="flex items-center space-x-2">
-                    <Switch 
-                      id="useRetroactivePruning" 
-                      checked={$settings.useRetroactivePruning}
-                      onCheckedChange={(checked) => updateSetting('useRetroactivePruning', checked)}
-                    />
-                    <label for="useRetroactivePruning" class="text-sm font-medium">Use Retroactive Pruning</label>
-                    {#if getHelp('useRetroactivePruning')}
-                      <RichTooltip helpContent={getHelp('useRetroactivePruning')} />
-                    {/if}
-                  </div>
-
-                  {#if $settings.useRetroactivePruning}
-                    <div class="pl-4 mt-2 space-y-2 border-l-2 border-gray-200 dark:border-gray-700">
-                      <div class="flex items-center gap-1 mb-1">
-                        <label for="attentionThreshold" class="block text-sm font-medium">Attention Threshold</label>
-                        {#if getHelp('attentionThreshold')}
-                          <RichTooltip helpContent={getHelp('attentionThreshold')} />
-                        {/if}
-                      </div>
-                      <Slider
-                        id="attentionThreshold"
-                        bind:value={attentionThresholdSlider}
-                        min={0.001}
-                        max={0.1}
-                        step={0.001}
-                      />
-                      <div class="text-sm text-gray-500 mt-1">{attentionThresholdSlider[0].toFixed(3)}</div>
-                    </div>
-                  {/if}
-                </div>
-              </SettingSection>
-            {/if}
-          </div>
-        {/if}
-        
-        {#if interfaceMode === 'expert'}
-          <TabsContent value="basic" class="space-y-5">
+            <TabsContent value="basic" class="space-y-5">
             <!-- Expert mode keeps the original tabbed interface -->
             <div>
               <label for="prompt" class="block text-sm font-medium mb-2">Prompt</label>
@@ -1093,6 +984,112 @@
             </div>
           </TabsContent>
           </Tabs>
+        {:else}
+          <!-- Progressive disclosure for beginner/intermediate -->
+          <div class="space-y-4">
+
+            <!-- Prompt Input - Always Visible -->
+            <SettingSection 
+              title="Prompt & Generation" 
+              description="Enter your prompt and control basic generation parameters"
+              icon="💬"
+              category="core"
+              importance="essential"
+              defaultOpen={true}
+            >
+              <div class="space-y-4">
+                <div>
+                  <label for="prompt" class="block text-sm font-medium mb-2">Prompt</label>
+                  <Textarea
+                    id="prompt"
+                    bind:value={prompt}
+                    placeholder="Enter your prompt here..."
+                    rows={4}
+                    class="w-full min-h-[120px] text-base"
+                  />
+                </div>
+
+                <div>
+                  <div class="flex items-center gap-1 mb-1">
+                    <label for="maxTokens" class="block text-sm font-medium">Max Tokens</label>
+                    {#if getHelp('maxTokens')}
+                      <RichTooltip helpContent={getHelp('maxTokens')} />
+                    {/if}
+                  </div>
+                  <Slider
+                    id="maxTokens"
+                    bind:value={maxTokensSlider}
+                    min={1}
+                    max={500}
+                    step={1}
+                  />
+                  <div class="text-sm text-gray-500 mt-1">{maxTokensSlider[0]} tokens (~{Math.round(maxTokensSlider[0] * 0.75)} words)</div>
+                </div>
+
+                <div>
+                  <div class="flex items-center gap-1 mb-1">
+                    <label for="selectionThreshold" class="block text-sm font-medium">Selection Threshold</label>
+                    {#if getHelp('selectionThreshold')}
+                      <RichTooltip helpContent={getHelp('selectionThreshold')} />
+                    {/if}
+                  </div>
+                  <Slider
+                    id="selectionThreshold"
+                    bind:value={selectionThresholdSlider}
+                    min={0.01}
+                    max={0.5}
+                    step={0.01}
+                  />
+                  <div class="text-sm text-gray-500 mt-1">{selectionThresholdSlider[0].toFixed(2)}</div>
+                </div>
+              </div>
+            </SettingSection>
+
+            <!-- Core Settings for Intermediate+ -->
+            {#if interfaceMode !== 'beginner'}
+              <SettingSection 
+                title="Pruning & Refinement" 
+                description="Control how TEMPO refines and improves generated content"
+                icon="✂️"
+                category="pruning"
+                importance="important"
+                defaultOpen={interfaceMode === 'intermediate'}
+              >
+                <div class="space-y-4">
+                  <div class="flex items-center space-x-2">
+                    <Switch 
+                      id="useRetroactivePruning" 
+                      checked={$settings.useRetroactivePruning}
+                      onCheckedChange={(checked) => updateSetting('useRetroactivePruning', checked)}
+                    />
+                    <label for="useRetroactivePruning" class="text-sm font-medium">Use Retroactive Pruning</label>
+                    {#if getHelp('useRetroactivePruning')}
+                      <RichTooltip helpContent={getHelp('useRetroactivePruning')} />
+                    {/if}
+                  </div>
+
+                  {#if $settings.useRetroactivePruning}
+                    <div class="pl-4 mt-2 space-y-2 border-l-2 border-gray-200 dark:border-gray-700">
+                      <div class="flex items-center gap-1 mb-1">
+                        <label for="attentionThreshold" class="block text-sm font-medium">Attention Threshold</label>
+                        {#if getHelp('attentionThreshold')}
+                          <RichTooltip helpContent={getHelp('attentionThreshold')} />
+                        {/if}
+                      </div>
+                      <Slider
+                        id="attentionThreshold"
+                        bind:value={attentionThresholdSlider}
+                        min={0.001}
+                        max={0.1}
+                        step={0.001}
+                      />
+                      <div class="text-sm text-gray-500 mt-1">{attentionThresholdSlider[0].toFixed(3)}</div>
+                    </div>
+                  {/if}
+                </div>
+              </SettingSection>
+            {/if}
+          </div>
         {/if}
 
         <Button

@@ -63,10 +63,11 @@ def parse_arguments():
 
 from src.utils.model_utils import get_best_device, get_device_dtype, load_model
 
+
 def detect_device(requested_device=None):
     """
     Detect the best available device.
-    
+
     This function is kept for backward compatibility.
     Use src.utils.model_utils.get_best_device() for new code.
     """
@@ -85,7 +86,7 @@ def main():
 
     try:
         print(f"Loading model {args.model}...")
-        
+
         # Use centralized model loading function
         model, tokenizer = load_model(
             model_id=args.model,
@@ -95,7 +96,7 @@ def main():
             low_cpu_mem_usage=True,
             # Don't pass debug mode option to avoid log spam
         )
-        
+
         print(f"Model class: {model.__class__.__name__}")
         print(f"Model loaded on device: {next(model.parameters()).device}")
 

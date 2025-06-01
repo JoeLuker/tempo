@@ -237,7 +237,7 @@ class RetroactivePruner:
             print(f"Sequence length reported by token generator: {seq_len}")
             print(f"Current step: {step}")
             print(f"Attention threshold: {self.attention_threshold}")
-            
+
             # More detailed attention shape analysis
             attn_shape = cached_attention[0].shape
             print(f"\nDetailed attention analysis:")
@@ -245,33 +245,47 @@ class RetroactivePruner:
             print(f"- Num heads: {attn_shape[1]}")
             print(f"- Sequence length (rows): {attn_shape[2]}")
             print(f"- Attended length (cols): {attn_shape[3]}")
-            
+
             # List all positions to be evaluated
-            print(f"\nParallel positions to evaluate: {sorted(all_parallel_tokens.keys())}")
+            print(
+                f"\nParallel positions to evaluate: {sorted(all_parallel_tokens.keys())}"
+            )
             print(f"Prompt length: {prompt_length}")
-            highest_position = prompt_length + max(all_parallel_tokens.keys(), default=0)
+            highest_position = prompt_length + max(
+                all_parallel_tokens.keys(), default=0
+            )
             print(f"Highest absolute position: {highest_position}")
             print(f"Attention window available: {attn_shape[3]}")
-            
+
             if highest_position >= attn_shape[3]:
-                print(f"WARNING: Some positions ({highest_position-attn_shape[3]+1}) are beyond attention window!")
-                print(f"Positions beyond window: {[pos for pos in all_parallel_tokens.keys() if prompt_length+pos >= attn_shape[3]]}")
+                print(
+                    f"WARNING: Some positions ({highest_position-attn_shape[3]+1}) are beyond attention window!"
+                )
+                print(
+                    f"Positions beyond window: {[pos for pos in all_parallel_tokens.keys() if prompt_length+pos >= attn_shape[3]]}"
+                )
             else:
                 print(f"All positions within attention window!")
 
         # Check if we have a mismatch between attention dimensions and positions
         attention_window_size = cached_attention[0].shape[3]
         positions_out_of_bounds = False
-        
+
         # Calculate the highest position we need to access
-        highest_abs_position = prompt_length + max(all_parallel_tokens.keys(), default=0)
+        highest_abs_position = prompt_length + max(
+            all_parallel_tokens.keys(), default=0
+        )
         if highest_abs_position >= attention_window_size:
             positions_out_of_bounds = True
             if self.debug_mode:
-                print(f"CRITICAL: Attention window size mismatch. Have {attention_window_size} positions, "
-                      f"need {highest_abs_position+1}. Using fallback pruning.")
-                print("This likely means the token_generator used by RetroactivePruner is not "
-                      "the same instance that's generating tokens in the main loop.")
+                print(
+                    f"CRITICAL: Attention window size mismatch. Have {attention_window_size} positions, "
+                    f"need {highest_abs_position+1}. Using fallback pruning."
+                )
+                print(
+                    "This likely means the token_generator used by RetroactivePruner is not "
+                    "the same instance that's generating tokens in the main loop."
+                )
 
         # Multi-scale attention integration
         if self.use_multi_scale_attention:
@@ -291,9 +305,12 @@ class RetroactivePruner:
             layer_weights = torch.linspace(0.2, 1.0, layers_to_use, device=self.device)
 
             # Apply weighted average - ensure we use batch index 0 for consistent attention processing
-            batch_idx = 0  # Always use the first batch (main sequence) for attention analysis
+            batch_idx = (
+                0  # Always use the first batch (main sequence) for attention analysis
+            )
             weighted_layers = [
-                layer[batch_idx] * weight for layer, weight in zip(attention_layers, layer_weights)
+                layer[batch_idx] * weight
+                for layer, weight in zip(attention_layers, layer_weights)
             ]
             avg_layer_attention = (
                 torch.sum(torch.stack(weighted_layers), dim=0) / layer_weights.sum()
@@ -316,7 +333,9 @@ class RetroactivePruner:
             # Original approach - last few layers only with simple averaging
             layers_to_use = min(3, len(cached_attention))
             batch_idx = 0  # Always use the first batch for attention
-            attention_layers = [layer[batch_idx] for layer in cached_attention[-layers_to_use:]]
+            attention_layers = [
+                layer[batch_idx] for layer in cached_attention[-layers_to_use:]
+            ]
 
             # Average attention patterns across selected layers
             avg_layer_attention = torch.mean(
@@ -335,17 +354,21 @@ class RetroactivePruner:
             if self.debug_mode:
                 print(f"Averaged attention tensor shape: {attn_shape}")
                 print(f"Total sequence length in attention: {attn_shape[-1]}")
-                
+
             # Extract attention from the newest token (last row) to all previous tokens (all columns except the last)
-            last_token_attn = avg_layer_attention[:, -1, :-1].clone()  # [num_heads, seq_len-1]
-            
+            last_token_attn = avg_layer_attention[
+                :, -1, :-1
+            ].clone()  # [num_heads, seq_len-1]
+
             if self.debug_mode:
                 print(f"Last token attention shape: {last_token_attn.shape}")
-                print(f"This includes attention to ALL previous {last_token_attn.shape[-1]} tokens")
+                print(
+                    f"This includes attention to ALL previous {last_token_attn.shape[-1]} tokens"
+                )
 
             # Average across attention heads
             avg_attention = last_token_attn.mean(dim=0)  # [seq_len-1]
-            
+
             if self.debug_mode:
                 print("\nRaw Attention Analysis:")
                 print(f"Raw attention shape: {avg_attention.shape}")
@@ -406,65 +429,81 @@ class RetroactivePruner:
 
             # Process each position with parallel tokens
             pruned_positions = {}  # Store pruned positions
-            
+
             # Check if we're beyond the attention window
             if positions_out_of_bounds:
                 # Use a fallback strategy: keep tokens with probabilities above a threshold
                 fallback_thresh = 0.1  # Keep tokens with probability above 10%
                 if self.debug_mode:
-                    print(f"Using fallback pruning with probability threshold: {fallback_thresh}")
-                
+                    print(
+                        f"Using fallback pruning with probability threshold: {fallback_thresh}"
+                    )
+
                 for pos, token_list in all_parallel_tokens.items():
                     # Keep tokens with probability above threshold
-                    kept_tokens = [(tid, prob) for tid, prob in token_list if prob >= fallback_thresh]
-                    
+                    kept_tokens = [
+                        (tid, prob)
+                        for tid, prob in token_list
+                        if prob >= fallback_thresh
+                    ]
+
                     # Ensure we keep at least one token
                     if not kept_tokens and token_list:
                         # Keep the highest probability token
-                        sorted_tokens = sorted(token_list, key=lambda x: x[1], reverse=True)
+                        sorted_tokens = sorted(
+                            token_list, key=lambda x: x[1], reverse=True
+                        )
                         kept_tokens = [sorted_tokens[0]]
-                    
+
                     pruned_positions[pos] = kept_tokens
-                
+
                 # Update pruning stats
-                total_tokens = sum(len(tokens) for tokens in all_parallel_tokens.values())
+                total_tokens = sum(
+                    len(tokens) for tokens in all_parallel_tokens.values()
+                )
                 kept_tokens = sum(len(tokens) for tokens in pruned_positions.values())
-                
+
                 self.pruning_stats["total_tokens_considered"] += total_tokens
-                self.pruning_stats["tokens_pruned"] += (total_tokens - kept_tokens)
+                self.pruning_stats["tokens_pruned"] += total_tokens - kept_tokens
                 self.pruning_stats["positions_evaluated"] += len(all_parallel_tokens)
-                
+
                 # Log what happened
                 if self.debug_mode:
                     print(f"Fallback pruning kept {kept_tokens}/{total_tokens} tokens")
-                    
+
                 return pruned_positions
-            
+
             # Normal processing when attention matrix matches required positions
             for pos, token_list in all_parallel_tokens.items():
                 # Skip the current step itself - retroactive pruning should only apply to previous steps
                 if step is not None and pos == step:
                     # Keep all tokens for the current step - it's being processed right now
                     if self.debug_mode:
-                        print(f"Skipping position {pos} as it is the current step being generated")
+                        print(
+                            f"Skipping position {pos} as it is the current step being generated"
+                        )
                     pruned_positions[pos] = token_list
                     self.pruning_stats["positions_evaluated"] += 1
                     continue
-                
+
                 # Calculate the absolute position (including prompt)
                 abs_pos = prompt_length + pos
-                
+
                 # Skip if the position is beyond our attention window
                 if abs_pos >= attention_window_size:
                     if self.debug_mode:
-                        print(f"Position {pos} (abs: {abs_pos}) is beyond attention window, using fallback")
-                    kept_tokens = [(tid, prob) for tid, prob in token_list if prob >= 0.1]
+                        print(
+                            f"Position {pos} (abs: {abs_pos}) is beyond attention window, using fallback"
+                        )
+                    kept_tokens = [
+                        (tid, prob) for tid, prob in token_list if prob >= 0.1
+                    ]
                     if not kept_tokens and token_list:
                         kept_tokens = [max(token_list, key=lambda x: x[1])]
                     pruned_positions[pos] = kept_tokens
                     self.pruning_stats["positions_evaluated"] += 1
                     continue
-                
+
                 # Extract attention score
                 attention_score = normalized_attn[abs_pos].item()
 
@@ -533,7 +572,7 @@ class RetroactivePruner:
                 before_tokens = len(token_list)
                 after_tokens = len(pruned_positions.get(pos, []))
                 self.pruning_stats["total_tokens_considered"] += before_tokens
-                self.pruning_stats["tokens_pruned"] += (before_tokens - after_tokens)
+                self.pruning_stats["tokens_pruned"] += before_tokens - after_tokens
                 self.pruning_stats["positions_evaluated"] += 1
 
             return pruned_positions
@@ -542,6 +581,7 @@ class RetroactivePruner:
             if self.debug_mode:
                 print(f"Error in retroactive pruning: {e}")
                 import traceback
+
                 traceback.print_exc()
 
             # Fall back to no pruning on error
@@ -587,30 +627,34 @@ class RetroactivePruner:
         """
         Extract raw attention score for a position.
         For positions beyond the attention window, use the last available attention.
-        
+
         Args:
             last_token_attn: The last token's attention weights
             pos: The absolute position to get attention for
             normalized_attn: The normalized attention array
-            
+
         Returns:
             The raw attention score for this position
         """
         # Get absolute position (adjust for attention array indexing)
         abs_pos = pos
-        
+
         # Check if position is beyond the attention window
         if abs_pos >= len(normalized_attn):
             # Use the last available attention score
             if len(normalized_attn) > 0:
                 raw_score = normalized_attn[-1].item()
-                self.log_debug(f"Position {pos} beyond attention window, using last available attention: {raw_score:.4f}")
+                self.log_debug(
+                    f"Position {pos} beyond attention window, using last available attention: {raw_score:.4f}"
+                )
                 return raw_score
             else:
                 # If no attention scores available, use default value
-                self.log_debug(f"No attention scores available for position {pos}, using default 0.5")
+                self.log_debug(
+                    f"No attention scores available for position {pos}, using default 0.5"
+                )
                 return 0.5
-        
+
         # Position is within attention window, get exact score
         raw_score = normalized_attn[abs_pos].item()
         return raw_score
@@ -618,30 +662,34 @@ class RetroactivePruner:
     def extract_vectorized_attention(self, normalized_attn, position_list):
         """
         Vectorized version of attention extraction for multiple positions.
-        
+
         Args:
-            normalized_attn: The normalized attention tensor 
+            normalized_attn: The normalized attention tensor
             position_list: List of positions to extract attention for
-            
+
         Returns:
             Dictionary mapping positions to their attention scores
         """
         position_scores = {}
         attn_len = len(normalized_attn)
-        
+
         for pos in position_list:
             # Check if position is beyond the attention window
             if pos >= attn_len:
                 # Use the last available attention score
                 if attn_len > 0:
                     position_scores[pos] = normalized_attn[-1].item()
-                    self.log_debug(f"Position {pos} beyond attention window (len={attn_len}), using last score: {position_scores[pos]:.4f}")
+                    self.log_debug(
+                        f"Position {pos} beyond attention window (len={attn_len}), using last score: {position_scores[pos]:.4f}"
+                    )
                 else:
                     # If no attention scores available, use default value
                     position_scores[pos] = 0.5
-                    self.log_debug(f"No attention scores available for position {pos}, using default 0.5")
+                    self.log_debug(
+                        f"No attention scores available for position {pos}, using default 0.5"
+                    )
             else:
                 # Position is within attention window, get exact score
                 position_scores[pos] = normalized_attn[pos].item()
-                
+
         return position_scores

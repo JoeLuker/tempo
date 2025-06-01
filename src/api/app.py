@@ -54,6 +54,7 @@ add_rate_limiting(app, enabled=not config.debug.global_debug)
 # Custom OpenAPI schema
 app.openapi = lambda: custom_openapi_schema(app)
 
+
 # Documentation endpoints
 @app.get("/docs", include_in_schema=False)
 async def custom_swagger_ui_html():
@@ -65,6 +66,7 @@ async def custom_swagger_ui_html():
         swagger_css_url="https://unpkg.com/swagger-ui-dist@5.10.0/swagger-ui.css",
     )
 
+
 @app.get("/redoc", include_in_schema=False)
 async def redoc_html():
     """Custom ReDoc endpoint."""
@@ -74,32 +76,35 @@ async def redoc_html():
         redoc_js_url="https://unpkg.com/redoc@next/bundles/redoc.standalone.js",
     )
 
+
 # Include all API routers
 app.include_router(v2_router)
 app.include_router(v1_router)
 app.include_router(common_router)
 app.include_router(docs_router)
 
+
 def create_app() -> FastAPI:
     """
     Create and configure a new FastAPI application.
-    
-    This function exists primarily for testing, allowing the creation of 
-    isolated app instances. The global 'app' object should be used for 
+
+    This function exists primarily for testing, allowing the creation of
+    isolated app instances. The global 'app' object should be used for
     normal operation.
-    
+
     Returns:
         FastAPI: Configured FastAPI application
     """
     return app
 
+
 # Run with: uvicorn src.api.app:app --host 0.0.0.0 --port 8000
 if __name__ == "__main__":
     import uvicorn
-    
+
     # Get port from environment or config
     port = int(os.environ.get("PORT", config.api.port))
-    
+
     # Configure logging for uvicorn
     log_config = {
         "version": 1,
@@ -121,14 +126,15 @@ if __name__ == "__main__":
         "loggers": {
             "uvicorn": {"handlers": ["default"], "level": "INFO"},
             "uvicorn.error": {"level": "INFO"},
-            "uvicorn.access": {"handlers": ["default"], "level": "INFO", "propagate": False},
+            "uvicorn.access": {
+                "handlers": ["default"],
+                "level": "INFO",
+                "propagate": False,
+            },
         },
     }
-    
+
     # Run server
     uvicorn.run(
-        "src.api.app:app", 
-        host=config.api.host, 
-        port=port,
-        log_config=log_config
+        "src.api.app:app", host=config.api.host, port=port, log_config=log_config
     )

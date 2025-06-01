@@ -11,7 +11,7 @@ from datetime import datetime
 
 class APIDocumentation:
     """Manager for API documentation content."""
-    
+
     # Documentation content - this would typically be stored in a database or files
     # For demonstration, we'll store it in memory
     docs = {
@@ -41,7 +41,7 @@ that processes multiple token possibilities simultaneously, providing more coher
 - `POST /api/v2/generate`: Generate text with TEMPO
 - `GET /api/v2/models/list`: List available models
 - `GET /api/health`: Check system health
-            """
+            """,
         },
         "generate": {
             "title": "Text Generation Guide",
@@ -115,7 +115,7 @@ Use MCTS for more strategic token selection:
   }
 }
 ```
-            """
+            """,
         },
         "examples": {
             "title": "API Usage Examples",
@@ -190,7 +190,7 @@ curl -X POST http://localhost:8000/api/v2/generate \\
     "selection_threshold": 0.1
   }'
 ```
-            """
+            """,
         },
         "parameters": {
             "title": "API Parameter Reference",
@@ -254,7 +254,7 @@ curl -X POST http://localhost:8000/api/v2/generate \\
 | `system_content` | string | null | System message for chat models |
 | `enable_thinking` | boolean | false | Enable deep thinking mode |
 | `debug_mode` | boolean | false | Enable debug mode for logging |
-            """
+            """,
         },
         "errors": {
             "title": "API Error Reference",
@@ -309,51 +309,48 @@ X-RateLimit-Remaining: 0
 X-RateLimit-Reset: 1620000000
 Retry-After: 60
 ```
-            """
-        }
+            """,
+        },
     }
-    
+
     @classmethod
     def get_section(cls, section_name: str) -> Dict[str, Any]:
         """
         Get documentation content for a specific section.
-        
+
         Args:
             section_name: Name of the documentation section
-            
+
         Returns:
             Dict with title and content of the section
         """
         if section_name in cls.docs:
             return cls.docs[section_name]
-        
+
         return {
             "title": "Documentation Not Found",
-            "content": f"No documentation found for section: {section_name}"
+            "content": f"No documentation found for section: {section_name}",
         }
-    
+
     @classmethod
     def get_all_sections(cls) -> Dict[str, Dict[str, str]]:
         """
         Get all documentation sections.
-        
+
         Returns:
             Dict mapping section names to content
         """
         return cls.docs
-    
+
     @classmethod
     def get_section_list(cls) -> List[Dict[str, str]]:
         """
         Get a list of available documentation sections.
-        
+
         Returns:
             List of section info dictionaries
         """
         return [
-            {
-                "name": name,
-                "title": content["title"]
-            }
+            {"name": name, "title": content["title"]}
             for name, content in cls.docs.items()
         ]

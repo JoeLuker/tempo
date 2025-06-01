@@ -229,7 +229,9 @@ class RoPEModifier(LoggingMixin):
             # Debug information if enabled
             if rope_modifier.debug_mode:
                 print(f"Custom forward called for {name}")
-                print(f"Args: {[a.shape if hasattr(a, 'shape') else a for a in args[:3]]}")
+                print(
+                    f"Args: {[a.shape if hasattr(a, 'shape') else a for a in args[:3]]}"
+                )
                 print(f"Kwargs keys: {list(kwargs.keys())}")
 
             # Create new args and kwargs to avoid modifying originals
@@ -319,36 +321,38 @@ class RoPEModifier(LoggingMixin):
         if not self.is_installed:
             print("Warning: RoPE modifier not installed yet. Call install() first.")
             return
-        
+
         if self.debug_mode:
             print(f"Registering parallel position mapping: {position_mapping}")
-        
+
         # Reset the sequence_position_map when updating position_map to avoid stale mappings
         self.sequence_position_map = {}
-        
+
         # Update the main position map
         self.position_map.update(position_mapping)
-        
+
         # Clear the embedding cache to force regeneration
         self.position_embedding_cache = {}
-        
+
         # Find all parallel token sets by grouping by target position
         parallel_sets = {}
         for physical_pos, logical_pos in position_mapping.items():
             if logical_pos not in parallel_sets:
                 parallel_sets[logical_pos] = []
             parallel_sets[logical_pos].append(physical_pos)
-        
+
         # Update parallel token sets
         for logical_pos, physical_positions in parallel_sets.items():
             self.parallel_token_sets[logical_pos] = physical_positions
-        
+
         # Sanity checks in debug mode
         if self.debug_mode:
             for logical_pos, physical_positions in parallel_sets.items():
                 if len(physical_positions) > 1:
-                    print(f"Set up parallel tokens at logical position {logical_pos} with {len(physical_positions)} physical positions: {physical_positions}")
-                
+                    print(
+                        f"Set up parallel tokens at logical position {logical_pos} with {len(physical_positions)} physical positions: {physical_positions}"
+                    )
+
     def apply_position_mapping(self, position_ids: torch.Tensor) -> torch.Tensor:
         """
         Apply position mapping to the position IDs tensor.
@@ -389,13 +393,19 @@ class RoPEModifier(LoggingMixin):
                         # Check that all tokens in this set have the same position ID
                         for batch_idx in range(position_ids.size(0)):
                             # Validate positions are within bounds of the tensor
-                            valid_positions = [pos for pos in positions if pos < position_ids.size(1)]
-                            
+                            valid_positions = [
+                                pos for pos in positions if pos < position_ids.size(1)
+                            ]
+
                             if len(valid_positions) > 1:
-                                pos_values = mapped_position_ids[batch_idx, valid_positions].tolist()
+                                pos_values = mapped_position_ids[
+                                    batch_idx, valid_positions
+                                ].tolist()
                                 if len(set(pos_values)) > 1:
                                     if self.debug_mode:
-                                        print(f"Ensuring position consistency in parallel set: {positions}")
+                                        print(
+                                            f"Ensuring position consistency in parallel set: {positions}"
+                                        )
                                     # Set all positions in the set to the same value (target_pos)
                                     for pos in valid_positions:
                                         mapped_position_ids[batch_idx, pos] = target_pos
@@ -422,9 +432,9 @@ class RoPEModifier(LoggingMixin):
             "_has_significant_position_changes is deprecated and will be removed in a future version. "
             "Position mapping for parallel tokens no longer requires KV cache resets in TEMPO.",
             DeprecationWarning,
-            stacklevel=2
+            stacklevel=2,
         )
-        
+
         # For TEMPO's usage pattern, the position mapping for parallel tokens
         # doesn't require a complete KV cache reset, so we always return False
         return False
@@ -468,7 +478,7 @@ class RoPEModifier(LoggingMixin):
             print("RoPE modifier debug mode enabled")
         else:
             print("RoPE modifier debug mode disabled")
-            
+
     def set_attention_manager(self, attention_manager):
         """
         Set the attention manager for coordination.
@@ -479,7 +489,7 @@ class RoPEModifier(LoggingMixin):
         self.attention_manager = attention_manager
         if self.debug_mode:
             print("RoPE modifier linked with attention manager")
-            
+
     def set_token_generator(self, token_generator):
         """
         Set the token generator for coordination.
@@ -490,25 +500,29 @@ class RoPEModifier(LoggingMixin):
         self.token_generator = token_generator
         if self.debug_mode:
             print("RoPE modifier linked with token generator")
-            
-    def add_parallel_position_mappings(self, position_idx: int, virtual_positions: List[int]):
+
+    def add_parallel_position_mappings(
+        self, position_idx: int, virtual_positions: List[int]
+    ):
         """
         Add mappings for parallel token positions at a specific index.
-        
+
         Args:
             position_idx: The base position index for the parallel tokens
             virtual_positions: List of virtual positions to map to the base position
         """
         if self.debug_mode:
-            print(f"Adding parallel position mappings: base={position_idx}, virtual={virtual_positions}")
-        
+            print(
+                f"Adding parallel position mappings: base={position_idx}, virtual={virtual_positions}"
+            )
+
         # Create position mappings
         for virtual_pos in virtual_positions:
             self.position_map[virtual_pos] = position_idx
-            
+
         # Track this parallel set
         # Store as a list of positions instead of a dictionary to match how it's used in apply_position_mapping
         self.parallel_token_sets[position_idx] = virtual_positions
-        
+
         # Clear the embedding cache for these positions
         self.position_embedding_cache = {}

@@ -5,8 +5,17 @@ import torch
 import json
 import numpy as np
 
-from api import app, ModelSingleton, GenerationResponse, TimingInfo, ModelInfo, StepInfo, TokenInfo
+from api import (
+    app,
+    ModelSingleton,
+    GenerationResponse,
+    TimingInfo,
+    ModelInfo,
+    StepInfo,
+    TokenInfo,
+)
 from src.generation.parallel_generator import ParallelGenerator
+
 
 @pytest.fixture
 def mock_generator_components():
@@ -20,9 +29,10 @@ def mock_generator_components():
         "generated_text": "[Mock] This is a test response",
         "raw_generated_text": "This is a test response",
         "token_sets": [
-            (0,  # logical_step
-             ([101, 2023], [0.9, 0.8]),  # original (ids, probs)
-             ([101], [0.9])  # pruned (ids, probs)
+            (
+                0,  # logical_step
+                ([101, 2023], [0.9, 0.8]),  # original (ids, probs)
+                ([101], [0.9]),  # pruned (ids, probs)
             )
         ],
         "all_original_token_sets": {0: [(101, 0.9), (2023, 0.8)]},
@@ -33,12 +43,13 @@ def mock_generator_components():
         "pruning_time": 0.05,
         "is_qwen_model": False,
         "had_repetition_loop": False,
-        "logical_layout": [(0, 0, 5), (1, 6, 6), (2, 7, 7)]
+        "logical_layout": [(0, 0, 5), (1, 6, 6), (2, 7, 7)],
     }
 
     # Mock tokenizer decode
     def mock_decode(token_ids, skip_special_tokens=True):
         return " ".join([f"tok{tid}" for tid in token_ids])
+
     mock_tokenizer.decode = mock_decode
 
     # Set device attribute for health check
@@ -46,15 +57,20 @@ def mock_generator_components():
 
     return mock_model, mock_tokenizer, mock_generator
 
+
 @pytest.fixture
 def client(mock_generator_components):
     """Create a test client with mocked ModelSingleton."""
     mock_model, mock_tokenizer, mock_generator = mock_generator_components
 
-    with patch('api.ModelSingleton.get_instance', return_value=(mock_model, mock_tokenizer, mock_generator)):
+    with patch(
+        "api.ModelSingleton.get_instance",
+        return_value=(mock_model, mock_tokenizer, mock_generator),
+    ):
         ModelSingleton.initialized = True
         yield TestClient(app)
     ModelSingleton.initialized = False
+
 
 class TestAPI:
     """Integration tests for the API."""
@@ -115,7 +131,10 @@ class TestAPI:
         assert "generation_time" in response_data["timing"]
         if request_data["use_retroactive_pruning"]:
             assert "retroactive_pruning" in response_data
-            assert response_data["retroactive_pruning"]["attention_threshold"] == request_data["attention_threshold"]
+            assert (
+                response_data["retroactive_pruning"]["attention_threshold"]
+                == request_data["attention_threshold"]
+            )
 
         mock_generator.generate.assert_called_once()
         args, kwargs = mock_generator.generate.call_args
@@ -123,20 +142,25 @@ class TestAPI:
         assert kwargs["prompt"] == request_data["prompt"]
         assert kwargs["max_tokens"] == request_data["max_tokens"]
         assert kwargs["threshold"] == request_data["threshold"]
-        assert kwargs["use_retroactive_pruning"] == request_data["use_retroactive_pruning"]
+        assert (
+            kwargs["use_retroactive_pruning"] == request_data["use_retroactive_pruning"]
+        )
         assert kwargs["debug_mode"] == request_data["debug_mode"]
         assert kwargs["retroactive_pruner"] is not None
 
     def test_generate_invalid_request(self, client):
         """Test text generation with invalid parameters."""
         # Test empty prompt
-        response = client.post("/api/generate", json={
-            "prompt": "",
-            "max_tokens": 50,
-            "threshold": 0.1,
-            "use_retroactive_pruning": False,
-            "debug_mode": False,
-        })
+        response = client.post(
+            "/api/generate",
+            json={
+                "prompt": "",
+                "max_tokens": 50,
+                "threshold": 0.1,
+                "use_retroactive_pruning": False,
+                "debug_mode": False,
+            },
+        )
         assert response.status_code == 422
         detail = response.json()["detail"]
         if isinstance(detail, list):
@@ -144,13 +168,16 @@ class TestAPI:
         assert "prompt cannot be empty" in detail.lower()
 
         # Test threshold out of range
-        response = client.post("/api/generate", json={
-            "prompt": "Test",
-            "max_tokens": 50,
-            "threshold": 2.0,
-            "use_retroactive_pruning": False,
-            "debug_mode": False,
-        })
+        response = client.post(
+            "/api/generate",
+            json={
+                "prompt": "Test",
+                "max_tokens": 50,
+                "threshold": 2.0,
+                "use_retroactive_pruning": False,
+                "debug_mode": False,
+            },
+        )
         assert response.status_code == 422
         detail = response.json()["detail"]
         if isinstance(detail, list):
@@ -164,6 +191,7 @@ class TestAPI:
         # Make generator raise an error during pruning setup
         def raise_error(*args, **kwargs):
             raise RuntimeError("Failed to initialize retroactive pruning")
+
         mock_generator.generate.side_effect = raise_error
 
         request_data = {
@@ -203,6 +231,7 @@ class TestAPI:
                 raise RuntimeError("MPS out of memory")
             else:
                 raise torch.cuda.OutOfMemoryError("CUDA out of memory")
+
         mock_generator.generate.side_effect = raise_oom_error
 
         request_data = {
@@ -231,7 +260,13 @@ class TestAPI:
         response = client.post("/api/generate", json=request_data)
         assert response.status_code == 500
         error_detail = response.json()["detail"]
-        assert any(msg in error_detail for msg in ["Generation failed: CUDA out of memory", "Generation failed: MPS out of memory"])
+        assert any(
+            msg in error_detail
+            for msg in [
+                "Generation failed: CUDA out of memory",
+                "Generation failed: MPS out of memory",
+            ]
+        )
 
     def test_generate_with_value_error(self, client, mock_generator_components):
         """Test handling of ValueError during generation."""
@@ -240,6 +275,7 @@ class TestAPI:
         # Make generator raise ValueError
         def raise_value_error(*args, **kwargs):
             raise ValueError("Invalid parameter combination")
+
         mock_generator.generate.side_effect = raise_value_error
 
         request_data = {
@@ -267,4 +303,7 @@ class TestAPI:
 
         response = client.post("/api/generate", json=request_data)
         assert response.status_code == 500
-        assert "Invalid generation parameters: Invalid parameter combination" in response.json()["detail"]
+        assert (
+            "Invalid generation parameters: Invalid parameter combination"
+            in response.json()["detail"]
+        )

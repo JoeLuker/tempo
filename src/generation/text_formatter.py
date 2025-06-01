@@ -542,12 +542,19 @@ class TextFormatter:
 
         return formatted_text + token_id_info
 
-    def format_using_layout(self, prompt: str, input_ids: List[int], logical_layout: List[Tuple[int, int, int]], 
-                           prompt_length: int, all_original_token_sets: Dict[int, List[Tuple[int, float]]], 
-                           tokenizer=None, show_token_ids: bool = False) -> str:
+    def format_using_layout(
+        self,
+        prompt: str,
+        input_ids: List[int],
+        logical_layout: List[Tuple[int, int, int]],
+        prompt_length: int,
+        all_original_token_sets: Dict[int, List[Tuple[int, float]]],
+        tokenizer=None,
+        show_token_ids: bool = False,
+    ) -> str:
         """
         Formats text using the logical layout and original parallel sets.
-        
+
         Args:
             prompt: Original prompt text
             input_ids: List of token IDs (the full sequence)
@@ -556,48 +563,48 @@ class TextFormatter:
             all_original_token_sets: Dictionary mapping logical positions to lists of (token_id, prob) tuples
             tokenizer: Tokenizer to use (defaults to self.tokenizer if None)
             show_token_ids: Whether to show token IDs in the output
-            
+
         Returns:
             Formatted text with bracketed parallel tokens
         """
         tokenizer = tokenizer or self.tokenizer
         formatted_parts = [prompt]
-        
+
         # Define ANSI color codes
-        RED = "\033[91m"      # Bright Red
-        BLUE = "\033[94m"     # Bright Blue
-        GREEN = "\033[92m"    # Bright Green
-        YELLOW = "\033[93m"   # Bright Yellow
+        RED = "\033[91m"  # Bright Red
+        BLUE = "\033[94m"  # Bright Blue
+        GREEN = "\033[92m"  # Bright Green
+        YELLOW = "\033[93m"  # Bright Yellow
         MAGENTA = "\033[95m"  # Bright Magenta
-        CYAN = "\033[96m"     # Bright Cyan
-        RESET = "\033[0m"     # Reset
-        BOLD = "\033[1m"      # Bold
-        
+        CYAN = "\033[96m"  # Bright Cyan
+        RESET = "\033[0m"  # Reset
+        BOLD = "\033[1m"  # Bold
+
         colors = [RED, BLUE, GREEN, YELLOW, MAGENTA, CYAN]
-        
+
         # Start processing after the prompt
         for layout_entry in logical_layout:
             logical_pos, start_idx, end_idx = layout_entry
-            
+
             # Skip prompt part of layout if present
             if start_idx < prompt_length:
                 continue  # Skip the prompt tokens
-            
+
             if start_idx > end_idx:
                 continue  # Skip empty steps
-            
+
             num_parallel = (end_idx - start_idx) + 1
-            physical_tokens_in_step = input_ids[start_idx:end_idx + 1]
-            
+            physical_tokens_in_step = input_ids[start_idx : end_idx + 1]
+
             # Get the original candidates for this logical step
             original_candidates = all_original_token_sets.get(logical_pos, [])
-            
+
             if num_parallel > 1 and original_candidates:
                 # This was a parallel step, use bracket notation
                 token_texts = []
                 # Use original candidates for display
                 display_candidates = original_candidates[:num_parallel]
-                
+
                 for i, (token_id, prob) in enumerate(display_candidates):
                     text = tokenizer.decode([token_id], skip_special_tokens=False)
                     # Clean up whitespace marker if needed
@@ -607,7 +614,7 @@ class TextFormatter:
                     if show_token_ids:
                         text_part += f"({token_id})"
                     token_texts.append(text_part)
-                    
+
                 joined = "/".join(token_texts)
                 formatted_parts.append(f"{BOLD}[{RESET}{joined}{BOLD}]{RESET}")
             else:
@@ -616,22 +623,25 @@ class TextFormatter:
                     text = tokenizer.decode([token_id], skip_special_tokens=False)
                     # Clean up whitespace marker if needed
                     text = text.replace("Ġ", " ").replace("▁", " ")
-                    
+
                     # Check if it was originally parallel but pruned to one
                     text_part = text
-                    if logical_pos in all_original_token_sets and len(all_original_token_sets[logical_pos]) > 1:
+                    if (
+                        logical_pos in all_original_token_sets
+                        and len(all_original_token_sets[logical_pos]) > 1
+                    ):
                         # This was pruned down from multiple options
                         text_part = f"{RED}{text}{RESET}"
-                        
+
                     if show_token_ids:
                         text_part += f"({token_id})"
-                        
+
                     formatted_parts.append(text_part)
-        
+
         # Join all parts, ensuring proper whitespace handling
         result = "".join(formatted_parts)
-        
+
         # Additional cleanup for different tokenizer quirks
         result = result.replace(" ", " ")  # Replace any non-breaking spaces
-        
+
         return result.strip()

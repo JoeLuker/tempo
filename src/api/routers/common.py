@@ -17,6 +17,7 @@ from src.api.schemas.health import HealthResponse
 # Create router with common tag
 router = APIRouter(prefix="/api", tags=["Common"])
 
+
 @router.get(
     "/",
     summary="API Root",
@@ -24,15 +25,16 @@ router = APIRouter(prefix="/api", tags=["Common"])
     response_description="A simple message indicating that the API is running.",
     response_model=Dict[str, str],
     status_code=status.HTTP_200_OK,
-    tags=["Health"]
+    tags=["Health"],
 )
 async def root():
     """API root endpoint for basic connectivity test."""
     return {
-        "message": "TEMPO API is running", 
+        "message": "TEMPO API is running",
         "status": "healthy",
-        "version": config.api.api_version
+        "version": config.api.api_version,
     }
+
 
 @router.get(
     "/health",
@@ -41,12 +43,12 @@ async def root():
     response_description="Health status of the API and model components.",
     response_model=HealthResponse,
     status_code=status.HTTP_200_OK,
-    tags=["Health"]
+    tags=["Health"],
 )
 async def health_check():
     """
     Health check endpoint to verify API and model status.
-    
+
     Returns:
         HealthResponse: Health status information
     """
@@ -61,11 +63,13 @@ async def health_check():
                 token_generator_initialized=False,
                 generator_has_token_generator=False,
                 model_initialized_at=None,
-                error="Model is not yet initialized"
+                error="Model is not yet initialized",
             )
 
         # Verify components exist
-        model_wrapper, tokenizer, generator, token_generator = ModelSingleton.get_instance()
+        model_wrapper, tokenizer, generator, token_generator = (
+            ModelSingleton.get_instance()
+        )
 
         return HealthResponse(
             status="healthy",
@@ -73,14 +77,16 @@ async def health_check():
             model_name=ModelSingleton.last_loaded_model or config.model.model_id,
             device=generator.device if hasattr(generator, "device") else "unknown",
             token_generator_initialized=token_generator is not None,
-            generator_has_token_generator=hasattr(generator, 'token_generator') and generator.token_generator is not None,
-            model_initialized_at=ModelSingleton.initialization_time
+            generator_has_token_generator=hasattr(generator, "token_generator")
+            and generator.token_generator is not None,
+            model_initialized_at=ModelSingleton.initialization_time,
         )
     except Exception as e:
         import logging
+
         logger = logging.getLogger("tempo-api")
         logger.error(f"Health check failed: {str(e)}")
-        
+
         return HealthResponse(
             status="unhealthy",
             model_loaded=False,
@@ -88,8 +94,9 @@ async def health_check():
             device="<error>",
             token_generator_initialized=False,
             generator_has_token_generator=False,
-            error=str(e)
+            error=str(e),
         )
+
 
 @router.get(
     "/versions",
@@ -97,12 +104,12 @@ async def health_check():
     description="Returns version information for the API and components.",
     response_description="Version information.",
     status_code=status.HTTP_200_OK,
-    tags=["System"]
+    tags=["System"],
 )
 async def get_versions():
     """
     Get version information for the API and components.
-    
+
     Returns:
         Dict: Version information
     """
@@ -112,9 +119,9 @@ async def get_versions():
         "fastapi": None,
         "transformers": None,
         "pydantic": None,
-        "uvicorn": None
+        "uvicorn": None,
     }
-    
+
     # Get package versions
     for package in packages.keys():
         try:
@@ -122,10 +129,10 @@ async def get_versions():
             packages[package] = version
         except pkg_resources.DistributionNotFound:
             packages[package] = "not installed"
-    
+
     return {
         "api_version": config.api.api_version,
         "default_model": config.model.model_id,
         "packages": packages,
-        "python_version": sys.version
+        "python_version": sys.version,
     }

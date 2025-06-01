@@ -531,10 +531,7 @@ class TokenSelector(LoggingMixin):
         ]
 
     def select_tokens(
-        self, 
-        next_token_logits: torch.Tensor, 
-        threshold: float, 
-        max_tokens: int = 25
+        self, next_token_logits: torch.Tensor, threshold: float, max_tokens: int = 25
     ) -> Tuple[List[Tuple[torch.Tensor, float]], int]:
         """
         Select tokens with probabilities above the threshold.
@@ -553,38 +550,42 @@ class TokenSelector(LoggingMixin):
         """
         if self.debug_mode:
             self.log(f"select_tokens called with threshold {threshold}")
-            
+
         # Call the existing method to get token IDs and probabilities
         token_ids, token_probs = self.select_tokens_above_threshold(
-            next_token_logits, 
-            threshold, 
-            max_tokens
+            next_token_logits, threshold, max_tokens
         )
-        
+
         # If no tokens were selected, fall back to the top token
         if len(token_ids) == 0:
             if self.debug_mode:
-                self.log(f"No tokens above threshold {threshold}, falling back to top token")
-            
+                self.log(
+                    f"No tokens above threshold {threshold}, falling back to top token"
+                )
+
             # Get the top token regardless of threshold
             top_ids, top_probs = self.select_top_tokens(next_token_logits, top_k=1)
             token_ids = top_ids
             token_probs = top_probs
-            
+
             if self.debug_mode:
-                token_text = self.tokenizer.decode([int(token_ids[0])], skip_special_tokens=False)
-                self.log(f"Selected top token: '{token_text}' (ID: {int(token_ids[0])}) with prob: {token_probs[0]:.6f}")
-        
+                token_text = self.tokenizer.decode(
+                    [int(token_ids[0])], skip_special_tokens=False
+                )
+                self.log(
+                    f"Selected top token: '{token_text}' (ID: {int(token_ids[0])}) with prob: {token_probs[0]:.6f}"
+                )
+
         # Convert to the format expected by ParallelGenerator
         token_data = []
         for token_id, prob in zip(token_ids, token_probs):
             # Create tensor for token ID
             token_tensor = torch.tensor(token_id, device=next_token_logits.device)
             token_data.append((token_tensor, prob))
-            
+
         subset_size = len(token_data)
-        
+
         if self.debug_mode:
             self.log(f"Returning {subset_size} tokens above threshold {threshold}")
-            
+
         return token_data, subset_size
