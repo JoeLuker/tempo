@@ -18,6 +18,11 @@
   import { Tabs, TabsContent, TabsList, TabsTrigger } from '$lib/components/ui/tabs';
   import { Checkbox } from '$lib/components/ui/checkbox';
   import { Toggle } from '$lib/components/ui/toggle';
+  import SettingSection from '$lib/components/ui/setting-section.svelte';
+  import EnhancedPresetCard from '$lib/components/ui/enhanced-preset-card.svelte';
+  import RichTooltip from '$lib/components/ui/rich-tooltip.svelte';
+  import { getSettingHelp, getCoreSettings } from '$lib/data/settingsHelp';
+  import { PRESET_DEFINITIONS, getBeginnerPresets } from '$lib/data/presetDefinitions';
 
   type AnsiColorMap = Record<string, string>;
 
@@ -437,6 +442,36 @@
   // Track active tab for keyboard navigation
   let activeTab = 'basic';
   
+  // Interface mode for progressive disclosure
+  let interfaceMode = 'beginner'; // 'beginner' | 'intermediate' | 'expert'
+  
+  // Current active preset
+  let activePreset = 'default';
+  
+  // Get help content for settings
+  function getHelp(settingId: string) {
+    return getSettingHelp(settingId);
+  }
+  
+  // Apply preset function
+  function applyPreset(presetId: string) {
+    const preset = PRESET_DEFINITIONS[presetId];
+    if (!preset) return;
+    
+    activePreset = presetId;
+    
+    // Apply all preset settings
+    Object.entries(preset.settings).forEach(([key, value]) => {
+      updateSetting(key as any, value);
+    });
+    
+    // Update slider arrays for reactive components
+    maxTokensSlider = [preset.settings.maxTokens || $settings.maxTokens];
+    selectionThresholdSlider = [preset.settings.selectionThreshold || $settings.selectionThreshold];
+    attentionThresholdSlider = [preset.settings.attentionThreshold || $settings.attentionThreshold];
+    // ... update other sliders as needed
+  }
+  
   // Handle window resize and register keyboard shortcuts
   let unregisterShortcuts: () => void;
   
@@ -485,15 +520,186 @@
         <CardDescription>Enter your prompt and adjust generation parameters</CardDescription>
       </CardHeader>
       <CardContent class="flex flex-col">
-        <!-- Mobile-friendly tab navigation -->
-        <Tabs bind:value={activeTab} class="w-full">
-          <TabsList class="grid w-full grid-cols-3 mb-4">
-            <TabsTrigger value="basic" class="text-sm sm:text-base">Basic</TabsTrigger>
-            <TabsTrigger value="mcts" class="text-sm sm:text-base">MCTS</TabsTrigger>
-            <TabsTrigger value="advanced" class="text-sm sm:text-base">Advanced</TabsTrigger>
-          </TabsList>
+        <!-- Interface Mode Toggle -->
+        <div class="mb-6">
+          <div class="flex items-center justify-between mb-4">
+            <h3 class="text-sm font-medium text-gray-700 dark:text-gray-300">Interface Mode</h3>
+            <div class="flex rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 p-1">
+              <button 
+                class="px-3 py-1 text-xs font-medium rounded-md transition-colors {interfaceMode === 'beginner' ? 'bg-white dark:bg-gray-700 text-primary shadow-sm' : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200'}"
+                on:click={() => interfaceMode = 'beginner'}
+              >
+                Beginner
+              </button>
+              <button 
+                class="px-3 py-1 text-xs font-medium rounded-md transition-colors {interfaceMode === 'intermediate' ? 'bg-white dark:bg-gray-700 text-primary shadow-sm' : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200'}"
+                on:click={() => interfaceMode = 'intermediate'}
+              >
+                Intermediate
+              </button>
+              <button 
+                class="px-3 py-1 text-xs font-medium rounded-md transition-colors {interfaceMode === 'expert' ? 'bg-white dark:bg-gray-700 text-primary shadow-sm' : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200'}"
+                on:click={() => interfaceMode = 'expert'}
+              >
+                Expert
+              </button>
+            </div>
+          </div>
+        </div>
 
+        <!-- Quick Start Section -->
+        {#if interfaceMode === 'beginner' || interfaceMode === 'intermediate'}
+          <div class="mb-6">
+            <h3 class="text-lg font-semibold mb-3 flex items-center gap-2">
+              🚀 Quick Start
+            </h3>
+            <p class="text-sm text-gray-600 dark:text-gray-400 mb-4">
+              Choose a preset optimized for your task, then customize if needed.
+            </p>
+            
+            <!-- Preset Cards -->
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-6">
+              {#each getBeginnerPresets() as preset}
+                <div data-testid="preset-card">
+                  <EnhancedPresetCard
+                    name={preset.name}
+                    description={preset.description}
+                    icon={preset.icon}
+                    settings={preset.settings}
+                    performance={preset.performance}
+                    bestFor={preset.bestFor}
+                    technicalNote={preset.technicalNote}
+                    difficulty={preset.difficulty}
+                    estimatedTime={preset.estimatedTime}
+                    isActive={activePreset === preset.id}
+                    onApply={() => applyPreset(preset.id)}
+                  />
+                </div>
+              {/each}
+            </div>
+          </div>
+        {/if}
+
+        <!-- Progressive Settings Interface -->
+        {#if interfaceMode === 'expert'}
+          <!-- Mobile-friendly tab navigation for expert mode -->
+          <Tabs bind:value={activeTab} class="w-full">
+            <TabsList class="grid w-full grid-cols-3 mb-4">
+              <TabsTrigger value="basic" class="text-sm sm:text-base">Basic</TabsTrigger>
+              <TabsTrigger value="mcts" class="text-sm sm:text-base">MCTS</TabsTrigger>
+              <TabsTrigger value="advanced" class="text-sm sm:text-base">Advanced</TabsTrigger>
+            </TabsList>
+        {:else}
+          <!-- Progressive disclosure for beginner/intermediate -->
+          <div class="space-y-4">
+
+            <!-- Prompt Input - Always Visible -->
+            <SettingSection 
+              title="Prompt & Generation" 
+              description="Enter your prompt and control basic generation parameters"
+              icon="💬"
+              category="core"
+              importance="essential"
+              defaultOpen={true}
+            >
+              <div class="space-y-4">
+                <div>
+                  <label for="prompt" class="block text-sm font-medium mb-2">Prompt</label>
+                  <Textarea
+                    id="prompt"
+                    bind:value={prompt}
+                    placeholder="Enter your prompt here..."
+                    rows={4}
+                    class="w-full min-h-[120px] text-base"
+                  />
+                </div>
+
+                <div>
+                  <div class="flex items-center gap-1 mb-1">
+                    <label for="maxTokens" class="block text-sm font-medium">Max Tokens</label>
+                    {#if getHelp('maxTokens')}
+                      <RichTooltip helpContent={getHelp('maxTokens')} />
+                    {/if}
+                  </div>
+                  <Slider
+                    id="maxTokens"
+                    bind:value={maxTokensSlider}
+                    min={1}
+                    max={500}
+                    step={1}
+                  />
+                  <div class="text-sm text-gray-500 mt-1">{maxTokensSlider[0]} tokens (~{Math.round(maxTokensSlider[0] * 0.75)} words)</div>
+                </div>
+
+                <div>
+                  <div class="flex items-center gap-1 mb-1">
+                    <label for="selectionThreshold" class="block text-sm font-medium">Selection Threshold</label>
+                    {#if getHelp('selectionThreshold')}
+                      <RichTooltip helpContent={getHelp('selectionThreshold')} />
+                    {/if}
+                  </div>
+                  <Slider
+                    id="selectionThreshold"
+                    bind:value={selectionThresholdSlider}
+                    min={0.01}
+                    max={0.5}
+                    step={0.01}
+                  />
+                  <div class="text-sm text-gray-500 mt-1">{selectionThresholdSlider[0].toFixed(2)}</div>
+                </div>
+              </div>
+            </SettingSection>
+
+            <!-- Core Settings for Intermediate+ -->
+            {#if interfaceMode !== 'beginner'}
+              <SettingSection 
+                title="Pruning & Refinement" 
+                description="Control how TEMPO refines and improves generated content"
+                icon="✂️"
+                category="pruning"
+                importance="important"
+                defaultOpen={interfaceMode === 'intermediate'}
+              >
+                <div class="space-y-4">
+                  <div class="flex items-center space-x-2">
+                    <Switch 
+                      id="useRetroactivePruning" 
+                      checked={$settings.useRetroactivePruning}
+                      onCheckedChange={(checked) => updateSetting('useRetroactivePruning', checked)}
+                    />
+                    <label for="useRetroactivePruning" class="text-sm font-medium">Use Retroactive Pruning</label>
+                    {#if getHelp('useRetroactivePruning')}
+                      <RichTooltip helpContent={getHelp('useRetroactivePruning')} />
+                    {/if}
+                  </div>
+
+                  {#if $settings.useRetroactivePruning}
+                    <div class="pl-4 mt-2 space-y-2 border-l-2 border-gray-200 dark:border-gray-700">
+                      <div class="flex items-center gap-1 mb-1">
+                        <label for="attentionThreshold" class="block text-sm font-medium">Attention Threshold</label>
+                        {#if getHelp('attentionThreshold')}
+                          <RichTooltip helpContent={getHelp('attentionThreshold')} />
+                        {/if}
+                      </div>
+                      <Slider
+                        id="attentionThreshold"
+                        bind:value={attentionThresholdSlider}
+                        min={0.001}
+                        max={0.1}
+                        step={0.001}
+                      />
+                      <div class="text-sm text-gray-500 mt-1">{attentionThresholdSlider[0].toFixed(3)}</div>
+                    </div>
+                  {/if}
+                </div>
+              </SettingSection>
+            {/if}
+          </div>
+        {/if}
+        
+        {#if interfaceMode === 'expert'}
           <TabsContent value="basic" class="space-y-5">
+            <!-- Expert mode keeps the original tabbed interface -->
             <div>
               <label for="prompt" class="block text-sm font-medium mb-2">Prompt</label>
               <Textarea
@@ -506,19 +712,29 @@
             </div>
 
             <div>
-              <label for="maxTokens" class="block text-sm font-medium mb-1">Max Tokens</label>
+              <div class="flex items-center gap-1 mb-1">
+                <label for="maxTokens" class="block text-sm font-medium">Max Tokens</label>
+                {#if getHelp('maxTokens')}
+                  <RichTooltip helpContent={getHelp('maxTokens')} />
+                {/if}
+              </div>
               <Slider
                 id="maxTokens"
                 bind:value={maxTokensSlider}
                 min={1}
-                max={200}
+                max={500}
                 step={1}
               />
               <div class="text-sm text-gray-500 mt-1">{maxTokensSlider[0]} tokens</div>
             </div>
 
             <div>
-              <label for="selectionThreshold" class="block text-sm font-medium mb-1">Selection Threshold</label>
+              <div class="flex items-center gap-1 mb-1">
+                <label for="selectionThreshold" class="block text-sm font-medium">Selection Threshold</label>
+                {#if getHelp('selectionThreshold')}
+                  <RichTooltip helpContent={getHelp('selectionThreshold')} />
+                {/if}
+              </div>
               <Slider
                 id="selectionThreshold"
                 bind:value={selectionThresholdSlider}
@@ -527,7 +743,6 @@
                 step={0.01}
               />
               <div class="text-sm text-gray-500 mt-1">{selectionThresholdSlider[0].toFixed(2)}</div>
-              <p class="text-xs text-gray-400 mt-1">Probability threshold for initial token candidate selection</p>
             </div>
 
             <div class="flex items-center space-x-2">
@@ -537,11 +752,19 @@
                 onCheckedChange={(checked) => updateSetting('useRetroactivePruning', checked)}
               />
               <label for="useRetroactivePruning" class="text-sm font-medium">Use Retroactive Pruning</label>
+              {#if getHelp('useRetroactivePruning')}
+                <RichTooltip helpContent={getHelp('useRetroactivePruning')} />
+              {/if}
             </div>
 
             {#if $settings.useRetroactivePruning}
             <div class="pl-4 mt-2 space-y-2 border-l-2 border-gray-200">
-              <label for="attentionThreshold" class="block text-sm font-medium mb-1">Attention Threshold</label>
+              <div class="flex items-center gap-1 mb-1">
+                <label for="attentionThreshold" class="block text-sm font-medium">Attention Threshold</label>
+                {#if getHelp('attentionThreshold')}
+                  <RichTooltip helpContent={getHelp('attentionThreshold')} />
+                {/if}
+              </div>
               <Slider
                 id="attentionThreshold"
                 bind:value={attentionThresholdSlider}
@@ -550,7 +773,6 @@
                 step={0.001}
               />
               <div class="text-sm text-gray-500 mt-1">{attentionThresholdSlider[0].toFixed(3)}</div>
-              <p class="text-xs text-gray-400 mt-1">Threshold for pruning past steps based on attention</p>
             </div>
             {/if}
 
@@ -561,10 +783,13 @@
                 onCheckedChange={(checked) => updateSetting('debugMode', checked)}
               />
               <label for="debugMode" class="text-sm font-medium">Debug Mode</label>
+              {#if getHelp('debugMode')}
+                <RichTooltip helpContent={getHelp('debugMode')} />
+              {/if}
             </div>
             
             <div class="mt-6 pt-4 border-t border-border">
-              <h3 class="text-sm font-medium mb-3">Presets</h3>
+              <h3 class="text-sm font-medium mb-3">Legacy Presets</h3>
               <div class="flex flex-wrap gap-2 justify-start">
                 <Button variant="outline" size="sm" on:click={() => presets.default()} class="flex-grow sm:flex-grow-0">
                   Default
@@ -590,24 +815,37 @@
                 onCheckedChange={(checked) => updateSetting('useMcts', checked)}
               />
               <label for="useMcts" class="text-sm font-medium">Use MCTS</label>
+              {#if getHelp('useMcts')}
+                <RichTooltip helpContent={getHelp('useMcts')} />
+              {/if}
             </div>
 
             {#if $settings.useMcts}
             <div class="pl-4 mt-2 space-y-4 border-l-2 border-gray-200">
               <div>
-                <label for="mctsSimulations" class="block text-sm font-medium mb-1">MCTS Simulations</label>
+                <div class="flex items-center gap-1 mb-1">
+                  <label for="mctsSimulations" class="block text-sm font-medium">MCTS Simulations</label>
+                  {#if getHelp('mctsSimulations')}
+                    <RichTooltip helpContent={getHelp('mctsSimulations')} />
+                  {/if}
+                </div>
                 <Slider
                   id="mctsSimulations"
                   bind:value={mctsSimulationsSlider}
-                  min={1}
-                  max={100}
-                  step={1}
+                  min={5}
+                  max={200}
+                  step={5}
                 />
                 <div class="text-sm text-gray-500 mt-1">{mctsSimulationsSlider[0]} simulations</div>
               </div>
 
               <div>
-                <label for="mctsCPuct" class="block text-sm font-medium mb-1">MCTS C_PUCT</label>
+                <div class="flex items-center gap-1 mb-1">
+                  <label for="mctsCPuct" class="block text-sm font-medium">MCTS C_PUCT</label>
+                  {#if getHelp('mctsCPuct')}
+                    <RichTooltip helpContent={getHelp('mctsCPuct')} />
+                  {/if}
+                </div>
                 <Slider
                   id="mctsCPuct"
                   bind:value={mctsCPuctSlider}
@@ -619,11 +857,16 @@
               </div>
 
               <div>
-                <label for="mctsDepth" class="block text-sm font-medium mb-1">MCTS Depth</label>
+                <div class="flex items-center gap-1 mb-1">
+                  <label for="mctsDepth" class="block text-sm font-medium">MCTS Depth</label>
+                  {#if getHelp('mctsDepth')}
+                    <RichTooltip helpContent={getHelp('mctsDepth')} />
+                  {/if}
+                </div>
                 <Slider
                   id="mctsDepth"
                   bind:value={mctsDepthSlider}
-                  min={1}
+                  min={2}
                   max={20}
                   step={1}
                 />
@@ -639,17 +882,25 @@
                 onCheckedChange={(checked) => updateSetting('dynamicThreshold', checked)}
               />
               <label for="dynamicThreshold" class="text-sm font-medium">Use Dynamic Threshold</label>
+              {#if getHelp('dynamicThreshold')}
+                <RichTooltip helpContent={getHelp('dynamicThreshold')} />
+              {/if}
             </div>
 
             {#if $settings.dynamicThreshold}
             <div class="pl-4 mt-2 space-y-4 border-l-2 border-gray-200">
               <div>
-                <label for="finalThreshold" class="block text-sm font-medium mb-1">Final Threshold</label>
+                <div class="flex items-center gap-1 mb-1">
+                  <label for="finalThreshold" class="block text-sm font-medium">Final Threshold</label>
+                  {#if getHelp('finalThreshold')}
+                    <RichTooltip helpContent={getHelp('finalThreshold')} />
+                  {/if}
+                </div>
                 <Slider
                   id="finalThreshold"
                   bind:value={finalThresholdSlider}
-                  min={0}
-                  max={1}
+                  min={0.01}
+                  max={0.5}
                   step={0.01}
                 />
                 <div class="text-sm text-gray-500 mt-1">{finalThresholdSlider[0].toFixed(2)}</div>
@@ -709,20 +960,34 @@
               <div class="flex items-center space-x-2">
                 <Switch id="useCustomRope" bind:checked={useCustomRope} />
                 <label for="useCustomRope" class="text-sm font-medium">Use Custom RoPE</label>
+                {#if getHelp('useCustomRope')}
+                  <RichTooltip helpContent={getHelp('useCustomRope')} />
+                {/if}
               </div>
 
               <div class="flex items-center space-x-2">
                 <Switch id="disableKvCache" bind:checked={disableKvCache} />
                 <label for="disableKvCache" class="text-sm font-medium">Disable KV Cache</label>
+                {#if getHelp('disableKvCache')}
+                  <RichTooltip helpContent={getHelp('disableKvCache')} />
+                {/if}
               </div>
 
               <div class="flex items-center space-x-2">
                 <Switch id="showTokenIds" bind:checked={showTokenIds} />
                 <label for="showTokenIds" class="text-sm font-medium">Show Token IDs</label>
+                {#if getHelp('showTokenIds')}
+                  <RichTooltip helpContent={getHelp('showTokenIds')} />
+                {/if}
               </div>
 
               <div>
-                <label for="systemContent" class="block text-sm font-medium mb-1">System Content</label>
+                <div class="flex items-center gap-1 mb-1">
+                  <label for="systemContent" class="block text-sm font-medium">System Content</label>
+                  {#if getHelp('systemContent')}
+                    <RichTooltip helpContent={getHelp('systemContent')} />
+                  {/if}
+                </div>
                 <Textarea
                   id="systemContent"
                   bind:value={systemContent}
@@ -734,6 +999,9 @@
               <div class="flex items-center space-x-2">
                 <Switch id="enableThinking" bind:checked={enableThinking} />
                 <label for="enableThinking" class="text-sm font-medium">Enable Thinking</label>
+                {#if getHelp('enableThinking')}
+                  <RichTooltip helpContent={getHelp('enableThinking')} />
+                {/if}
               </div>
 
               <div class="flex items-center space-x-2">
@@ -824,13 +1092,15 @@
               </div>
             </div>
           </TabsContent>
-        </Tabs>
+          </Tabs>
+        {/if}
 
         <Button
           on:click={generateText}
           disabled={isGenerating}
           class="w-full mt-6 py-6 text-lg relative"
           variant={isGenerating ? "outline" : "default"}
+          data-testid="generate-button"
         >
           {#if isGenerating}
             <div class="flex items-center justify-center gap-2">
@@ -903,7 +1173,7 @@
           <div class="space-y-4">
             <div>
               <h3 class="text-lg font-medium mb-2">Generated Text</h3>
-              <div class="bg-gray-100 dark:bg-gray-800 p-4 rounded overflow-auto max-h-[300px]">
+              <div class="bg-gray-100 dark:bg-gray-800 p-4 rounded overflow-auto max-h-[300px]" data-testid="generated-text">
                 {@html ansiToHtml(apiResponse.generated_text)}
               </div>
             </div>
@@ -954,7 +1224,8 @@
                 <h3 class="text-lg font-medium mb-2">Token Visualization</h3>
                 <div
                   bind:this={chartContainer}
-                  class="w-full h-[400px]"
+                  class="w-full h-[400px] chart-container"
+                  data-testid="visualization-chart"
                 />
               </div>
             {/if}
