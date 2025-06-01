@@ -252,13 +252,37 @@ start_frontend_docker() {
         return 1
     fi
     
+    # Check if docker-compose.yml exists
+    if [ ! -f "docker-compose.yml" ]; then
+        print_error "docker-compose.yml not found in frontend directory"
+        cd ..
+        return 1
+    fi
+    
+    # Stop any existing containers first to avoid conflicts
+    print_status "Checking for existing containers..."
+    docker-compose down --remove-orphans 2>/dev/null || true
+    
+    # Small delay to let Docker clean up
+    sleep 2
+    
     if [ "$PRODUCTION" = true ]; then
         print_status "Starting frontend in production mode with Docker..."
-        docker-compose up frontend-prod -d
+        # Use docker compose (v2) instead of docker-compose if available
+        if command -v "docker compose" > /dev/null 2>&1; then
+            docker compose up frontend-prod -d
+        else
+            docker-compose up frontend-prod -d
+        fi
         FRONTEND_URL="http://localhost:3000"
     else
         print_status "Starting frontend in development mode with Docker..."
-        docker-compose up frontend-dev -d
+        # Use docker compose (v2) instead of docker-compose if available
+        if command -v "docker compose" > /dev/null 2>&1; then
+            docker compose up frontend-dev -d
+        else
+            docker-compose up frontend-dev -d
+        fi
         FRONTEND_URL="http://localhost:5173"
     fi
     
@@ -272,7 +296,11 @@ start_frontend_docker() {
         sleep 1
         if [ $i -eq 60 ]; then
             print_warning "Frontend health check failed, checking Docker status..."
-            docker-compose ps
+            if command -v "docker compose" > /dev/null 2>&1; then
+                docker compose ps
+            else
+                docker-compose ps
+            fi
             cd ..
             return 1
         fi
@@ -305,7 +333,13 @@ cleanup() {
     
     if [ "$USE_DOCKER" = true ]; then
         cd frontend 2>/dev/null || true
-        docker-compose down 2>/dev/null || true
+        print_status "Stopping Docker containers..."
+        # Use docker compose (v2) instead of docker-compose if available
+        if command -v "docker compose" > /dev/null 2>&1; then
+            docker compose down --remove-orphans 2>/dev/null || true
+        else
+            docker-compose down --remove-orphans 2>/dev/null || true
+        fi
         cd .. 2>/dev/null || true
         print_success "Docker containers stopped"
     fi

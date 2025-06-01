@@ -1,0 +1,16 @@
+version: '3.8'
+
+services:
+  # Frontend Development Server (Simplified)
+  frontend-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: development
+    ports:
+      - "5173:5173"
+    volumes:
+      - .:/app
+      - /app/node_modules
+    environment:
+      - NODE_ENV=development
