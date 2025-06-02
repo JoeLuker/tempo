@@ -92,3 +92,37 @@ export function renderFormattedOutput(text: string): string {
   
   return html;
 }
+
+export function renderInteractiveTokens(text: string): string {
+  const sections = formatParallelTokens(text);
+  let html = '';
+  
+  sections.forEach(section => {
+    if (section.type === 'text') {
+      html += section.content;
+    } else if (section.type === 'parallel' && section.tokens && section.tokens.length > 0) {
+      const primaryToken = section.tokens[0];
+      const alternatives = section.tokens.slice(1);
+      
+      if (alternatives.length === 0) {
+        // No alternatives, just show the token
+        html += primaryToken;
+      } else {
+        // Has alternatives, make it interactive
+        html += `<span class="token-choice" data-alternatives="${alternatives.map(t => t.replace(/"/g, '&quot;')).join('|')}">`;
+        html += `<span class="chosen-token">${primaryToken}</span>`;
+        html += `<span class="alternatives-popup">`;
+        html += `<div class="popup-header">Alternative tokens considered:</div>`;
+        html += `<div class="alternatives-list">`;
+        alternatives.forEach(alt => {
+          html += `<div class="alternative-token">${alt}</div>`;
+        });
+        html += `</div>`;
+        html += `</span>`;
+        html += `</span>`;
+      }
+    }
+  });
+  
+  return html;
+}

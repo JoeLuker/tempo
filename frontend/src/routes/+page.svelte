@@ -17,7 +17,7 @@
   import SimpleTooltip from '$lib/components/ui/simple-tooltip.svelte';
   import { getSettingHelp } from '$lib/data/settingsHelp';
   import TokenTree from '$lib/components/TokenTree.svelte';
-  import { formatCleanText, renderFormattedOutput } from '$lib/utils/formatOutput';
+  import { formatCleanText, renderFormattedOutput, renderInteractiveTokens } from '$lib/utils/formatOutput';
 
   type AnsiColorMap = Record<string, string>;
 
@@ -1029,19 +1029,20 @@
             <TabsContent value="text" class="space-y-4">
               <div>
                 <h3 class="text-lg font-medium mb-2">Generated Text</h3>
-                <div class="bg-gray-100 dark:bg-gray-800 p-4 rounded overflow-auto max-h-[400px]" data-testid="generated-text">
-                  <pre class="whitespace-pre-wrap font-mono text-sm">{formatCleanText(apiResponse.clean_text || apiResponse.raw_generated_text)}</pre>
-                </div>
-                
-                {#if apiResponse.generated_text}
-                  <details class="mt-2">
-                    <summary class="text-sm text-gray-600 dark:text-gray-400 cursor-pointer hover:text-gray-800 dark:hover:text-gray-200">
-                      Show parallel token exploration
-                    </summary>
-                    <div class="bg-gray-100 dark:bg-gray-800 p-4 rounded overflow-auto max-h-[300px] mt-2 formatted-output">
-                      {@html renderFormattedOutput(apiResponse.generated_text)}
+                {#if apiResponse.clean_text}
+                  <div class="bg-gray-100 dark:bg-gray-800 p-6 rounded-lg overflow-auto max-h-[500px]" data-testid="generated-text">
+                    <p class="text-base leading-relaxed whitespace-pre-wrap">{apiResponse.clean_text}</p>
+                  </div>
+                {:else if apiResponse.generated_text}
+                  <!-- Interactive token display -->
+                  <div class="bg-gray-50 dark:bg-gray-900 p-6 rounded-lg overflow-auto max-h-[500px]">
+                    <div class="token-display text-base leading-relaxed">
+                      {@html renderInteractiveTokens(apiResponse.generated_text)}
                     </div>
-                  </details>
+                  </div>
+                  <div class="mt-2 text-sm text-gray-600 dark:text-gray-400">
+                    <p>Hover over highlighted sections to see alternative tokens that were considered</p>
+                  </div>
                 {/if}
               </div>
             </TabsContent>
@@ -1215,40 +1216,95 @@
     border: 2px solid hsl(var(--background));
   }
   
-  /* Formatted output styles */
-  :global(.formatted-output) {
+  /* Interactive token display */
+  :global(.token-display) {
+    font-size: 1.125rem;
+    color: hsl(var(--foreground));
+  }
+  
+  :global(.token-choice) {
+    position: relative;
+    display: inline;
+  }
+  
+  :global(.chosen-token) {
+    background-color: hsl(var(--primary) / 0.1);
+    border-bottom: 2px solid hsl(var(--primary));
+    padding: 2px 4px;
+    border-radius: 4px;
+    cursor: help;
+    transition: all 0.2s ease;
+  }
+  
+  :global(.token-choice:hover .chosen-token) {
+    background-color: hsl(var(--primary) / 0.2);
+  }
+  
+  :global(.alternatives-popup) {
+    position: absolute;
+    bottom: 100%;
+    left: 50%;
+    transform: translateX(-50%) translateY(-8px);
+    background: white;
+    border: 1px solid hsl(var(--border));
+    border-radius: 8px;
+    padding: 12px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+    opacity: 0;
+    visibility: hidden;
+    transition: all 0.2s ease;
+    z-index: 1000;
+    min-width: 200px;
+    max-width: 300px;
+  }
+  
+  :global(.dark .alternatives-popup) {
+    background: hsl(var(--card));
+  }
+  
+  :global(.token-choice:hover .alternatives-popup) {
+    opacity: 1;
+    visibility: visible;
+  }
+  
+  :global(.popup-header) {
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: hsl(var(--muted-foreground));
+    margin-bottom: 8px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  
+  :global(.alternatives-list) {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  
+  :global(.alternative-token) {
+    padding: 4px 8px;
+    background-color: hsl(var(--muted));
+    border-radius: 4px;
+    font-size: 0.875rem;
     font-family: monospace;
-    line-height: 1.6;
   }
   
-  :global(.formatted-output .parallel-tokens) {
-    display: inline-block;
-    margin: 0 2px;
-    padding: 2px 0;
+  /* Arrow pointing down from popup */
+  :global(.alternatives-popup::after) {
+    content: '';
+    position: absolute;
+    top: 100%;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 0;
+    height: 0;
+    border-left: 8px solid transparent;
+    border-right: 8px solid transparent;
+    border-top: 8px solid white;
   }
   
-  :global(.formatted-output .bracket) {
-    color: #6366f1;
-    font-weight: bold;
-  }
-  
-  :global(.formatted-output .token) {
-    padding: 0 4px;
-    border-radius: 3px;
-  }
-  
-  :global(.formatted-output .token.primary) {
-    background-color: #10b981;
-    color: white;
-  }
-  
-  :global(.formatted-output .token.alternative) {
-    background-color: #fbbf24;
-    color: #1f2937;
-  }
-  
-  :global(.formatted-output .separator) {
-    color: #6b7280;
-    margin: 0 2px;
+  :global(.dark .alternatives-popup::after) {
+    border-top-color: hsl(var(--card));
   }
 </style>
