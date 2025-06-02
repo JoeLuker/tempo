@@ -20,7 +20,7 @@
   import { Toggle } from '$lib/components/ui/toggle';
   import SettingSection from '$lib/components/ui/setting-section.svelte';
   import EnhancedPresetCard from '$lib/components/ui/enhanced-preset-card.svelte';
-  import RichTooltip from '$lib/components/ui/rich-tooltip.svelte';
+  import SimpleTooltip from '$lib/components/ui/simple-tooltip.svelte';
   import { getSettingHelp, getCoreSettings } from '$lib/data/settingsHelp';
   import { PRESET_DEFINITIONS, getBeginnerPresets } from '$lib/data/presetDefinitions';
 
@@ -79,8 +79,9 @@
 
   // Full API response type from the v2 API
   type ApiResponse = {
-    generated_text: string;
-    raw_generated_text: string;
+    generated_text: string;  // Text with ANSI color codes
+    raw_generated_text: string;  // Raw token sequence
+    clean_text: string;  // Clean text without ANSI codes
     steps?: any[];
     position_to_tokens?: Record<string, string[]>;
     original_parallel_positions?: number[];
@@ -159,6 +160,7 @@
   let isGenerating = false;
   let error = '';
   let apiResponse: ApiResponse | null = null;
+  
   let chart: { update: (data: ChartToken[]) => void; cleanup: () => void } | null = null;
   let chartContainer: HTMLElement;
   
@@ -225,6 +227,8 @@
 
   // Function to generate text
   async function generateText() {
+    console.log('Generate button clicked!', { prompt, isGenerating });
+    
     if (!prompt.trim()) {
       error = 'Please enter a prompt';
       return;
@@ -232,6 +236,7 @@
 
     isGenerating = true;
     error = '';
+    console.log('Starting generation...');
 
     try {
       // Input validation with better error messages
@@ -361,6 +366,7 @@
           updateChart(data.token_sets);
         }
       } catch (fetchError) {
+        console.error('Fetch error:', fetchError);
         if (fetchError.name === 'AbortError') {
           throw new Error('Request timed out. The server may be busy or the model may be taking too long to generate.');
         }
@@ -368,9 +374,10 @@
       }
     } catch (e) {
       // Handle specific error types with user-friendly messages
+      console.error('Generation error:', e);
       if (e instanceof Error) {
         if (e.message.includes('Failed to fetch') || e.message.includes('NetworkError')) {
-          error = 'Network error. Please check your internet connection and try again.';
+          error = 'Network error. Please check your internet connection and try again. Make sure the backend server is running on port 8000.';
         } else if (e.message.includes('timeout') || e.message.includes('timed out')) {
           error = 'The request timed out. The server may be busy or the model may be taking too long to generate.';
         } else {
@@ -379,7 +386,6 @@
       } else {
         error = 'An unexpected error occurred. Please try again.';
       }
-      console.error('Generation error:', e);
     } finally {
       isGenerating = false;
     }
@@ -606,7 +612,7 @@
               <div class="flex items-center gap-1 mb-1">
                 <label for="maxTokens" class="block text-sm font-medium">Max Tokens</label>
                 {#if getHelp('maxTokens')}
-                  <RichTooltip helpContent={getHelp('maxTokens')} />
+                  <SimpleTooltip helpContent={getHelp('maxTokens')} />
                 {/if}
               </div>
               <Slider
@@ -623,7 +629,7 @@
               <div class="flex items-center gap-1 mb-1">
                 <label for="selectionThreshold" class="block text-sm font-medium">Selection Threshold</label>
                 {#if getHelp('selectionThreshold')}
-                  <RichTooltip helpContent={getHelp('selectionThreshold')} />
+                  <SimpleTooltip helpContent={getHelp('selectionThreshold')} />
                 {/if}
               </div>
               <Slider
@@ -644,7 +650,7 @@
               />
               <label for="useRetroactivePruning" class="text-sm font-medium">Use Retroactive Pruning</label>
               {#if getHelp('useRetroactivePruning')}
-                <RichTooltip helpContent={getHelp('useRetroactivePruning')} />
+                <SimpleTooltip helpContent={getHelp('useRetroactivePruning')} />
               {/if}
             </div>
 
@@ -653,7 +659,7 @@
               <div class="flex items-center gap-1 mb-1">
                 <label for="attentionThreshold" class="block text-sm font-medium">Attention Threshold</label>
                 {#if getHelp('attentionThreshold')}
-                  <RichTooltip helpContent={getHelp('attentionThreshold')} />
+                  <SimpleTooltip helpContent={getHelp('attentionThreshold')} />
                 {/if}
               </div>
               <Slider
@@ -675,7 +681,7 @@
               />
               <label for="debugMode" class="text-sm font-medium">Debug Mode</label>
               {#if getHelp('debugMode')}
-                <RichTooltip helpContent={getHelp('debugMode')} />
+                <SimpleTooltip helpContent={getHelp('debugMode')} />
               {/if}
             </div>
             
@@ -707,7 +713,7 @@
               />
               <label for="useMcts" class="text-sm font-medium">Use MCTS</label>
               {#if getHelp('useMcts')}
-                <RichTooltip helpContent={getHelp('useMcts')} />
+                <SimpleTooltip helpContent={getHelp('useMcts')} />
               {/if}
             </div>
 
@@ -717,7 +723,7 @@
                 <div class="flex items-center gap-1 mb-1">
                   <label for="mctsSimulations" class="block text-sm font-medium">MCTS Simulations</label>
                   {#if getHelp('mctsSimulations')}
-                    <RichTooltip helpContent={getHelp('mctsSimulations')} />
+                    <SimpleTooltip helpContent={getHelp('mctsSimulations')} />
                   {/if}
                 </div>
                 <Slider
@@ -734,7 +740,7 @@
                 <div class="flex items-center gap-1 mb-1">
                   <label for="mctsCPuct" class="block text-sm font-medium">MCTS C_PUCT</label>
                   {#if getHelp('mctsCPuct')}
-                    <RichTooltip helpContent={getHelp('mctsCPuct')} />
+                    <SimpleTooltip helpContent={getHelp('mctsCPuct')} />
                   {/if}
                 </div>
                 <Slider
@@ -751,7 +757,7 @@
                 <div class="flex items-center gap-1 mb-1">
                   <label for="mctsDepth" class="block text-sm font-medium">MCTS Depth</label>
                   {#if getHelp('mctsDepth')}
-                    <RichTooltip helpContent={getHelp('mctsDepth')} />
+                    <SimpleTooltip helpContent={getHelp('mctsDepth')} />
                   {/if}
                 </div>
                 <Slider
@@ -774,7 +780,7 @@
               />
               <label for="dynamicThreshold" class="text-sm font-medium">Use Dynamic Threshold</label>
               {#if getHelp('dynamicThreshold')}
-                <RichTooltip helpContent={getHelp('dynamicThreshold')} />
+                <SimpleTooltip helpContent={getHelp('dynamicThreshold')} />
               {/if}
             </div>
 
@@ -784,7 +790,7 @@
                 <div class="flex items-center gap-1 mb-1">
                   <label for="finalThreshold" class="block text-sm font-medium">Final Threshold</label>
                   {#if getHelp('finalThreshold')}
-                    <RichTooltip helpContent={getHelp('finalThreshold')} />
+                    <SimpleTooltip helpContent={getHelp('finalThreshold')} />
                   {/if}
                 </div>
                 <Slider
@@ -852,7 +858,7 @@
                 <Switch id="useCustomRope" bind:checked={useCustomRope} />
                 <label for="useCustomRope" class="text-sm font-medium">Use Custom RoPE</label>
                 {#if getHelp('useCustomRope')}
-                  <RichTooltip helpContent={getHelp('useCustomRope')} />
+                  <SimpleTooltip helpContent={getHelp('useCustomRope')} />
                 {/if}
               </div>
 
@@ -860,7 +866,7 @@
                 <Switch id="disableKvCache" bind:checked={disableKvCache} />
                 <label for="disableKvCache" class="text-sm font-medium">Disable KV Cache</label>
                 {#if getHelp('disableKvCache')}
-                  <RichTooltip helpContent={getHelp('disableKvCache')} />
+                  <SimpleTooltip helpContent={getHelp('disableKvCache')} />
                 {/if}
               </div>
 
@@ -868,7 +874,7 @@
                 <Switch id="showTokenIds" bind:checked={showTokenIds} />
                 <label for="showTokenIds" class="text-sm font-medium">Show Token IDs</label>
                 {#if getHelp('showTokenIds')}
-                  <RichTooltip helpContent={getHelp('showTokenIds')} />
+                  <SimpleTooltip helpContent={getHelp('showTokenIds')} />
                 {/if}
               </div>
 
@@ -876,7 +882,7 @@
                 <div class="flex items-center gap-1 mb-1">
                   <label for="systemContent" class="block text-sm font-medium">System Content</label>
                   {#if getHelp('systemContent')}
-                    <RichTooltip helpContent={getHelp('systemContent')} />
+                    <SimpleTooltip helpContent={getHelp('systemContent')} />
                   {/if}
                 </div>
                 <Textarea
@@ -891,7 +897,7 @@
                 <Switch id="enableThinking" bind:checked={enableThinking} />
                 <label for="enableThinking" class="text-sm font-medium">Enable Thinking</label>
                 {#if getHelp('enableThinking')}
-                  <RichTooltip helpContent={getHelp('enableThinking')} />
+                  <SimpleTooltip helpContent={getHelp('enableThinking')} />
                 {/if}
               </div>
 
@@ -1013,7 +1019,7 @@
                   <div class="flex items-center gap-1 mb-1">
                     <label for="maxTokens" class="block text-sm font-medium">Max Tokens</label>
                     {#if getHelp('maxTokens')}
-                      <RichTooltip helpContent={getHelp('maxTokens')} />
+                      <SimpleTooltip helpContent={getHelp('maxTokens')} />
                     {/if}
                   </div>
                   <Slider
@@ -1030,7 +1036,7 @@
                   <div class="flex items-center gap-1 mb-1">
                     <label for="selectionThreshold" class="block text-sm font-medium">Selection Threshold</label>
                     {#if getHelp('selectionThreshold')}
-                      <RichTooltip helpContent={getHelp('selectionThreshold')} />
+                      <SimpleTooltip helpContent={getHelp('selectionThreshold')} />
                     {/if}
                   </div>
                   <Slider
@@ -1064,7 +1070,7 @@
                     />
                     <label for="useRetroactivePruning" class="text-sm font-medium">Use Retroactive Pruning</label>
                     {#if getHelp('useRetroactivePruning')}
-                      <RichTooltip helpContent={getHelp('useRetroactivePruning')} />
+                      <SimpleTooltip helpContent={getHelp('useRetroactivePruning')} />
                     {/if}
                   </div>
 
@@ -1073,7 +1079,7 @@
                       <div class="flex items-center gap-1 mb-1">
                         <label for="attentionThreshold" class="block text-sm font-medium">Attention Threshold</label>
                         {#if getHelp('attentionThreshold')}
-                          <RichTooltip helpContent={getHelp('attentionThreshold')} />
+                          <SimpleTooltip helpContent={getHelp('attentionThreshold')} />
                         {/if}
                       </div>
                       <Slider
@@ -1092,13 +1098,46 @@
           </div>
         {/if}
 
-        <Button
-          on:click={generateText}
-          disabled={isGenerating}
-          class="w-full mt-6 py-6 text-lg relative"
-          variant={isGenerating ? "outline" : "default"}
-          data-testid="generate-button"
+        <!-- Test button -->
+        <button
+          type="button"
+          on:click={() => {
+            console.log('Test native button clicked!');
+            alert('Native button works!');
+          }}
+          class="w-full mt-4 py-2 bg-green-500 text-white rounded"
         >
+          Test Native Button
+        </button>
+
+        <!-- Debug info -->
+        <div class="text-xs text-gray-500 mt-2">
+          Debug: prompt="{prompt}", isGenerating={isGenerating}, disabled={isGenerating || !prompt.trim()}
+        </div>
+        
+        <!-- Wrapper div with click handler like preset cards -->
+        <div 
+          role="button"
+          tabindex="0"
+          on:click={() => {
+            if (!isGenerating && prompt.trim()) {
+              console.log('Wrapper div clicked!');
+              generateText();
+            }
+          }}
+          on:keydown={(e) => {
+            if (e.key === 'Enter' && !isGenerating && prompt.trim()) {
+              generateText();
+            }
+          }}
+          class="mt-6"
+        >
+          <Button
+            disabled={isGenerating || !prompt.trim()}
+            size="lg"
+            class="w-full"
+            data-testid="generate-button"
+          >
           {#if isGenerating}
             <div class="flex items-center justify-center gap-2">
               <svg class="animate-spin h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
@@ -1108,12 +1147,13 @@
               <span>Generating...</span>
             </div>
           {:else}
-            <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 mr-2" viewBox="0 0 20 20" fill="currentColor">
+            <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 mr-2 inline" viewBox="0 0 20 20" fill="currentColor">
               <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clip-rule="evenodd" />
             </svg>
-            Generate
+            Generate Text
           {/if}
-        </Button>
+          </Button>
+        </div>
       </CardContent>
     </Card>
 
@@ -1171,8 +1211,19 @@
             <div>
               <h3 class="text-lg font-medium mb-2">Generated Text</h3>
               <div class="bg-gray-100 dark:bg-gray-800 p-4 rounded overflow-auto max-h-[300px]" data-testid="generated-text">
-                {@html ansiToHtml(apiResponse.generated_text)}
+                <pre class="whitespace-pre-wrap font-mono text-sm">{apiResponse.clean_text || apiResponse.raw_generated_text}</pre>
               </div>
+              
+              {#if apiResponse.generated_text && apiResponse.generated_text !== apiResponse.clean_text}
+                <details class="mt-2">
+                  <summary class="text-sm text-gray-600 dark:text-gray-400 cursor-pointer hover:text-gray-800 dark:hover:text-gray-200">
+                    Show formatted output with parallel tokens
+                  </summary>
+                  <div class="bg-gray-100 dark:bg-gray-800 p-4 rounded overflow-auto max-h-[300px] mt-2">
+                    {@html ansiToHtml(apiResponse.generated_text)}
+                  </div>
+                </details>
+              {/if}
             </div>
 
             <!-- Model info from v2 API -->

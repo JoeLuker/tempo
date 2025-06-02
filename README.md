@@ -127,7 +127,7 @@ npm install
 npm run dev
 ```
 
-The web interface will be available at `http://localhost:5173` and the API at `http://localhost:8000`.
+The web interface will be available at `http://localhost:5174` and the API at `http://localhost:8000`.
 
 ## Usage
 

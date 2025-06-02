@@ -73,7 +73,7 @@ npm install
 npm run dev
 ```
 
-Access the UI at `http://localhost:5173` and the API documentation at `http://localhost:8000/docs`.
+Access the UI at `http://localhost:5174` and the API documentation at `http://localhost:8000/docs`.
 
 ## Architecture Overview
 

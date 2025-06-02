@@ -13,6 +13,7 @@ from src.visualization.position_visualizer import PositionVisualizer
 import traceback
 from src.pruning import RetroactivePruner
 from src.generation.token_generator import TokenGenerator
+import re
 
 # Configure logging
 logging.basicConfig(
@@ -364,12 +365,15 @@ class ModelInfo(BaseModel):
     model_name: str
     is_qwen_model: bool
     use_custom_rope: bool
+    device: str = "unknown"
+    model_type: Optional[str] = None
 
 
 class GenerationResponse(BaseModel):
     # Core output
-    generated_text: str
-    raw_generated_text: str
+    generated_text: str  # Text with ANSI color codes for terminal display
+    raw_generated_text: str  # Clean text without any formatting
+    clean_text: str = ""  # Clean text for API consumers (no ANSI codes)
 
     # Token-level data
     steps: List[StepInfo]
@@ -421,6 +425,12 @@ position_visualizer = PositionVisualizer()
 
 # Cache to store recent generation results for visualization
 generation_cache = {}
+
+
+def strip_ansi_codes(text: str) -> str:
+    """Remove ANSI color codes from text."""
+    ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
+    return ansi_escape.sub('', text)
 
 
 @api_router.get("/")
@@ -614,9 +624,13 @@ async def generate_text(
 
         try:
             # Format response with proper error handling
+            generated_text_with_colors = generation_result["generated_text"]
+            raw_text = generation_result.get("raw_generated_text", "")
+            
             response = GenerationResponse(
-                generated_text=generation_result["generated_text"],
-                raw_generated_text=generation_result.get("raw_generated_text", ""),
+                generated_text=generated_text_with_colors,  # Keep ANSI codes for terminal display
+                raw_generated_text=raw_text,
+                clean_text=strip_ansi_codes(generated_text_with_colors),  # Clean text for API consumers
                 steps=[],  # Populated below
                 timing=TimingInfo(
                     generation_time=generation_result.get(
@@ -629,6 +643,8 @@ async def generate_text(
                     model_name="deepcogito/cogito-v1-preview-llama-3B",
                     is_qwen_model=generation_result.get("is_qwen_model", False),
                     use_custom_rope=request.use_custom_rope,
+                    device=str(generator.device) if hasattr(generator, "device") else "unknown",
+                    model_type="llama"  # Since we're using a llama model
                 ),
                 selection_threshold=request.selection_threshold,
                 max_tokens=request.max_tokens,
