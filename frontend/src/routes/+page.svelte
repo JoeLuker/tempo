@@ -3,8 +3,6 @@
   import type * as d3 from 'd3';
   import { createBarChart } from '$lib/visualizations/barChart';
   import { theme, getAnsiColorMap, toggleTheme } from '$lib/theme';
-  import { browser } from '$app/environment';
-  import { get } from 'svelte/store';
   import { settings, presets, updateSetting } from '$lib/stores/settings';
   import { registerKeyboardShortcuts, getAllShortcuts } from '$lib/utils/keyboard';
 
@@ -16,13 +14,8 @@
   import { Slider } from '$lib/components/ui/slider';
   import { Switch } from '$lib/components/ui/switch';
   import { Tabs, TabsContent, TabsList, TabsTrigger } from '$lib/components/ui/tabs';
-  import { Checkbox } from '$lib/components/ui/checkbox';
-  import { Toggle } from '$lib/components/ui/toggle';
-  import SettingSection from '$lib/components/ui/setting-section.svelte';
-  import EnhancedPresetCard from '$lib/components/ui/enhanced-preset-card.svelte';
   import SimpleTooltip from '$lib/components/ui/simple-tooltip.svelte';
-  import { getSettingHelp, getCoreSettings } from '$lib/data/settingsHelp';
-  import { PRESET_DEFINITIONS, getBeginnerPresets } from '$lib/data/presetDefinitions';
+  import { getSettingHelp } from '$lib/data/settingsHelp';
 
   type AnsiColorMap = Record<string, string>;
 
@@ -227,8 +220,6 @@
 
   // Function to generate text
   async function generateText() {
-    console.log('Generate button clicked!', { prompt, isGenerating });
-    
     if (!prompt.trim()) {
       error = 'Please enter a prompt';
       return;
@@ -236,7 +227,6 @@
 
     isGenerating = true;
     error = '';
-    console.log('Starting generation...');
 
     try {
       // Input validation with better error messages
@@ -366,7 +356,6 @@
           updateChart(data.token_sets);
         }
       } catch (fetchError) {
-        console.error('Fetch error:', fetchError);
         if (fetchError.name === 'AbortError') {
           throw new Error('Request timed out. The server may be busy or the model may be taking too long to generate.');
         }
@@ -374,7 +363,6 @@
       }
     } catch (e) {
       // Handle specific error types with user-friendly messages
-      console.error('Generation error:', e);
       if (e instanceof Error) {
         if (e.message.includes('Failed to fetch') || e.message.includes('NetworkError')) {
           error = 'Network error. Please check your internet connection and try again. Make sure the backend server is running on port 8000.';
@@ -448,34 +436,9 @@
   // Track active tab for keyboard navigation
   let activeTab = 'basic';
   
-  // Interface mode for progressive disclosure
-  let interfaceMode = 'beginner'; // 'beginner' | 'intermediate' | 'expert'
-  
-  // Current active preset
-  let activePreset = 'default';
-  
   // Get help content for settings
   function getHelp(settingId: string) {
     return getSettingHelp(settingId);
-  }
-  
-  // Apply preset function
-  function applyPreset(presetId: string) {
-    const preset = PRESET_DEFINITIONS[presetId];
-    if (!preset) return;
-    
-    activePreset = presetId;
-    
-    // Apply all preset settings
-    Object.entries(preset.settings).forEach(([key, value]) => {
-      updateSetting(key as any, value);
-    });
-    
-    // Update slider arrays for reactive components
-    maxTokensSlider = [preset.settings.maxTokens || $settings.maxTokens];
-    selectionThresholdSlider = [preset.settings.selectionThreshold || $settings.selectionThreshold];
-    attentionThresholdSlider = [preset.settings.attentionThreshold || $settings.attentionThreshold];
-    // ... update other sliders as needed
   }
   
   // Handle window resize and register keyboard shortcuts
@@ -526,70 +489,9 @@
         <CardDescription>Enter your prompt and adjust generation parameters</CardDescription>
       </CardHeader>
       <CardContent class="flex flex-col">
-        <!-- Interface Mode Toggle -->
-        <div class="mb-6">
-          <div class="flex items-center justify-between mb-4">
-            <h3 class="text-sm font-medium text-gray-700 dark:text-gray-300">Interface Mode</h3>
-            <div class="flex rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 p-1">
-              <button 
-                class="px-3 py-1 text-xs font-medium rounded-md transition-colors {interfaceMode === 'beginner' ? 'bg-white dark:bg-gray-700 text-primary shadow-sm' : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200'}"
-                on:click={() => interfaceMode = 'beginner'}
-              >
-                Beginner
-              </button>
-              <button 
-                class="px-3 py-1 text-xs font-medium rounded-md transition-colors {interfaceMode === 'intermediate' ? 'bg-white dark:bg-gray-700 text-primary shadow-sm' : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200'}"
-                on:click={() => interfaceMode = 'intermediate'}
-              >
-                Intermediate
-              </button>
-              <button 
-                class="px-3 py-1 text-xs font-medium rounded-md transition-colors {interfaceMode === 'expert' ? 'bg-white dark:bg-gray-700 text-primary shadow-sm' : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200'}"
-                on:click={() => interfaceMode = 'expert'}
-              >
-                Expert
-              </button>
-            </div>
-          </div>
-        </div>
-
-        <!-- Quick Start Section -->
-        {#if interfaceMode === 'beginner' || interfaceMode === 'intermediate'}
-          <div class="mb-6">
-            <h3 class="text-lg font-semibold mb-3 flex items-center gap-2">
-              🚀 Quick Start
-            </h3>
-            <p class="text-sm text-gray-600 dark:text-gray-400 mb-4">
-              Choose a preset optimized for your task, then customize if needed.
-            </p>
-            
-            <!-- Preset Cards -->
-            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-6">
-              {#each getBeginnerPresets() as preset}
-                <div data-testid="preset-card">
-                  <EnhancedPresetCard
-                    name={preset.name}
-                    description={preset.description}
-                    icon={preset.icon}
-                    settings={preset.settings}
-                    performance={preset.performance}
-                    bestFor={preset.bestFor}
-                    technicalNote={preset.technicalNote}
-                    difficulty={preset.difficulty}
-                    estimatedTime={preset.estimatedTime}
-                    isActive={activePreset === preset.id}
-                    onApply={() => applyPreset(preset.id)}
-                  />
-                </div>
-              {/each}
-            </div>
-          </div>
-        {/if}
-
-        <!-- Progressive Settings Interface -->
-        {#if interfaceMode === 'expert'}
-          <!-- Mobile-friendly tab navigation for expert mode -->
-          <Tabs bind:value={activeTab} class="w-full">
+        <!-- Settings Interface -->
+        <!-- Mobile-friendly tab navigation -->
+        <Tabs bind:value={activeTab} class="w-full">
             <TabsList class="grid w-full grid-cols-3 mb-4">
               <TabsTrigger value="basic" class="text-sm sm:text-base">Basic</TabsTrigger>
               <TabsTrigger value="mcts" class="text-sm sm:text-base">MCTS</TabsTrigger>
@@ -683,24 +585,6 @@
               {#if getHelp('debugMode')}
                 <SimpleTooltip helpContent={getHelp('debugMode')} />
               {/if}
-            </div>
-            
-            <div class="mt-6 pt-4 border-t border-border">
-              <h3 class="text-sm font-medium mb-3">Legacy Presets</h3>
-              <div class="flex flex-wrap gap-2 justify-start">
-                <Button variant="outline" size="sm" on:click={() => presets.default()} class="flex-grow sm:flex-grow-0">
-                  Default
-                </Button>
-                <Button variant="outline" size="sm" on:click={() => presets.creative()} class="flex-grow sm:flex-grow-0">
-                  Creative
-                </Button>
-                <Button variant="outline" size="sm" on:click={() => presets.precise()} class="flex-grow sm:flex-grow-0">
-                  Precise
-                </Button>
-                <Button variant="outline" size="sm" on:click={() => presets.mcts()} class="flex-grow sm:flex-grow-0">
-                  MCTS
-                </Button>
-              </div>
             </div>
           </TabsContent>
 
@@ -810,11 +694,19 @@
                   onCheckedChange={(checked) => updateSetting('useRelu', checked)}
                 />
                 <label for="useRelu" class="text-sm font-medium">Use ReLU Transition</label>
+                {#if getHelp('useRelu')}
+                  <SimpleTooltip helpContent={getHelp('useRelu')} />
+                {/if}
               </div>
 
               {#if $settings.useRelu}
               <div>
-                <label for="reluActivationPoint" class="block text-sm font-medium mb-1">ReLU Activation Point</label>
+                <div class="flex items-center gap-1 mb-1">
+                  <label for="reluActivationPoint" class="block text-sm font-medium">ReLU Activation Point</label>
+                  {#if getHelp('reluActivationPoint')}
+                    <SimpleTooltip helpContent={getHelp('reluActivationPoint')} />
+                  {/if}
+                </div>
                 <Slider
                   id="reluActivationPoint"
                   bind:value={reluActivationPointSlider}
@@ -826,7 +718,12 @@
               </div>
               {:else}
               <div>
-                <label for="bezierP1" class="block text-sm font-medium mb-1">Bezier P1</label>
+                <div class="flex items-center gap-1 mb-1">
+                  <label for="bezierP1" class="block text-sm font-medium">Bezier P1</label>
+                  {#if getHelp('bezierP1')}
+                    <SimpleTooltip helpContent={getHelp('bezierP1')} />
+                  {/if}
+                </div>
                 <Slider
                   id="bezierP1"
                   bind:value={bezierP1Slider}
@@ -837,7 +734,12 @@
                 <div class="text-sm text-gray-500 mt-1">{bezierP1Slider[0].toFixed(2)}</div>
               </div>
               <div>
-                <label for="bezierP2" class="block text-sm font-medium mb-1">Bezier P2</label>
+                <div class="flex items-center gap-1 mb-1">
+                  <label for="bezierP2" class="block text-sm font-medium">Bezier P2</label>
+                  {#if getHelp('bezierP2')}
+                    <SimpleTooltip helpContent={getHelp('bezierP2')} />
+                  {/if}
+                </div>
                 <Slider
                   id="bezierP2"
                   bind:value={bezierP2Slider}
@@ -904,21 +806,35 @@
               <div class="flex items-center space-x-2">
                 <Switch id="allowIntrasetTokenVisibility" bind:checked={allowIntrasetTokenVisibility} />
                 <label for="allowIntrasetTokenVisibility" class="text-sm font-medium">Allow Intraset Token Visibility</label>
+                {#if getHelp('allowIntrasetTokenVisibility')}
+                  <SimpleTooltip helpContent={getHelp('allowIntrasetTokenVisibility')} />
+                {/if}
               </div>
 
               <div class="flex items-center space-x-2">
                 <Switch id="noPreserveIsolatedTokens" bind:checked={noPreserveIsolatedTokens} />
                 <label for="noPreserveIsolatedTokens" class="text-sm font-medium">No Preserve Isolated Tokens</label>
+                {#if getHelp('noPreserveIsolatedTokens')}
+                  <SimpleTooltip helpContent={getHelp('noPreserveIsolatedTokens')} />
+                {/if}
               </div>
 
               <div class="flex items-center space-x-2">
                 <Switch id="noRelativeAttention" bind:checked={noRelativeAttention} />
                 <label for="noRelativeAttention" class="text-sm font-medium">No Relative Attention</label>
+                {#if getHelp('noRelativeAttention')}
+                  <SimpleTooltip helpContent={getHelp('noRelativeAttention')} />
+                {/if}
               </div>
 
               {#if !noRelativeAttention}
               <div>
-                <label for="relativeThreshold" class="block text-sm font-medium mb-1">Relative Threshold</label>
+                <div class="flex items-center gap-1 mb-1">
+                  <label for="relativeThreshold" class="block text-sm font-medium">Relative Threshold</label>
+                  {#if getHelp('relativeThreshold')}
+                    <SimpleTooltip helpContent={getHelp('relativeThreshold')} />
+                  {/if}
+                </div>
                 <Slider
                   id="relativeThreshold"
                   bind:value={relativeThresholdSlider}
@@ -933,10 +849,18 @@
               <div class="flex items-center space-x-2">
                 <Switch id="noMultiScaleAttention" bind:checked={noMultiScaleAttention} />
                 <label for="noMultiScaleAttention" class="text-sm font-medium">No Multi-Scale Attention</label>
+                {#if getHelp('noMultiScaleAttention')}
+                  <SimpleTooltip helpContent={getHelp('noMultiScaleAttention')} />
+                {/if}
               </div>
 
               <div>
-                <label for="numLayersToUse" class="block text-sm font-medium mb-1">Number of Layers to Use</label>
+                <div class="flex items-center gap-1 mb-1">
+                  <label for="numLayersToUse" class="block text-sm font-medium">Number of Layers to Use</label>
+                  {#if getHelp('numLayersToUse')}
+                    <SimpleTooltip helpContent={getHelp('numLayersToUse')} />
+                  {/if}
+                </div>
                 <Input
                   id="numLayersToUse"
                   type="number"
@@ -949,16 +873,27 @@
               <div class="flex items-center space-x-2">
                 <Switch id="noLciDynamicThreshold" bind:checked={noLciDynamicThreshold} />
                 <label for="noLciDynamicThreshold" class="text-sm font-medium">No LCI Dynamic Threshold</label>
+                {#if getHelp('noLciDynamicThreshold')}
+                  <SimpleTooltip helpContent={getHelp('noLciDynamicThreshold')} />
+                {/if}
               </div>
 
               <div class="flex items-center space-x-2">
                 <Switch id="noSigmoidThreshold" bind:checked={noSigmoidThreshold} />
                 <label for="noSigmoidThreshold" class="text-sm font-medium">No Sigmoid Threshold</label>
+                {#if getHelp('noSigmoidThreshold')}
+                  <SimpleTooltip helpContent={getHelp('noSigmoidThreshold')} />
+                {/if}
               </div>
 
               {#if !noSigmoidThreshold}
               <div>
-                <label for="sigmoidSteepness" class="block text-sm font-medium mb-1">Sigmoid Steepness</label>
+                <div class="flex items-center gap-1 mb-1">
+                  <label for="sigmoidSteepness" class="block text-sm font-medium">Sigmoid Steepness</label>
+                  {#if getHelp('sigmoidSteepness')}
+                    <SimpleTooltip helpContent={getHelp('sigmoidSteepness')} />
+                  {/if}
+                </div>
                 <Slider
                   id="sigmoidSteepness"
                   bind:value={sigmoidSteepnessSlider}
@@ -971,11 +906,16 @@
               {/if}
 
               <div>
-                <label for="completePruningMode" class="block text-sm font-medium mb-1">Complete Pruning Mode</label>
+                <div class="flex items-center gap-1 mb-1">
+                  <label for="completePruningMode" class="block text-sm font-medium">Complete Pruning Mode</label>
+                  {#if getHelp('completePruningMode')}
+                    <SimpleTooltip helpContent={getHelp('completePruningMode')} />
+                  {/if}
+                </div>
                 <select
                   id="completePruningMode"
                   bind:value={completePruningMode}
-                  class="w-full p-2 border rounded"
+                  class="w-full p-2 border rounded bg-background text-foreground border-input focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
                 >
                   <option value="keep_token">Keep Token</option>
                   <option value="keep_unattended">Keep Unattended</option>
@@ -986,174 +926,37 @@
               <div class="flex items-center space-x-2">
                 <Switch id="disableKvCacheConsistency" bind:checked={disableKvCacheConsistency} />
                 <label for="disableKvCacheConsistency" class="text-sm font-medium">Disable KV Cache Consistency</label>
+                {#if getHelp('disableKvCacheConsistency')}
+                  <SimpleTooltip helpContent={getHelp('disableKvCacheConsistency')} />
+                {/if}
               </div>
             </div>
           </TabsContent>
           </Tabs>
-        {:else}
-          <!-- Progressive disclosure for beginner/intermediate -->
-          <div class="space-y-4">
 
-            <!-- Prompt Input - Always Visible -->
-            <SettingSection 
-              title="Prompt & Generation" 
-              description="Enter your prompt and control basic generation parameters"
-              icon="💬"
-              category="core"
-              importance="essential"
-              defaultOpen={true}
-            >
-              <div class="space-y-4">
-                <div>
-                  <label for="prompt" class="block text-sm font-medium mb-2">Prompt</label>
-                  <Textarea
-                    id="prompt"
-                    bind:value={prompt}
-                    placeholder="Enter your prompt here..."
-                    rows={4}
-                    class="w-full min-h-[120px] text-base"
-                  />
-                </div>
-
-                <div>
-                  <div class="flex items-center gap-1 mb-1">
-                    <label for="maxTokens" class="block text-sm font-medium">Max Tokens</label>
-                    {#if getHelp('maxTokens')}
-                      <SimpleTooltip helpContent={getHelp('maxTokens')} />
-                    {/if}
-                  </div>
-                  <Slider
-                    id="maxTokens"
-                    bind:value={maxTokensSlider}
-                    min={1}
-                    max={500}
-                    step={1}
-                  />
-                  <div class="text-sm text-gray-500 mt-1">{maxTokensSlider[0]} tokens (~{Math.round(maxTokensSlider[0] * 0.75)} words)</div>
-                </div>
-
-                <div>
-                  <div class="flex items-center gap-1 mb-1">
-                    <label for="selectionThreshold" class="block text-sm font-medium">Selection Threshold</label>
-                    {#if getHelp('selectionThreshold')}
-                      <SimpleTooltip helpContent={getHelp('selectionThreshold')} />
-                    {/if}
-                  </div>
-                  <Slider
-                    id="selectionThreshold"
-                    bind:value={selectionThresholdSlider}
-                    min={0.01}
-                    max={0.5}
-                    step={0.01}
-                  />
-                  <div class="text-sm text-gray-500 mt-1">{selectionThresholdSlider[0].toFixed(2)}</div>
-                </div>
-              </div>
-            </SettingSection>
-
-            <!-- Core Settings for Intermediate+ -->
-            {#if interfaceMode !== 'beginner'}
-              <SettingSection 
-                title="Pruning & Refinement" 
-                description="Control how TEMPO refines and improves generated content"
-                icon="✂️"
-                category="pruning"
-                importance="important"
-                defaultOpen={interfaceMode === 'intermediate'}
-              >
-                <div class="space-y-4">
-                  <div class="flex items-center space-x-2">
-                    <Switch 
-                      id="useRetroactivePruning" 
-                      checked={$settings.useRetroactivePruning}
-                      onCheckedChange={(checked) => updateSetting('useRetroactivePruning', checked)}
-                    />
-                    <label for="useRetroactivePruning" class="text-sm font-medium">Use Retroactive Pruning</label>
-                    {#if getHelp('useRetroactivePruning')}
-                      <SimpleTooltip helpContent={getHelp('useRetroactivePruning')} />
-                    {/if}
-                  </div>
-
-                  {#if $settings.useRetroactivePruning}
-                    <div class="pl-4 mt-2 space-y-2 border-l-2 border-gray-200 dark:border-gray-700">
-                      <div class="flex items-center gap-1 mb-1">
-                        <label for="attentionThreshold" class="block text-sm font-medium">Attention Threshold</label>
-                        {#if getHelp('attentionThreshold')}
-                          <SimpleTooltip helpContent={getHelp('attentionThreshold')} />
-                        {/if}
-                      </div>
-                      <Slider
-                        id="attentionThreshold"
-                        bind:value={attentionThresholdSlider}
-                        min={0.001}
-                        max={0.1}
-                        step={0.001}
-                      />
-                      <div class="text-sm text-gray-500 mt-1">{attentionThresholdSlider[0].toFixed(3)}</div>
-                    </div>
-                  {/if}
-                </div>
-              </SettingSection>
-            {/if}
-          </div>
-        {/if}
-
-        <!-- Test button -->
-        <button
-          type="button"
-          on:click={() => {
-            console.log('Test native button clicked!');
-            alert('Native button works!');
-          }}
-          class="w-full mt-4 py-2 bg-green-500 text-white rounded"
+        <!-- Generate Button -->
+        <Button
+          on:click={generateText}
+          disabled={isGenerating || !prompt.trim()}
+          size="lg"
+          class="w-full mt-6"
+          data-testid="generate-button"
         >
-          Test Native Button
-        </button>
-
-        <!-- Debug info -->
-        <div class="text-xs text-gray-500 mt-2">
-          Debug: prompt="{prompt}", isGenerating={isGenerating}, disabled={isGenerating || !prompt.trim()}
-        </div>
-        
-        <!-- Wrapper div with click handler like preset cards -->
-        <div 
-          role="button"
-          tabindex="0"
-          on:click={() => {
-            if (!isGenerating && prompt.trim()) {
-              console.log('Wrapper div clicked!');
-              generateText();
-            }
-          }}
-          on:keydown={(e) => {
-            if (e.key === 'Enter' && !isGenerating && prompt.trim()) {
-              generateText();
-            }
-          }}
-          class="mt-6"
-        >
-          <Button
-            disabled={isGenerating || !prompt.trim()}
-            size="lg"
-            class="w-full"
-            data-testid="generate-button"
-          >
-          {#if isGenerating}
-            <div class="flex items-center justify-center gap-2">
-              <svg class="animate-spin h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-              </svg>
-              <span>Generating...</span>
-            </div>
-          {:else}
-            <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 mr-2 inline" viewBox="0 0 20 20" fill="currentColor">
-              <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clip-rule="evenodd" />
+        {#if isGenerating}
+          <div class="flex items-center justify-center gap-2">
+            <svg class="animate-spin h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+              <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+              <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
             </svg>
-            Generate Text
-          {/if}
-          </Button>
-        </div>
+            <span>Generating...</span>
+          </div>
+        {:else}
+          <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 mr-2 inline" viewBox="0 0 20 20" fill="currentColor">
+            <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clip-rule="evenodd" />
+          </svg>
+          Generate Text
+        {/if}
+        </Button>
       </CardContent>
     </Card>
 
