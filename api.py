@@ -433,6 +433,48 @@ def strip_ansi_codes(text: str) -> str:
     return ansi_escape.sub('', text)
 
 
+def extract_clean_text(text_with_brackets: str) -> str:
+    """Extract clean text by taking only the first token from each bracket group."""
+    if not text_with_brackets:
+        return ""
+    
+    # Remove ANSI codes first
+    text = strip_ansi_codes(text_with_brackets)
+    
+    result = []
+    i = 0
+    while i < len(text):
+        if text[i] == '[':
+            # Find the matching closing bracket
+            j = i + 1
+            bracket_depth = 1
+            while j < len(text) and bracket_depth > 0:
+                if text[j] == '[':
+                    bracket_depth += 1
+                elif text[j] == ']':
+                    bracket_depth -= 1
+                j += 1
+            
+            if bracket_depth == 0:
+                # Extract content between brackets
+                bracket_content = text[i+1:j-1]
+                # Split by '/' and take the first non-empty token
+                tokens = [t.strip() for t in bracket_content.split('/')]
+                if tokens and tokens[0]:
+                    result.append(tokens[0])
+                i = j
+            else:
+                # Unclosed bracket, just append it
+                result.append(text[i])
+                i += 1
+        else:
+            # Regular character
+            result.append(text[i])
+            i += 1
+    
+    return ''.join(result)
+
+
 @api_router.get("/")
 async def root():
     return {"message": "TEMPO API is running", "status": "healthy"}
@@ -630,7 +672,7 @@ async def generate_text(
             response = GenerationResponse(
                 generated_text=generated_text_with_colors,  # Keep ANSI codes for terminal display
                 raw_generated_text=raw_text,
-                clean_text=strip_ansi_codes(generated_text_with_colors),  # Clean text for API consumers
+                clean_text=extract_clean_text(generated_text_with_colors),  # Clean text without brackets
                 steps=[],  # Populated below
                 timing=TimingInfo(
                     generation_time=generation_result.get(
