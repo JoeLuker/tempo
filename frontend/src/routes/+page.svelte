@@ -17,6 +17,7 @@
   import SimpleTooltip from '$lib/components/ui/simple-tooltip.svelte';
   import { getSettingHelp } from '$lib/data/settingsHelp';
   import TokenTree from '$lib/components/TokenTree.svelte';
+  import { formatCleanText, renderFormattedOutput } from '$lib/utils/formatOutput';
 
   type AnsiColorMap = Record<string, string>;
 
@@ -394,44 +395,40 @@
 
   // Function to update the chart
   function updateChart(tokenSets: [number, [number, number][], [number, number][]][]) {
-    if (!chartContainer || !tokenSets.length) return;
+    // Wait for next tick to ensure container is rendered
+    setTimeout(() => {
+      if (!chartContainer || !tokenSets.length) return;
 
-    // Clear existing chart
-    if (chart) {
-      chart.cleanup();
-    }
+      // Clear existing chart
+      if (chart) {
+        chart.cleanup();
+      }
 
-    // Process token sets for chart
-    const chartData: ChartToken[] = [];
-    tokenSets.forEach(([position, original, pruned]) => {
-      // Add original tokens
-      original.forEach(([id, prob]) => {
-        chartData.push({
-          text: `Token ${id}`,
-          id,
-          probability: prob,
-          isPruned: false,
+      // Process token sets for chart
+      const chartData: ChartToken[] = [];
+      tokenSets.forEach(([position, original, pruned]) => {
+        // Get kept tokens (not pruned)
+        const keptIds = new Set(pruned.map(([id]) => id));
+        
+        // Add all original tokens with their status
+        original.forEach(([id, prob]) => {
+          chartData.push({
+            text: `Token ${id}`,
+            id,
+            probability: prob,
+            isPruned: !keptIds.has(id),
+          });
         });
       });
 
-      // Add pruned tokens
-      pruned.forEach(([id, prob]) => {
-        chartData.push({
-          text: `Token ${id}`,
-          id,
-          probability: prob,
-          isPruned: true,
-        });
-      });
-    });
-
-    // Create new chart
-    const chartConfig = {
-      width: chartContainer.clientWidth,
-      height: 400,
-      margin: { top: 20, right: 20, bottom: 30, left: 40 },
-    };
-    chart = createBarChart(chartContainer, chartData, chartConfig);
+      // Create new chart
+      const chartConfig = {
+        width: chartContainer.clientWidth || 800,
+        height: 500,
+        margin: { top: 20, right: 20, bottom: 30, left: 40 },
+      };
+      chart = createBarChart(chartContainer, chartData, chartConfig);
+    }, 100);
   }
 
   // Track active tab for keyboard navigation
@@ -1011,7 +1008,17 @@
             </div>
           </div>
         {:else if apiResponse}
-          <Tabs value="text" class="w-full">
+          <Tabs value="text" class="w-full" on:change={(e) => {
+            // Re-render chart when switching to chart tab
+            if (e.detail === 'chart' && apiResponse) {
+              if (apiResponse.raw_token_data && apiResponse.raw_token_data.length > 0) {
+                const chartData = processTokenDataForVisualization(apiResponse.raw_token_data);
+                updateChart(chartData);
+              } else if (apiResponse.token_sets && apiResponse.token_sets.length > 0) {
+                updateChart(apiResponse.token_sets);
+              }
+            }
+          }}>
             <TabsList class="grid w-full grid-cols-4 mb-4">
               <TabsTrigger value="text">Text</TabsTrigger>
               <TabsTrigger value="tree">Tree</TabsTrigger>
@@ -1023,16 +1030,16 @@
               <div>
                 <h3 class="text-lg font-medium mb-2">Generated Text</h3>
                 <div class="bg-gray-100 dark:bg-gray-800 p-4 rounded overflow-auto max-h-[400px]" data-testid="generated-text">
-                  <pre class="whitespace-pre-wrap font-mono text-sm">{apiResponse.clean_text || apiResponse.raw_generated_text}</pre>
+                  <pre class="whitespace-pre-wrap font-mono text-sm">{formatCleanText(apiResponse.clean_text || apiResponse.raw_generated_text)}</pre>
                 </div>
                 
-                {#if apiResponse.generated_text && apiResponse.generated_text !== apiResponse.clean_text}
+                {#if apiResponse.generated_text}
                   <details class="mt-2">
                     <summary class="text-sm text-gray-600 dark:text-gray-400 cursor-pointer hover:text-gray-800 dark:hover:text-gray-200">
-                      Show formatted output with parallel tokens
+                      Show parallel token exploration
                     </summary>
-                    <div class="bg-gray-100 dark:bg-gray-800 p-4 rounded overflow-auto max-h-[300px] mt-2">
-                      {@html ansiToHtml(apiResponse.generated_text)}
+                    <div class="bg-gray-100 dark:bg-gray-800 p-4 rounded overflow-auto max-h-[300px] mt-2 formatted-output">
+                      {@html renderFormattedOutput(apiResponse.generated_text)}
                     </div>
                   </details>
                 {/if}
@@ -1198,13 +1205,50 @@
 <style>
   :global(.code-output) {
     scrollbar-width: thin;
-    scrollbar-color: hsl(var(--muted)) transparent; /* Use theme variable */
+    scrollbar-color: hsl(var(--muted)) transparent;
   }
   :global(.code-output::-webkit-scrollbar) { width: 8px; height: 8px; }
   :global(.code-output::-webkit-scrollbar-track) { background: transparent; }
   :global(.code-output::-webkit-scrollbar-thumb) {
-    background-color: hsl(var(--muted)); /* Use theme variable */
+    background-color: hsl(var(--muted));
     border-radius: 4px;
-    border: 2px solid hsl(var(--background)); /* Match background */
+    border: 2px solid hsl(var(--background));
+  }
+  
+  /* Formatted output styles */
+  :global(.formatted-output) {
+    font-family: monospace;
+    line-height: 1.6;
+  }
+  
+  :global(.formatted-output .parallel-tokens) {
+    display: inline-block;
+    margin: 0 2px;
+    padding: 2px 0;
+  }
+  
+  :global(.formatted-output .bracket) {
+    color: #6366f1;
+    font-weight: bold;
+  }
+  
+  :global(.formatted-output .token) {
+    padding: 0 4px;
+    border-radius: 3px;
+  }
+  
+  :global(.formatted-output .token.primary) {
+    background-color: #10b981;
+    color: white;
+  }
+  
+  :global(.formatted-output .token.alternative) {
+    background-color: #fbbf24;
+    color: #1f2937;
+  }
+  
+  :global(.formatted-output .separator) {
+    color: #6b7280;
+    margin: 0 2px;
   }
 </style>

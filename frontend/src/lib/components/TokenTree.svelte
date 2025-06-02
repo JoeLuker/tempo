@@ -179,18 +179,24 @@
       .text(d => `Token: ${d.data.text}\nProbability: ${(d.data.probability * 100).toFixed(2)}%\nPosition: ${d.data.position}\nStatus: ${d.data.pruned ? 'Pruned' : 'Kept'}`);
   }
   
-  $: if (tokenData && container) {
-    const tree = buildTree(tokenData);
-    renderTree(tree);
-  }
-  
   onMount(() => {
+    if (tokenData && container) {
+      const tree = buildTree(tokenData);
+      renderTree(tree);
+    }
+    
     return () => {
       if (svg) {
         svg.remove();
       }
     };
   });
+  
+  $: if (tokenData && container && svg) {
+    // Re-render on data change
+    const tree = buildTree(tokenData);
+    renderTree(tree);
+  }
 </script>
 
 <div bind:this={container} class="w-full h-full">
