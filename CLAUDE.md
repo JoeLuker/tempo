@@ -75,6 +75,16 @@ npm run dev
 
 Access the UI at `http://localhost:5174` and the API documentation at `http://localhost:8000/docs`.
 
+### Frontend Features
+
+The web interface provides:
+- **Clean Text Display**: Shows generated text without brackets/slashes
+- **Interactive Token Visualization**: Hover over text to see alternative tokens considered
+- **Tree Visualization**: Visual representation of token branching and pruning
+- **Tabbed Output**: Organized views for Text, Tree, Details, and Chart
+- **Expert Mode UI**: All settings with comprehensive tooltips explaining each parameter
+- **Dark Mode Support**: Full theme support for comfortable viewing
+
 ## Architecture Overview
 
 TEMPO's architecture is centered around several key components:
@@ -95,6 +105,7 @@ TEMPO's architecture is centered around several key components:
 
 ## Key Code Components
 
+### Backend
 - `src/modeling/model_wrapper.py`: Wraps the underlying LLM model for TEMPO's requirements.
 - `src/generation/parallel_generator.py`: Core implementation of TEMPO's parallel generation approach.
 - `src/generation/rope_modifier.py`: Handles modifications to the model's Rotary Position Embeddings.
@@ -102,8 +113,14 @@ TEMPO's architecture is centered around several key components:
 - `src/pruning/retroactive_pruner.py`: Implements attention-based pruning of parallel token sets.
 - `src/generation/attention_manager.py`: Controls attention visibility between parallel tokens.
 - `src/visualization/`: Contains tools for visualizing token probabilities and positions.
-- `api.py`: FastAPI implementation for web interface integration.
+- `api.py`: FastAPI implementation with clean text extraction for web interface.
 - `run_tempo.py`: Command-line interface for experiments.
+
+### Frontend
+- `frontend/src/routes/+page.svelte`: Main UI with tabbed interface and settings
+- `frontend/src/lib/components/TokenTree.svelte`: D3-based tree visualization component
+- `frontend/src/lib/utils/formatOutput.ts`: Text formatting utilities for clean display
+- `frontend/src/lib/data/settingsHelp.ts`: Comprehensive help tooltips for all settings
 
 ## Development Guidelines
 
@@ -114,3 +131,24 @@ TEMPO's architecture is centered around several key components:
 5. Keep functions small and focused (ideally <25 lines).
 6. Use clear naming conventions that describe purpose.
 7. Add explanatory comments for complex logic.
+
+## Recent Updates
+
+### Frontend Improvements (Latest)
+- Fixed Melt UI preprocessor configuration issue that was preventing all interactions
+- Simplified UI to expert-only mode with comprehensive tooltips
+- Added tree visualization for token branching
+- Implemented clean text display without CLI formatting
+- Added interactive token hover effects to show alternatives
+
+### API Improvements
+- Added `extract_clean_text` function to properly clean output
+- API now returns three text formats:
+  - `clean_text`: Readable text without brackets
+  - `generated_text`: Full output with brackets for visualization
+  - `raw_generated_text`: Raw token sequence
+
+### Configuration Changes
+- Frontend port changed from 5173 to 5174
+- Removed Docker-related files
+- Cleaned up duplicate API implementations
