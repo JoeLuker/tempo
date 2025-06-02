@@ -16,6 +16,7 @@
   import { Tabs, TabsContent, TabsList, TabsTrigger } from '$lib/components/ui/tabs';
   import SimpleTooltip from '$lib/components/ui/simple-tooltip.svelte';
   import { getSettingHelp } from '$lib/data/settingsHelp';
+  import TokenTree from '$lib/components/TokenTree.svelte';
 
   type AnsiColorMap = Record<string, string>;
 
@@ -1010,77 +1011,184 @@
             </div>
           </div>
         {:else if apiResponse}
-          <div class="space-y-4">
-            <div>
-              <h3 class="text-lg font-medium mb-2">Generated Text</h3>
-              <div class="bg-gray-100 dark:bg-gray-800 p-4 rounded overflow-auto max-h-[300px]" data-testid="generated-text">
-                <pre class="whitespace-pre-wrap font-mono text-sm">{apiResponse.clean_text || apiResponse.raw_generated_text}</pre>
+          <Tabs value="text" class="w-full">
+            <TabsList class="grid w-full grid-cols-4 mb-4">
+              <TabsTrigger value="text">Text</TabsTrigger>
+              <TabsTrigger value="tree">Tree</TabsTrigger>
+              <TabsTrigger value="details">Details</TabsTrigger>
+              <TabsTrigger value="chart">Chart</TabsTrigger>
+            </TabsList>
+            
+            <TabsContent value="text" class="space-y-4">
+              <div>
+                <h3 class="text-lg font-medium mb-2">Generated Text</h3>
+                <div class="bg-gray-100 dark:bg-gray-800 p-4 rounded overflow-auto max-h-[400px]" data-testid="generated-text">
+                  <pre class="whitespace-pre-wrap font-mono text-sm">{apiResponse.clean_text || apiResponse.raw_generated_text}</pre>
+                </div>
+                
+                {#if apiResponse.generated_text && apiResponse.generated_text !== apiResponse.clean_text}
+                  <details class="mt-2">
+                    <summary class="text-sm text-gray-600 dark:text-gray-400 cursor-pointer hover:text-gray-800 dark:hover:text-gray-200">
+                      Show formatted output with parallel tokens
+                    </summary>
+                    <div class="bg-gray-100 dark:bg-gray-800 p-4 rounded overflow-auto max-h-[300px] mt-2">
+                      {@html ansiToHtml(apiResponse.generated_text)}
+                    </div>
+                  </details>
+                {/if}
               </div>
-              
-              {#if apiResponse.generated_text && apiResponse.generated_text !== apiResponse.clean_text}
-                <details class="mt-2">
-                  <summary class="text-sm text-gray-600 dark:text-gray-400 cursor-pointer hover:text-gray-800 dark:hover:text-gray-200">
-                    Show formatted output with parallel tokens
-                  </summary>
-                  <div class="bg-gray-100 dark:bg-gray-800 p-4 rounded overflow-auto max-h-[300px] mt-2">
-                    {@html ansiToHtml(apiResponse.generated_text)}
+            </TabsContent>
+            
+            <TabsContent value="tree" class="space-y-4">
+              <div>
+                <h3 class="text-lg font-medium mb-2">Token Tree Visualization</h3>
+                <div class="bg-gray-50 dark:bg-gray-900 p-4 rounded border border-gray-200 dark:border-gray-700">
+                  <TokenTree tokenData={apiResponse} height={600} />
+                </div>
+                <div class="mt-2 text-sm text-gray-600 dark:text-gray-400">
+                  <div class="flex items-center gap-4 justify-center">
+                    <div class="flex items-center gap-1">
+                      <div class="w-3 h-3 rounded-full bg-green-500"></div>
+                      <span>Kept tokens</span>
+                    </div>
+                    <div class="flex items-center gap-1">
+                      <div class="w-3 h-3 rounded-full bg-yellow-500"></div>
+                      <span>Pruned tokens</span>
+                    </div>
+                    <div class="flex items-center gap-1">
+                      <div class="w-3 h-3 rounded-full bg-indigo-500"></div>
+                      <span>Start</span>
+                    </div>
                   </div>
-                </details>
+                </div>
+              </div>
+            </TabsContent>
+            
+            <TabsContent value="details" class="space-y-4">
+              <!-- Model info from v2 API -->
+              {#if apiResponse.model_info}
+                <div>
+                  <h3 class="text-lg font-medium mb-2">Model Information</h3>
+                  <div class="bg-gray-50 dark:bg-gray-800/50 p-4 rounded">
+                    <div class="text-sm grid grid-cols-2 gap-3">
+                      <div class="flex justify-between">
+                        <span class="text-gray-600 dark:text-gray-400">Model:</span>
+                        <span class="font-semibold">{apiResponse.model_info.model_name}</span>
+                      </div>
+                      <div class="flex justify-between">
+                        <span class="text-gray-600 dark:text-gray-400">Device:</span>
+                        <span class="font-semibold">{apiResponse.model_info.device}</span>
+                      </div>
+                      {#if apiResponse.model_info.model_type}
+                        <div class="flex justify-between">
+                          <span class="text-gray-600 dark:text-gray-400">Type:</span>
+                          <span class="font-semibold">{apiResponse.model_info.model_type}</span>
+                        </div>
+                      {/if}
+                      <div class="flex justify-between">
+                        <span class="text-gray-600 dark:text-gray-400">Custom RoPE:</span>
+                        <span class="font-semibold">{apiResponse.model_info.use_custom_rope ? 'Enabled' : 'Disabled'}</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
               {/if}
-            </div>
 
-            <!-- Model info from v2 API -->
-            {#if apiResponse.model_info}
-              <div>
-                <h3 class="text-lg font-medium mb-2">Model Information</h3>
-                <div class="text-sm grid grid-cols-2 gap-2">
-                  <div>Model: <span class="font-semibold">{apiResponse.model_info.model_name}</span></div>
-                  <div>Device: <span class="font-semibold">{apiResponse.model_info.device}</span></div>
-                  {#if apiResponse.model_info.model_type}
-                    <div>Type: <span class="font-semibold">{apiResponse.model_info.model_type}</span></div>
-                  {/if}
-                  <div>Custom RoPE: <span class="font-semibold">{apiResponse.model_info.use_custom_rope ? 'Enabled' : 'Disabled'}</span></div>
+              {#if apiResponse.timing}
+                <div>
+                  <h3 class="text-lg font-medium mb-2">Performance Metrics</h3>
+                  <div class="bg-gray-50 dark:bg-gray-800/50 p-4 rounded">
+                    <div class="text-sm space-y-2">
+                      <div class="flex justify-between">
+                        <span class="text-gray-600 dark:text-gray-400">Generation Time:</span>
+                        <span class="font-semibold">{apiResponse.timing.generation_time.toFixed(2)}s</span>
+                      </div>
+                      <div class="flex justify-between">
+                        <span class="text-gray-600 dark:text-gray-400">Pruning Time:</span>
+                        <span class="font-semibold">{apiResponse.timing.pruning_time.toFixed(2)}s</span>
+                      </div>
+                      <div class="flex justify-between border-t border-gray-200 dark:border-gray-700 pt-2">
+                        <span class="text-gray-600 dark:text-gray-400">Total Time:</span>
+                        <span class="font-semibold text-primary">{apiResponse.timing.elapsed_time.toFixed(2)}s</span>
+                      </div>
+                    </div>
+                  </div>
                 </div>
-              </div>
-            {/if}
+              {/if}
 
-            {#if apiResponse.timing}
-              <div>
-                <h3 class="text-lg font-medium mb-2">Timing</h3>
-                <div class="text-sm grid grid-cols-2 gap-2">
-                  <div>Generation Time: <span class="font-semibold">{apiResponse.timing.generation_time.toFixed(2)}s</span></div>
-                  <div>Pruning Time: <span class="font-semibold">{apiResponse.timing.pruning_time.toFixed(2)}s</span></div>
-                  <div>Total Time: <span class="font-semibold">{apiResponse.timing.elapsed_time.toFixed(2)}s</span></div>
+              {#if apiResponse.retroactive_pruning}
+                <div>
+                  <h3 class="text-lg font-medium mb-2">Pruning Configuration</h3>
+                  <div class="bg-gray-50 dark:bg-gray-800/50 p-4 rounded">
+                    <div class="text-sm space-y-2">
+                      <div class="flex justify-between">
+                        <span class="text-gray-600 dark:text-gray-400">Attention Threshold:</span>
+                        <span class="font-semibold">{apiResponse.retroactive_pruning.attention_threshold.toFixed(3)}</span>
+                      </div>
+                      <div class="flex justify-between">
+                        <span class="text-gray-600 dark:text-gray-400">Pruning Mode:</span>
+                        <span class="font-semibold">{apiResponse.retroactive_pruning.pruning_mode}</span>
+                      </div>
+                      <div class="flex justify-between">
+                        <span class="text-gray-600 dark:text-gray-400">Relative Attention:</span>
+                        <span class="font-semibold">{apiResponse.retroactive_pruning.use_relative_attention ? 'Enabled' : 'Disabled'}</span>
+                      </div>
+                      {#if apiResponse.retroactive_pruning.use_relative_attention}
+                        <div class="flex justify-between">
+                          <span class="text-gray-600 dark:text-gray-400">Relative Threshold:</span>
+                          <span class="font-semibold">{apiResponse.retroactive_pruning.relative_threshold.toFixed(2)}</span>
+                        </div>
+                      {/if}
+                    </div>
+                  </div>
                 </div>
-              </div>
-            {/if}
+              {/if}
 
-            {#if apiResponse.retroactive_pruning}
-              <div>
-                <h3 class="text-lg font-medium mb-2">Pruning Settings</h3>
-                <div class="text-sm grid grid-cols-2 gap-2">
-                  <div>Attention Threshold: <span class="font-semibold">{apiResponse.retroactive_pruning.attention_threshold.toFixed(3)}</span></div>
-                  <div>Pruning Mode: <span class="font-semibold">{apiResponse.retroactive_pruning.pruning_mode}</span></div>
-                  <div>Relative Attention: <span class="font-semibold">{apiResponse.retroactive_pruning.use_relative_attention ? 'Enabled' : 'Disabled'}</span></div>
-                  {#if apiResponse.retroactive_pruning.use_relative_attention}
-                    <div>Relative Threshold: <span class="font-semibold">{apiResponse.retroactive_pruning.relative_threshold.toFixed(2)}</span></div>
-                  {/if}
+              {#if apiResponse.selection_threshold}
+                <div>
+                  <h3 class="text-lg font-medium mb-2">Generation Parameters</h3>
+                  <div class="bg-gray-50 dark:bg-gray-800/50 p-4 rounded">
+                    <div class="text-sm space-y-2">
+                      <div class="flex justify-between">
+                        <span class="text-gray-600 dark:text-gray-400">Selection Threshold:</span>
+                        <span class="font-semibold">{apiResponse.selection_threshold.toFixed(3)}</span>
+                      </div>
+                      <div class="flex justify-between">
+                        <span class="text-gray-600 dark:text-gray-400">Max Tokens:</span>
+                        <span class="font-semibold">{apiResponse.max_tokens}</span>
+                      </div>
+                      {#if apiResponse.had_repetition_loop !== undefined}
+                        <div class="flex justify-between">
+                          <span class="text-gray-600 dark:text-gray-400">Repetition Loop:</span>
+                          <span class="font-semibold {apiResponse.had_repetition_loop ? 'text-yellow-600' : 'text-green-600'}">
+                            {apiResponse.had_repetition_loop ? 'Detected' : 'None'}
+                          </span>
+                        </div>
+                      {/if}
+                    </div>
+                  </div>
                 </div>
-              </div>
-            {/if}
-
-            <!-- Token visualization - works with both v1 and v2 API formats -->
-            {#if (apiResponse.raw_token_data && apiResponse.raw_token_data.length > 0) || (apiResponse.token_sets && apiResponse.token_sets.length > 0)}
-              <div>
-                <h3 class="text-lg font-medium mb-2">Token Visualization</h3>
-                <div
-                  bind:this={chartContainer}
-                  class="w-full h-[400px] chart-container"
-                  data-testid="visualization-chart"
-                />
-              </div>
-            {/if}
-          </div>
+              {/if}
+            </TabsContent>
+            
+            <TabsContent value="chart" class="space-y-4">
+              <!-- Token visualization - works with both v1 and v2 API formats -->
+              {#if (apiResponse.raw_token_data && apiResponse.raw_token_data.length > 0) || (apiResponse.token_sets && apiResponse.token_sets.length > 0)}
+                <div>
+                  <h3 class="text-lg font-medium mb-2">Token Probability Distribution</h3>
+                  <div
+                    bind:this={chartContainer}
+                    class="w-full h-[500px] chart-container bg-gray-50 dark:bg-gray-900 p-4 rounded"
+                    data-testid="visualization-chart"
+                  />
+                </div>
+              {:else}
+                <div class="flex items-center justify-center h-[400px] text-gray-500">
+                  <p>No token probability data available for this generation</p>
+                </div>
+              {/if}
+            </TabsContent>
+          </Tabs>
         {/if}
       </CardContent>
     </Card>
