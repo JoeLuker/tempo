@@ -202,7 +202,7 @@ The FastAPI backend provides endpoints for integration, primarily used by the fr
 The API accepts most CLI parameters in JSON format, with these key differences:
 - CLI flags become boolean fields (e.g., `--use-retroactive-removal` → `"use_retroactive_removal": true`)
 - Underscore naming convention (e.g., `selection_threshold` instead of `--selection-threshold`)
-- MCTS parameters are not available via API (CLI only)
+- All parameters including MCTS are available via API
 
 #### Example API Calls
 
@@ -238,6 +238,19 @@ curl -X POST "http://localhost:8000/api/generate" \
            "enable_thinking": true,
            "selection_threshold": 0.12,
            "max_tokens": 300
+         }'
+
+# MCTS generation
+curl -X POST "http://localhost:8000/api/generate" \
+     -H "Content-Type: application/json" \
+     -d '{
+           "prompt": "Write a creative story opening",
+           "use_mcts": true,
+           "mcts_simulations": 20,
+           "mcts_c_puct": 1.5,
+           "mcts_depth": 8,
+           "selection_threshold": 0.15,
+           "max_tokens": 100
          }'
 ```
 

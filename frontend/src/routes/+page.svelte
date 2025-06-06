@@ -201,14 +201,14 @@
   let disableKvCacheConsistency = $settings.disableKvCacheConsistency;
   let showTokenIds = $settings.showTokenIds;
   let systemContent = $settings.systemContent || '';
-  let noRelativeAttention = $settings.noRelativeAttention;
-  let noSigmoidThreshold = $settings.noSigmoidThreshold;
+  let noRelativeAttention = $settings.disableRelativeAttention;
+  let noSigmoidThreshold = $settings.disableSigmoidThreshold;
   let enableThinking = $settings.enableThinking || false;
   let allowIntrasetTokenVisibility = $settings.allowIntrasetTokenVisibility || false;
-  let noLciDynamicThreshold = $settings.noLciDynamicThreshold || false;
-  let noMultiScaleAttention = $settings.noMultiScaleAttention || false;
-  let noPreserveIsolatedTokens = $settings.noPreserveIsolatedTokens || false;
-  let completeRemovalMode = $settings.completeRemovalMode || 'remove_all';
+  let noLciDynamicThreshold = $settings.disableLciDynamicThreshold || false;
+  let noMultiScaleAttention = $settings.disableMultiScaleAttention || false;
+  let noPreserveIsolatedTokens = $settings.allowIsolatedTokenRemoval || false;
+  let completeRemovalMode = $settings.completeRemovalMode || 'keep_token';
   
   // Update settings when these change
   $: updateSetting('useCustomRope', useCustomRope);
@@ -216,13 +216,13 @@
   $: updateSetting('disableKvCacheConsistency', disableKvCacheConsistency);
   $: updateSetting('showTokenIds', showTokenIds);
   $: updateSetting('systemContent', systemContent);
-  $: updateSetting('noRelativeAttention', noRelativeAttention);
-  $: updateSetting('noSigmoidThreshold', noSigmoidThreshold);
+  $: updateSetting('disableRelativeAttention', noRelativeAttention);
+  $: updateSetting('disableSigmoidThreshold', noSigmoidThreshold);
   $: updateSetting('enableThinking', enableThinking);
   $: updateSetting('allowIntrasetTokenVisibility', allowIntrasetTokenVisibility);
-  $: updateSetting('noLciDynamicThreshold', noLciDynamicThreshold);
-  $: updateSetting('noMultiScaleAttention', noMultiScaleAttention);
-  $: updateSetting('noPreserveIsolatedTokens', noPreserveIsolatedTokens);
+  $: updateSetting('disableLciDynamicThreshold', noLciDynamicThreshold);
+  $: updateSetting('disableMultiScaleAttention', noMultiScaleAttention);
+  $: updateSetting('allowIsolatedTokenRemoval', noPreserveIsolatedTokens);
   $: updateSetting('completeRemovalMode', completeRemovalMode);
 
   // Function to generate text
@@ -527,8 +527,47 @@
     <!-- Input Section -->
     <Card>
       <CardHeader>
-        <CardTitle>Input</CardTitle>
-        <CardDescription>Enter your prompt and adjust generation parameters</CardDescription>
+        <div class="flex items-start justify-between gap-4">
+          <div>
+            <CardTitle>Input</CardTitle>
+            <CardDescription>Enter your prompt and adjust generation parameters</CardDescription>
+          </div>
+          <div class="flex items-center gap-2">
+            <!-- Preset Dropdown -->
+            <select
+              class="px-3 py-1.5 text-sm border rounded bg-background text-foreground border-input focus:outline-none focus:ring-2 focus:ring-ring"
+              on:change={(e) => {
+                const preset = e.target.value;
+                if (preset && preset !== 'custom') {
+                  presets[preset]();
+                  e.target.value = 'custom'; // Reset to custom after applying
+                }
+              }}
+            >
+              <option value="custom">Custom Settings</option>
+              <option value="default">Default</option>
+              <option value="creative">Creative</option>
+              <option value="precise">Precise</option>
+              <option value="mcts">MCTS Explorer</option>
+            </select>
+            
+            <!-- Action Buttons -->
+            <Button
+              variant="outline"
+              size="sm"
+              on:click={() => {
+                if (confirm('Reset all settings to defaults?')) {
+                  resetSettings();
+                }
+              }}
+              title="Reset to defaults"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+                <path fill-rule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clip-rule="evenodd" />
+              </svg>
+            </Button>
+          </div>
+        </div>
       </CardHeader>
       <CardContent class="flex flex-col">
         <!-- Settings Interface -->
@@ -796,181 +835,203 @@
             {/if}
           </TabsContent>
 
-          <TabsContent value="advanced" class="space-y-4">
+          <TabsContent value="advanced" class="space-y-6">
+            <!-- Model Settings Section -->
             <div class="space-y-4">
-              <div class="flex items-center space-x-2">
-                <Switch id="useCustomRope" bind:checked={useCustomRope} />
-                <label for="useCustomRope" class="text-sm font-medium">Use Custom RoPE</label>
-                {#if getHelp('useCustomRope')}
-                  <SimpleTooltip helpContent={getHelp('useCustomRope')} />
-                {/if}
-              </div>
-
-              <div class="flex items-center space-x-2">
-                <Switch id="disableKvCache" bind:checked={disableKvCache} />
-                <label for="disableKvCache" class="text-sm font-medium">Disable KV Cache</label>
-                {#if getHelp('disableKvCache')}
-                  <SimpleTooltip helpContent={getHelp('disableKvCache')} />
-                {/if}
-              </div>
-
-              <div class="flex items-center space-x-2">
-                <Switch id="showTokenIds" bind:checked={showTokenIds} />
-                <label for="showTokenIds" class="text-sm font-medium">Show Token IDs</label>
-                {#if getHelp('showTokenIds')}
-                  <SimpleTooltip helpContent={getHelp('showTokenIds')} />
-                {/if}
-              </div>
-
-              <div>
-                <div class="flex items-center gap-1 mb-1">
-                  <label for="systemContent" class="block text-sm font-medium">System Content</label>
-                  {#if getHelp('systemContent')}
-                    <SimpleTooltip helpContent={getHelp('systemContent')} />
+              <h3 class="text-sm font-semibold text-gray-700 dark:text-gray-300 uppercase tracking-wider">Model Settings</h3>
+              <div class="space-y-3 pl-4">
+                <div class="flex items-center space-x-2">
+                  <Switch id="useCustomRope" bind:checked={useCustomRope} />
+                  <label for="useCustomRope" class="text-sm font-medium">Use Custom RoPE (Rotary Position Embeddings)</label>
+                  {#if getHelp('useCustomRope')}
+                    <SimpleTooltip helpContent={getHelp('useCustomRope')} />
                   {/if}
                 </div>
-                <Textarea
-                  id="systemContent"
-                  bind:value={systemContent}
-                  placeholder="Enter system content..."
-                  rows={2}
-                />
-              </div>
 
-              <div class="flex items-center space-x-2">
-                <Switch id="enableThinking" bind:checked={enableThinking} />
-                <label for="enableThinking" class="text-sm font-medium">Enable Thinking</label>
-                {#if getHelp('enableThinking')}
-                  <SimpleTooltip helpContent={getHelp('enableThinking')} />
-                {/if}
-              </div>
-
-              <div class="flex items-center space-x-2">
-                <Switch id="allowIntrasetTokenVisibility" bind:checked={allowIntrasetTokenVisibility} />
-                <label for="allowIntrasetTokenVisibility" class="text-sm font-medium">Allow Intraset Token Visibility</label>
-                {#if getHelp('allowIntrasetTokenVisibility')}
-                  <SimpleTooltip helpContent={getHelp('allowIntrasetTokenVisibility')} />
-                {/if}
-              </div>
-
-              <div class="flex items-center space-x-2">
-                <Switch id="noPreserveIsolatedTokens" bind:checked={noPreserveIsolatedTokens} />
-                <label for="noPreserveIsolatedTokens" class="text-sm font-medium">No Preserve Isolated Tokens</label>
-                {#if getHelp('noPreserveIsolatedTokens')}
-                  <SimpleTooltip helpContent={getHelp('noPreserveIsolatedTokens')} />
-                {/if}
-              </div>
-
-              <div class="flex items-center space-x-2">
-                <Switch id="noRelativeAttention" bind:checked={noRelativeAttention} />
-                <label for="noRelativeAttention" class="text-sm font-medium">No Relative Attention</label>
-                {#if getHelp('noRelativeAttention')}
-                  <SimpleTooltip helpContent={getHelp('noRelativeAttention')} />
-                {/if}
-              </div>
-
-              {#if !noRelativeAttention}
-              <div>
-                <div class="flex items-center gap-1 mb-1">
-                  <label for="relativeThreshold" class="block text-sm font-medium">Relative Threshold</label>
-                  {#if getHelp('relativeThreshold')}
-                    <SimpleTooltip helpContent={getHelp('relativeThreshold')} />
+                <div class="flex items-center space-x-2">
+                  <Switch id="disableKvCache" bind:checked={disableKvCache} />
+                  <label for="disableKvCache" class="text-sm font-medium">Disable KV Cache</label>
+                  {#if getHelp('disableKvCache')}
+                    <SimpleTooltip helpContent={getHelp('disableKvCache')} />
                   {/if}
                 </div>
-                <Slider
-                  id="relativeThreshold"
-                  bind:value={relativeThresholdSlider}
-                  min={0}
-                  max={1}
-                  step={0.01}
-                />
-                <div class="text-sm text-gray-500 mt-1">{relativeThresholdSlider[0].toFixed(2)}</div>
-              </div>
-              {/if}
 
-              <div class="flex items-center space-x-2">
-                <Switch id="noMultiScaleAttention" bind:checked={noMultiScaleAttention} />
-                <label for="noMultiScaleAttention" class="text-sm font-medium">No Multi-Scale Attention</label>
-                {#if getHelp('noMultiScaleAttention')}
-                  <SimpleTooltip helpContent={getHelp('noMultiScaleAttention')} />
-                {/if}
-              </div>
-
-              <div>
-                <div class="flex items-center gap-1 mb-1">
-                  <label for="numLayersToUse" class="block text-sm font-medium">Number of Layers to Use</label>
-                  {#if getHelp('numLayersToUse')}
-                    <SimpleTooltip helpContent={getHelp('numLayersToUse')} />
+                <div class="flex items-center space-x-2">
+                  <Switch id="disableKvCacheConsistency" bind:checked={disableKvCacheConsistency} />
+                  <label for="disableKvCacheConsistency" class="text-sm font-medium">Disable KV Cache Consistency Checks</label>
+                  {#if getHelp('disableKvCacheConsistency')}
+                    <SimpleTooltip helpContent={getHelp('disableKvCacheConsistency')} />
                   {/if}
                 </div>
-                <Input
-                  id="numLayersToUse"
-                  type="number"
-                  bind:value={numLayersToUse}
-                  placeholder="Leave empty for all layers"
-                  min={1}
-                />
-              </div>
 
-              <div class="flex items-center space-x-2">
-                <Switch id="noLciDynamicThreshold" bind:checked={noLciDynamicThreshold} />
-                <label for="noLciDynamicThreshold" class="text-sm font-medium">No LCI Dynamic Threshold</label>
-                {#if getHelp('noLciDynamicThreshold')}
-                  <SimpleTooltip helpContent={getHelp('noLciDynamicThreshold')} />
-                {/if}
-              </div>
-
-              <div class="flex items-center space-x-2">
-                <Switch id="noSigmoidThreshold" bind:checked={noSigmoidThreshold} />
-                <label for="noSigmoidThreshold" class="text-sm font-medium">No Sigmoid Threshold</label>
-                {#if getHelp('noSigmoidThreshold')}
-                  <SimpleTooltip helpContent={getHelp('noSigmoidThreshold')} />
-                {/if}
-              </div>
-
-              {#if !noSigmoidThreshold}
-              <div>
-                <div class="flex items-center gap-1 mb-1">
-                  <label for="sigmoidSteepness" class="block text-sm font-medium">Sigmoid Steepness</label>
-                  {#if getHelp('sigmoidSteepness')}
-                    <SimpleTooltip helpContent={getHelp('sigmoidSteepness')} />
+                <div class="flex items-center space-x-2">
+                  <Switch id="enableThinking" bind:checked={enableThinking} />
+                  <label for="enableThinking" class="text-sm font-medium">Enable Deep Thinking Mode</label>
+                  {#if getHelp('enableThinking')}
+                    <SimpleTooltip helpContent={getHelp('enableThinking')} />
                   {/if}
                 </div>
-                <Slider
-                  id="sigmoidSteepness"
-                  bind:value={sigmoidSteepnessSlider}
-                  min={1}
-                  max={20}
-                  step={0.1}
-                />
-                <div class="text-sm text-gray-500 mt-1">{sigmoidSteepnessSlider[0].toFixed(1)}</div>
-              </div>
-              {/if}
 
-              <div>
-                <div class="flex items-center gap-1 mb-1">
-                  <label for="completeRemovalMode" class="block text-sm font-medium">Complete Removal Mode</label>
-                  {#if getHelp('completeRemovalMode')}
-                    <SimpleTooltip helpContent={getHelp('completeRemovalMode')} />
+                <div>
+                  <div class="flex items-center gap-1 mb-1">
+                    <label for="systemContent" class="block text-sm font-medium">System Prompt</label>
+                    {#if getHelp('systemContent')}
+                      <SimpleTooltip helpContent={getHelp('systemContent')} />
+                    {/if}
+                  </div>
+                  <Textarea
+                    id="systemContent"
+                    bind:value={systemContent}
+                    placeholder="Optional system instructions for the model..."
+                    rows={2}
+                  />
+                </div>
+              </div>
+            </div>
+
+            <!-- Attention Settings Section -->
+            <div class="space-y-4">
+              <h3 class="text-sm font-semibold text-gray-700 dark:text-gray-300 uppercase tracking-wider">Attention Settings</h3>
+              <div class="space-y-3 pl-4">
+                <div class="flex items-center space-x-2">
+                  <Switch id="allowIntrasetTokenVisibility" bind:checked={allowIntrasetTokenVisibility} />
+                  <label for="allowIntrasetTokenVisibility" class="text-sm font-medium">Allow Parallel Tokens to See Each Other</label>
+                  {#if getHelp('allowIntrasetTokenVisibility')}
+                    <SimpleTooltip helpContent={getHelp('allowIntrasetTokenVisibility')} />
                   {/if}
                 </div>
-                <select
-                  id="completeRemovalMode"
-                  bind:value={completeRemovalMode}
-                  class="w-full p-2 border rounded bg-background text-foreground border-input focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
-                >
-                  <option value="keep_token">Keep Token</option>
-                  <option value="keep_unattended">Keep Unattended</option>
-                  <option value="remove_position">Remove Position</option>
-                </select>
-              </div>
 
-              <div class="flex items-center space-x-2">
-                <Switch id="disableKvCacheConsistency" bind:checked={disableKvCacheConsistency} />
-                <label for="disableKvCacheConsistency" class="text-sm font-medium">Disable KV Cache Consistency</label>
-                {#if getHelp('disableKvCacheConsistency')}
-                  <SimpleTooltip helpContent={getHelp('disableKvCacheConsistency')} />
+                <div class="flex items-center space-x-2">
+                  <Switch id="disableRelativeAttention" bind:checked={noRelativeAttention} />
+                  <label for="disableRelativeAttention" class="text-sm font-medium">Disable Relative Attention</label>
+                  {#if getHelp('noRelativeAttention')}
+                    <SimpleTooltip helpContent={getHelp('noRelativeAttention')} />
+                  {/if}
+                </div>
+
+                {#if !noRelativeAttention}
+                <div class="pl-4">
+                  <div class="flex items-center gap-1 mb-1">
+                    <label for="relativeThreshold" class="block text-sm font-medium">Relative Attention Threshold</label>
+                    {#if getHelp('relativeThreshold')}
+                      <SimpleTooltip helpContent={getHelp('relativeThreshold')} />
+                    {/if}
+                  </div>
+                  <Slider
+                    id="relativeThreshold"
+                    bind:value={relativeThresholdSlider}
+                    min={0}
+                    max={1}
+                    step={0.01}
+                  />
+                  <div class="text-sm text-gray-500 mt-1">{relativeThresholdSlider[0].toFixed(2)}</div>
+                </div>
                 {/if}
+
+                <div class="flex items-center space-x-2">
+                  <Switch id="disableMultiScaleAttention" bind:checked={noMultiScaleAttention} />
+                  <label for="disableMultiScaleAttention" class="text-sm font-medium">Disable Multi-Scale Attention</label>
+                  {#if getHelp('noMultiScaleAttention')}
+                    <SimpleTooltip helpContent={getHelp('noMultiScaleAttention')} />
+                  {/if}
+                </div>
+
+                <div>
+                  <div class="flex items-center gap-1 mb-1">
+                    <label for="numLayersToUse" class="block text-sm font-medium">Number of Attention Layers</label>
+                    {#if getHelp('numLayersToUse')}
+                      <SimpleTooltip helpContent={getHelp('numLayersToUse')} />
+                    {/if}
+                  </div>
+                  <Input
+                    id="numLayersToUse"
+                    type="number"
+                    bind:value={numLayersToUse}
+                    placeholder="All layers (default)"
+                    min={1}
+                  />
+                </div>
+              </div>
+            </div>
+
+            <!-- Pruning & Threshold Settings Section -->
+            <div class="space-y-4">
+              <h3 class="text-sm font-semibold text-gray-700 dark:text-gray-300 uppercase tracking-wider">Pruning & Thresholds</h3>
+              <div class="space-y-3 pl-4">
+                <div class="flex items-center space-x-2">
+                  <Switch id="allowIsolatedTokenRemoval" bind:checked={noPreserveIsolatedTokens} />
+                  <label for="allowIsolatedTokenRemoval" class="text-sm font-medium">Allow Isolated Token Removal</label>
+                  {#if getHelp('noPreserveIsolatedTokens')}
+                    <SimpleTooltip helpContent={getHelp('noPreserveIsolatedTokens')} />
+                  {/if}
+                </div>
+
+                <div>
+                  <div class="flex items-center gap-1 mb-1">
+                    <label for="completeRemovalMode" class="block text-sm font-medium">Complete Removal Mode</label>
+                    {#if getHelp('completeRemovalMode')}
+                      <SimpleTooltip helpContent={getHelp('completeRemovalMode')} />
+                    {/if}
+                  </div>
+                  <select
+                    id="completeRemovalMode"
+                    bind:value={completeRemovalMode}
+                    class="w-full p-2 border rounded bg-background text-foreground border-input focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
+                  >
+                    <option value="keep_token">Keep Best Token</option>
+                    <option value="keep_unattended">Keep Unattended Tokens</option>
+                    <option value="remove_position">Remove Entire Position</option>
+                  </select>
+                </div>
+
+                <div class="flex items-center space-x-2">
+                  <Switch id="disableLciDynamicThreshold" bind:checked={noLciDynamicThreshold} />
+                  <label for="disableLciDynamicThreshold" class="text-sm font-medium">Disable LCI Dynamic Threshold</label>
+                  {#if getHelp('noLciDynamicThreshold')}
+                    <SimpleTooltip helpContent={getHelp('noLciDynamicThreshold')} />
+                  {/if}
+                </div>
+
+                <div class="flex items-center space-x-2">
+                  <Switch id="disableSigmoidThreshold" bind:checked={noSigmoidThreshold} />
+                  <label for="disableSigmoidThreshold" class="text-sm font-medium">Disable Sigmoid Decision Boundary</label>
+                  {#if getHelp('noSigmoidThreshold')}
+                    <SimpleTooltip helpContent={getHelp('noSigmoidThreshold')} />
+                  {/if}
+                </div>
+
+                {#if !noSigmoidThreshold}
+                <div class="pl-4">
+                  <div class="flex items-center gap-1 mb-1">
+                    <label for="sigmoidSteepness" class="block text-sm font-medium">Sigmoid Steepness</label>
+                    {#if getHelp('sigmoidSteepness')}
+                      <SimpleTooltip helpContent={getHelp('sigmoidSteepness')} />
+                    {/if}
+                  </div>
+                  <Slider
+                    id="sigmoidSteepness"
+                    bind:value={sigmoidSteepnessSlider}
+                    min={1}
+                    max={20}
+                    step={0.1}
+                  />
+                  <div class="text-sm text-gray-500 mt-1">{sigmoidSteepnessSlider[0].toFixed(1)}</div>
+                </div>
+                {/if}
+              </div>
+            </div>
+
+            <!-- Output Settings Section -->
+            <div class="space-y-4">
+              <h3 class="text-sm font-semibold text-gray-700 dark:text-gray-300 uppercase tracking-wider">Output Settings</h3>
+              <div class="space-y-3 pl-4">
+                <div class="flex items-center space-x-2">
+                  <Switch id="showTokenIds" bind:checked={showTokenIds} />
+                  <label for="showTokenIds" class="text-sm font-medium">Show Token IDs in Output</label>
+                  {#if getHelp('showTokenIds')}
+                    <SimpleTooltip helpContent={getHelp('showTokenIds')} />
+                  {/if}
+                </div>
               </div>
             </div>
           </TabsContent>
@@ -1005,8 +1066,52 @@
     <!-- Output Section -->
     <Card>
       <CardHeader>
-        <CardTitle>Output</CardTitle>
-        <CardDescription>Generated text and visualization</CardDescription>
+        <div class="flex items-start justify-between gap-4">
+          <div>
+            <CardTitle>Output</CardTitle>
+            <CardDescription>Generated text and visualization</CardDescription>
+          </div>
+          {#if apiResponse && apiResponse.clean_text}
+          <div class="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              on:click={() => {
+                const text = apiResponse.clean_text || '';
+                const blob = new Blob([text], { type: 'text/plain' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `tempo-generation-${new Date().toISOString().slice(0, 10)}.txt`;
+                a.click();
+                URL.revokeObjectURL(url);
+              }}
+              title="Export as text file"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 mr-1" viewBox="0 0 20 20" fill="currentColor">
+                <path fill-rule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm3.293-7.707a1 1 0 011.414 0L9 10.586V3a1 1 0 112 0v7.586l1.293-1.293a1 1 0 111.414 1.414l-3 3a1 1 0 01-1.414 0l-3-3a1 1 0 010-1.414z" clip-rule="evenodd" />
+              </svg>
+              Export
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              on:click={() => {
+                const text = apiResponse.clean_text || '';
+                navigator.clipboard.writeText(text).then(() => {
+                  // Optional: Show a toast notification
+                });
+              }}
+              title="Copy to clipboard"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+                <path d="M8 3a1 1 0 011-1h2a1 1 0 110 2H9a1 1 0 01-1-1z" />
+                <path d="M6 3a2 2 0 00-2 2v11a2 2 0 002 2h8a2 2 0 002-2V5a2 2 0 00-2-2 3 3 0 01-3 3H9a3 3 0 01-3-3z" />
+              </svg>
+            </Button>
+          </div>
+          {/if}
+        </div>
       </CardHeader>
       <CardContent>
         {#if error}

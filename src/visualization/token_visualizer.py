@@ -199,7 +199,7 @@ class TokenVisualizer:
         print(f"Average tokens per step: {np.mean(token_counts):.2f}")
         print(f"Max tokens in a step: {max(token_counts)}")
 
-        if results.get("use_retroactive_pruning") and "pruned_sets" in results:
+        if results.get("use_retroactive_removal") and "pruned_sets" in results:
             removed_sets = results["pruned_sets"]
             removed_counts = [len(s) for s in removed_sets]
             removal_strategy = results.get("pruning_strategy", "coherence")

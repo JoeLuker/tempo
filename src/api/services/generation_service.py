@@ -122,7 +122,7 @@ class GenerationService:
         # Add pruning configuration
         if pruner:
             generation_kwargs.update({
-                "use_retroactive_pruning": True,
+                "use_retroactive_removal": True,
                 "retroactive_pruner": pruner,
                 "attention_threshold": request.pruning.attention_threshold,
             })

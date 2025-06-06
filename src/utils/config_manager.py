@@ -85,7 +85,7 @@ class GenerationConfig:
     length_penalty: float = 1.0
     beam_width: int = 1  # 1 means greedy decoding
     use_dynamic_thresholding: bool = True
-    use_retroactive_pruning: bool = True
+    use_retroactive_removal: bool = True
     use_parallel_generation: bool = True
     max_parallel_tokens: int = 5
 
