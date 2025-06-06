@@ -61,15 +61,15 @@ Currently, this project is focused on experimentation and validation using the *
 - **Single KV Cache:** Evolves a single standard `past_key_values` cache. RoPE modifications influence how the query/key vectors are calculated before cache interaction. *KV Cache consistency logic has been simplified/removed as the position mapping handles the core requirement.*
 - **Pruning:**
   - **Strategy-Based Pruning (`--use-pruning`, `--pruning-strategy`, etc.):** Refines the candidate set *before* tokens are appended, using coherence, diversity, or a hybrid approach. Uses its *own* threshold (e.g., `--coherence-threshold`).
-  - **Retroactive Pruning (`--use-retroactive-pruning`):** Refines *previously processed* parallel sets based on attention from later tokens (uses `--attention-threshold` as base for dynamic curve).
+  - **Retroactive Removal (`--use-retroactive-removal`):** Refines *previously processed* parallel sets based on attention from later tokens (uses `--attention-threshold` as base for dynamic curve).
 
 ## Key Features
 
 - **Simulated Parallel Processing:** Explores parallelism by processing multiple candidate tokens per logical step using RoPE modifications within a single sequence state.
 - **Configurable Selection:** Control the initial candidate set size via `--selection-threshold`.
 - **Advanced Pruning:**
-  - **Retroactive Pruning** (`--use-retroactive-pruning`): Refines *previously processed* parallel sets based on attention from later tokens.
-  - **Dynamic Thresholding** (`--dynamic-threshold`): Adjust retroactive pruning aggressiveness over time using Bezier (`--bezier-p1`, `--bezier-p2`) or ReLU (`--use-relu`, `--relu-activation-point`) curves.
+  - **Retroactive Removal** (`--use-retroactive-removal`): Refines *previously processed* parallel sets based on attention from later tokens.
+  - **Dynamic Thresholding** (`--dynamic-threshold`): Adjust retroactive removal aggressiveness over time using Bezier (`--bezier-p1`, `--bezier-p2`) or ReLU (`--use-relu`, `--relu-activation-point`) curves.
   - **Attention-Based Pruning**: Multiple attention mechanisms including relative thresholds (`--relative-threshold`), multi-scale attention, and sigmoid decision boundaries.
 - **Generation Modes:**
   - **TEMPO Mode** (default): Full parallel token processing with RoPE modifications.
@@ -141,11 +141,11 @@ The primary way to run experiments with detailed control and profiling.
 # Basic generation (using defaults for the target model)
 python run_tempo.py --prompt "Explain the theory of relativity simply." --selection-threshold 0.05 --max-tokens 150
 
-# Enable retroactive pruning
-python run_tempo.py --prompt "Write a haiku about servers." --selection-threshold 0.1 --use-retroactive-pruning --attention-threshold 0.02
+# Enable retroactive removal
+python run_tempo.py --prompt "Write a haiku about servers." --selection-threshold 0.1 --use-retroactive-removal --attention-threshold 0.02
 
-# Use dynamic threshold with Bezier curve for retroactive pruning
-python run_tempo.py --prompt "Story about a lost robot." --selection-threshold 0.08 --use-retroactive-pruning --attention-threshold 0.01 --dynamic-threshold --bezier-p1 0.1 --bezier-p2 0.9
+# Use dynamic threshold with Bezier curve for retroactive removal
+python run_tempo.py --prompt "Story about a lost robot." --selection-threshold 0.08 --use-retroactive-removal --attention-threshold 0.01 --dynamic-threshold --bezier-p1 0.1 --bezier-p2 0.9
 
 # Enable Debug Mode for detailed logs
 python run_tempo.py --prompt "Debug this." --selection-threshold 0.2 --max-tokens 20 --debug-mode
@@ -164,7 +164,7 @@ python run_tempo.py --prompt "Creative story beginning" --use-mcts --mcts-simula
 python run_tempo.py --prompt "Solve this logic puzzle: " --enable-thinking --selection-threshold 0.15
 
 # Advanced pruning with multiple attention mechanisms
-python run_tempo.py --prompt "Complex reasoning task" --use-retroactive-pruning --attention-threshold 0.005 --relative-threshold 0.3 --sigmoid-steepness 15.0
+python run_tempo.py --prompt "Complex reasoning task" --use-retroactive-removal --attention-threshold 0.005 --relative-threshold 0.3 --sigmoid-steepness 15.0
 
 # Default mode (standard generation without TEMPO)
 python run_tempo.py --prompt "Simple generation" --default-mode --max-tokens 100
@@ -176,14 +176,14 @@ python run_tempo.py --prompt "Custom setup" --model "path/to/model" --output-dir
 #### Technical Configuration
 
 ```bash
-# Disable RoPE modifications and KV cache
-python run_tempo.py --prompt "Technical test" --no-use-custom-rope --disable-kv-cache
+# Disable KV cache for testing
+python run_tempo.py --prompt "Technical test" --disable-kv-cache
 
 # Allow parallel tokens to see each other
 python run_tempo.py --prompt "Parallel visibility test" --allow-intraset-token-visibility --selection-threshold 0.2
 
 # Fine-tuned pruning control
-python run_tempo.py --prompt "Precision pruning" --use-retroactive-pruning --complete-pruning-mode "keep_unattended" --num-layers-to-use 8
+python run_tempo.py --prompt "Precision pruning" --use-retroactive-removal --complete-removal-mode "keep_unattended" --num-layers-to-use 8
 ```
 
 ### API Usage (`api.py`)
@@ -200,7 +200,7 @@ The FastAPI backend provides endpoints for integration, primarily used by the fr
 #### API Parameters
 
 The API accepts most CLI parameters in JSON format, with these key differences:
-- CLI flags become boolean fields (e.g., `--use-retroactive-pruning` → `"use_retroactive_pruning": true`)
+- CLI flags become boolean fields (e.g., `--use-retroactive-removal` → `"use_retroactive_removal": true`)
 - Underscore naming convention (e.g., `selection_threshold` instead of `--selection-threshold`)
 - MCTS parameters are not available via API (CLI only)
 
@@ -216,14 +216,14 @@ curl -X POST "http://localhost:8000/api/generate" \
            "max_tokens": 30
          }'
 
-# Advanced generation with retroactive pruning
+# Advanced generation with retroactive removal
 curl -X POST "http://localhost:8000/api/generate" \
      -H "Content-Type: application/json" \
      -d '{
            "prompt": "Write a creative story about AI",
            "selection_threshold": 0.08,
            "max_tokens": 200,
-           "use_retroactive_pruning": true,
+           "use_retroactive_removal": true,
            "attention_threshold": 0.015,
            "dynamic_threshold": true,
            "bezier_p1": 0.1,

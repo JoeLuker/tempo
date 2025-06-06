@@ -184,7 +184,7 @@ class ExperimentRunner:
                 num_layers_to_use=args.get("num_layers_to_use", None),
                 use_sigmoid_threshold=not args.get("no_sigmoid_threshold", False),
                 sigmoid_steepness=args.get("sigmoid_steepness", 10.0),
-                complete_removal_mode=args.get("complete_removal_mode", "keep_token"),
+                complete_pruning_mode=args.get("complete_removal_mode", "keep_token"),
             )
 
             # Set the shared TokenGenerator instance on the retroactive remover
@@ -261,8 +261,8 @@ class ExperimentRunner:
             else:
                 print("Parallel tokens are isolated (default: can't see each other)")
 
-                # Indicate pruning status based on use_retroactive_pruning and preserve_all_isolated_tokens
-                if use_retroactive_pruning:
+                # Indicate pruning status based on use_retroactive_removal and preserve_all_isolated_tokens
+                if use_retroactive_removal:
                     if not preserve_all_isolated_tokens:
                         print(
                             "Retroactive pruning will evaluate isolated tokens (explicitly requested)"

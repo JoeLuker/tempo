@@ -65,7 +65,7 @@ class RetroactiveRemover:
         self.num_layers_to_use = num_layers_to_use
         self.use_sigmoid_threshold = use_sigmoid_threshold
         self.sigmoid_steepness = sigmoid_steepness
-        self.complete_removal_mode = complete_removal_mode
+        self.complete_removal_mode = complete_pruning_mode
 
         # Initialize DynamicThresholdManager if not provided
         if dynamic_threshold_manager is None:
