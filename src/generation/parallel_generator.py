@@ -151,7 +151,7 @@ class ParallelGenerator(LoggingMixin):
 
         # Performance tracking
         self.generation_time = 0
-        self.pruning_time = 0
+        self.removal_time = 0
 
         # Setup tracking for sequence length
         self.sequence_length = 0
@@ -228,7 +228,7 @@ class ParallelGenerator(LoggingMixin):
         max_tokens: int = 100,
         selection_threshold: Optional[float] = 0.1,
         return_parallel_sets: bool = False,
-        use_retroactive_pruning: bool = False,
+        use_retroactive_removal: bool = False,
         min_steps: int = 0,
         show_token_ids: bool = False,
         debug_mode: Optional[bool] = None,
@@ -236,7 +236,7 @@ class ParallelGenerator(LoggingMixin):
         system_content: Optional[str] = None,
         isolate_parallel_tokens: bool = True,
         preserve_all_isolated_tokens: Optional[bool] = None,
-        retroactive_pruner: Optional[object] = None,
+        retroactive_remover: Optional[object] = None,
         sequence_callback: Optional[Callable[[int, int, int], None]] = None,
         # MCTS parameters
         use_mcts: bool = False,
@@ -262,15 +262,15 @@ class ParallelGenerator(LoggingMixin):
             max_tokens: Maximum number of tokens to generate
             selection_threshold: Probability threshold for INITIAL token selection (used by TokenSelector)
             return_parallel_sets: Whether to return parallel token sets for visualization
-            use_retroactive_pruning: Whether to use retroactive pruning
+            use_retroactive_removal: Whether to use retroactive removal
             min_steps: Minimum number of steps before stopping
             show_token_ids: Include token IDs in return for debugging
             debug_mode: Override the instance debug_mode setting
             disable_kv_cache: Whether to disable KV caching
             system_content: System content for chat prompts
             isolate_parallel_tokens: Whether tokens at the same position cannot attend to each other
-            preserve_all_isolated_tokens: Override default pruning behavior for isolated tokens
-            retroactive_pruner: Retroactive pruner to use for token selection
+            preserve_all_isolated_tokens: Override default removal behavior for isolated tokens
+            retroactive_remover: Retroactive remover to use for token selection
             sequence_callback: Callback function for sequence length updates
             use_mcts: Whether to use Monte Carlo Tree Search for token selection
             mcts_simulations: Number of MCTS simulations per step
@@ -293,9 +293,9 @@ class ParallelGenerator(LoggingMixin):
 
         # Initialize timing variables
         generation_start = time.time()
-        pruning_time = 0.0
-        pruned_tokens_count = 0
-        pruning_steps = 0
+        removal_time = 0.0
+        removed_tokens_count = 0
+        removal_steps = 0
 
         # Validate parameters
         assert prompt, "Prompt cannot be empty"
@@ -425,7 +425,7 @@ class ParallelGenerator(LoggingMixin):
 
         # --- Tracking Variables ---
         all_original_token_sets = {}  # {logical_pos: [(id, prob), ...]} for originals
-        all_pruned_token_sets = {}  # {logical_pos: [(id, prob), ...]} for pruned
+        all_surviving_token_sets = {}  # {logical_pos: [(id, prob), ...]} for tokens that survived removal
         had_repetition_loop = False
 
         # --- Main Generation Loop ---
@@ -602,52 +602,60 @@ class ParallelGenerator(LoggingMixin):
                 )
                 break
 
-            # 4. Apply Pruning to get T' (pruners use their own thresholds)
-            pruned_distribution = token_distribution  # Start with original candidates
-            if use_retroactive_pruning and logical_step > 0:
-                pruning_start = time.time()
+            # 4. Apply Removal to get T' (removers use their own thresholds)
+            surviving_distribution = token_distribution  # Start with original candidates
+            if use_retroactive_removal and logical_step > 0:
+                removal_start = time.time()
                 try:
-                    # Update retroactive pruner with current step (updates its internal threshold)
-                    if hasattr(retroactive_pruner, "update_step"):
-                        retroactive_pruner.update_step(logical_step)
+                    # Update retroactive remover with current step (updates its internal threshold)
+                    if hasattr(retroactive_remover, "update_step"):
+                        retroactive_remover.update_step(logical_step)
 
-                    # Prune history before adding current tokens (uses its own threshold)
-                    if hasattr(retroactive_pruner, "retroactively_prune"):
-                        pruned_history = retroactive_pruner.retroactively_prune(
-                            prompt_length=prompt_tokens,
-                            all_parallel_tokens=all_original_token_sets,
-                            step=logical_step,
-                        )
-                        # Update the pruned sets history
-                        all_pruned_token_sets.update(pruned_history)
+                    # Remove tokens from history before adding current tokens (uses its own threshold)
+                    if hasattr(retroactive_remover, "retroactively_remove") or hasattr(retroactive_remover, "retroactively_prune"):
+                        # Try new method name first, fall back to old for compatibility
+                        if hasattr(retroactive_remover, "retroactively_remove"):
+                            surviving_history = retroactive_remover.retroactively_remove(
+                                prompt_length=prompt_tokens,
+                                all_parallel_tokens=all_original_token_sets,
+                                step=logical_step,
+                            )
+                        else:
+                            surviving_history = retroactive_remover.retroactively_prune(
+                                prompt_length=prompt_tokens,
+                                all_parallel_tokens=all_original_token_sets,
+                                step=logical_step,
+                            )
+                        # Update the surviving sets history
+                        all_surviving_token_sets.update(surviving_history)
                         self.log(
-                            f"Retroactive pruning applied up to step {logical_step-1}."
+                            f"Retroactive removal applied up to step {logical_step-1}."
                         )
 
                 except Exception as e:
                     self.log(
-                        f"Error during retroactive pruning at step {logical_step}: {e}",
+                        f"Error during retroactive removal at step {logical_step}: {e}",
                         "error",
                     )
                     self.log(traceback.format_exc(), "error")
 
-                pruning_time += time.time() - pruning_start
-                pruning_steps += 1
+                removal_time += time.time() - removal_start
+                removal_steps += 1
 
-                # Store pruned results for this step
-                pruned_candidates = [
-                    (tid.item(), float(prob)) for tid, prob in pruned_distribution
+                # Store surviving results for this step
+                surviving_candidates = [
+                    (tid.item(), float(prob)) for tid, prob in surviving_distribution
                 ]
-                all_pruned_token_sets[logical_step] = pruned_candidates
+                all_surviving_token_sets[logical_step] = surviving_candidates
 
-            # 5. Extract token IDs from final pruned distribution
-            T_prime_ids = [tid.item() for tid, _ in pruned_distribution]
-            T_prime_probs = [float(prob) for _, prob in pruned_distribution]
+            # 5. Extract token IDs from final surviving distribution
+            T_prime_ids = [tid.item() for tid, _ in surviving_distribution]
+            T_prime_probs = [float(prob) for _, prob in surviving_distribution]
 
-            # If no tokens left after pruning (shouldn't happen due to fallbacks, but just in case)
+            # If no tokens left after removal (shouldn't happen due to fallbacks, but just in case)
             if not T_prime_ids:
                 self.log(
-                    "Warning: No tokens left after pruning, using top original token",
+                    "Warning: No tokens left after removal, using top original token",
                     "warning",
                 )
                 T_prime_ids = [token_distribution[0][0].item()]
@@ -744,27 +752,27 @@ class ParallelGenerator(LoggingMixin):
         if return_parallel_sets:
             for logical_step in range(len(all_original_token_sets)):
                 original_set = all_original_token_sets.get(logical_step, [])
-                pruned_set = all_pruned_token_sets.get(
+                surviving_set = all_surviving_token_sets.get(
                     logical_step, original_set
-                )  # Use original if no pruned entry
+                )  # Use original if no surviving entry
 
                 # Extract ids and probs
                 original_ids = [tid for tid, _ in original_set]
                 original_probs = [prob for _, prob in original_set]
 
-                # Extract only the tokens that were pruned
-                pruned_ids = []
-                pruned_probs = []
+                # Extract only the tokens that were removed
+                removed_ids = []
+                removed_probs = []
                 for tid, prob in original_set:
-                    if tid not in [p_tid for p_tid, _ in pruned_set]:
-                        pruned_ids.append(tid)
-                        pruned_probs.append(prob)
+                    if tid not in [s_tid for s_tid, _ in surviving_set]:
+                        removed_ids.append(tid)
+                        removed_probs.append(prob)
 
                 token_sets_for_vis.append(
                     (
                         logical_step,  # Logical step
                         (original_ids, original_probs),
-                        (pruned_ids, pruned_probs),
+                        (removed_ids, removed_probs),  # These are the tokens that were REMOVED
                     )
                 )
 
@@ -815,19 +823,19 @@ class ParallelGenerator(LoggingMixin):
         # Calculate generation time
         generation_time = time.time() - generation_start
         self.generation_time = generation_time
-        self.pruning_time = pruning_time
+        self.removal_time = removal_time
 
         # Prepare result
         result = {
             "generated_text": formatted_output,
             "raw_generated_text": raw_generated_text,
             "generation_time": generation_time,
-            "pruning_time": pruning_time,
+            "removal_time": removal_time,
             "is_qwen_model": self.is_qwen,
             "had_repetition_loop": had_repetition_loop,
             "prompt": prompt,
             "selection_threshold": selection_threshold,
-            "use_retroactive_pruning": use_retroactive_pruning,
+            "use_retroactive_removal": use_retroactive_removal,
             "min_steps": min_steps,
             "disable_kv_cache": disable_kv_cache,
             "isolate_parallel_tokens": isolate_parallel_tokens,
@@ -838,12 +846,12 @@ class ParallelGenerator(LoggingMixin):
         if return_parallel_sets:
             result["token_sets"] = token_sets_for_vis
             result["all_original_token_sets"] = all_original_token_sets
-            result["all_pruned_token_sets"] = all_pruned_token_sets
+            result["all_surviving_token_sets"] = all_surviving_token_sets
 
-        # Add pruning statistics
-        if use_retroactive_pruning:
-            result["pruning_time"] = pruning_time
-            result["pruning_steps"] = pruning_steps
+        # Add removal statistics
+        if use_retroactive_removal:
+            result["removal_time"] = removal_time
+            result["removal_steps"] = removal_steps
 
         # Restore original debug mode if needed
         if debug_mode is not None:

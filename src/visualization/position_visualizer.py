@@ -104,7 +104,7 @@ class PositionVisualizer:
             return
 
         parallel_sets = results["parallel_sets"]
-        pruned_sets = results.get("pruned_sets", None)
+        surviving_sets = results.get("surviving_sets", None)  # Sets that survived pruning
 
         # Create figure
         plt.figure(figsize=(12, 8))
@@ -122,18 +122,18 @@ class PositionVisualizer:
                 label="All tokens" if i == 0 else "",
             )
 
-            # If pruning was used, highlight pruned tokens
-            if pruned_sets:
-                pruned_probs = [t[1] for t in pruned_sets[i]]
-                if len(pruned_probs) < len(probs):
+            # If pruning was used, highlight surviving tokens
+            if surviving_sets and i < len(surviving_sets):
+                surviving_probs = [t[1] for t in surviving_sets[i]]
+                if len(surviving_probs) < len(probs):
                     plt.scatter(
-                        [i] * len(pruned_probs),
-                        pruned_probs,
+                        [i] * len(surviving_probs),
+                        surviving_probs,
                         alpha=1.0,
                         c="red",
                         marker="x",
                         s=100,
-                        label="Kept after pruning" if i == 0 else "",
+                        label="Survived pruning" if i == 0 else "",
                     )
 
         plt.xlabel("Generation Position")

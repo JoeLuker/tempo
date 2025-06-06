@@ -10,7 +10,7 @@ from ..visualization.position_visualizer import PositionVisualizer
 from ..modeling.model_wrapper import TEMPOModelWrapper
 import time
 from tqdm import tqdm
-from src.pruning import RetroactivePruner
+from src.pruning import RetroactiveRemover
 from src.pruning.dynamic_threshold import DynamicThresholdManager
 
 
@@ -62,7 +62,7 @@ class ExperimentRunner:
         prompt = args.get("prompt", "")
         max_tokens = args.get("max_tokens", 100)
         selection_threshold = args.get("selection_threshold", 0.1)
-        use_retroactive_pruning = args.get("use_retroactive_pruning", False)
+        use_retroactive_removal = args.get("use_retroactive_removal", False)
         save_visualization = args.get("save_visualization", True)
         output_dir = args.get("output_dir", "./output")
         bezier_points = args.get("bezier_points", [0.2, 0.8])
@@ -105,9 +105,9 @@ class ExperimentRunner:
 
         # Only preserve isolated tokens by default if the user didn't explicitly request pruning
         if (
-            use_retroactive_pruning and no_preserve_isolated_tokens is False
-        ):  # If pruning is requested and preservation wasn't explicitly disabled
-            # Don't automatically preserve - user wants pruning
+            use_retroactive_removal and no_preserve_isolated_tokens is False
+        ):  # If removal is requested and preservation wasn't explicitly disabled
+            # Don't automatically preserve - user wants removal
             preserve_all_isolated_tokens = False
         else:
             # Use default behavior - preserve isolated tokens
@@ -118,7 +118,7 @@ class ExperimentRunner:
         # Print initialization progress
         setup_steps = [
             "Setting up experiment",
-            "Configuring pruning",
+            "Configuring removal",
             "Creating generator",
             "Starting generation",
         ]
@@ -162,15 +162,15 @@ class ExperimentRunner:
             shared_token_generator.set_debug_mode(True)
             print("Shared TokenGenerator debug mode ENABLED")
 
-        # Modify pruning setup
-        pruner = None
-        retroactive_pruner = None
+        # Modify removal setup
+        remover = None
+        retroactive_remover = None
 
-        if use_retroactive_pruning:
+        if use_retroactive_removal:
             attention_threshold = args.get("attention_threshold", 0.01)
 
-            # Create retroactive pruner
-            retroactive_pruner = RetroactivePruner(
+            # Create retroactive remover
+            retroactive_remover = RetroactiveRemover(
                 model=self.model,
                 tokenizer=self.tokenizer,
                 attention_threshold=attention_threshold,
@@ -184,20 +184,20 @@ class ExperimentRunner:
                 num_layers_to_use=args.get("num_layers_to_use", None),
                 use_sigmoid_threshold=not args.get("no_sigmoid_threshold", False),
                 sigmoid_steepness=args.get("sigmoid_steepness", 10.0),
-                complete_pruning_mode=args.get("complete_pruning_mode", "keep_token"),
+                complete_removal_mode=args.get("complete_removal_mode", "keep_token"),
             )
 
-            # Set the shared TokenGenerator instance on the retroactive pruner
-            if hasattr(retroactive_pruner, "set_token_generator"):
-                retroactive_pruner.set_token_generator(shared_token_generator)
-                retroactive_pruner.set_debug_mode(debug_mode)
-                print("Set shared TokenGenerator on RetroactivePruner")
+            # Set the shared TokenGenerator instance on the retroactive remover
+            if hasattr(retroactive_remover, "set_token_generator"):
+                retroactive_remover.set_token_generator(shared_token_generator)
+                retroactive_remover.set_debug_mode(debug_mode)
+                print("Set shared TokenGenerator on RetroactiveRemover")
 
             print(
-                f"Using retroactive pruning with attention threshold: {attention_threshold}"
+                f"Using retroactive removal with attention threshold: {attention_threshold}"
             )
 
-        setup_progress.update(1)  # Pruning setup complete
+        setup_progress.update(1)  # Removal setup complete
 
         # Create the appropriate generator based on the mode
         if use_mcts:
@@ -215,7 +215,7 @@ class ExperimentRunner:
                 model=self.model,
                 tokenizer=self.tokenizer,
                 token_generator=shared_token_generator,
-                retroactive_pruner=retroactive_pruner,
+                retroactive_remover=retroactive_remover,
                 c_puct=mcts_c_puct,
                 num_simulations=mcts_simulations,
                 attention_threshold=mcts_attention_threshold,
@@ -307,7 +307,7 @@ class ExperimentRunner:
                 "raw_generated_text": generated_text,
                 "prompt": prompt,
                 "selection_threshold": selection_threshold,
-                "use_retroactive_pruning": use_retroactive_pruning,
+                "use_retroactive_removal": use_retroactive_removal,
                 "min_steps": min_steps,
                 "generation_time": time.time() - generation_start,
                 "use_mcts": True,
@@ -321,7 +321,7 @@ class ExperimentRunner:
                 max_tokens=max_tokens,
                 selection_threshold=selection_threshold,
                 return_parallel_sets=save_visualization,
-                use_retroactive_pruning=use_retroactive_pruning,
+                use_retroactive_removal=use_retroactive_removal,
                 min_steps=min_steps,
                 show_token_ids=show_token_ids,
                 debug_mode=debug_mode,
@@ -329,13 +329,13 @@ class ExperimentRunner:
                 system_content=system_content,
                 isolate_parallel_tokens=isolate_parallel_tokens,
                 preserve_all_isolated_tokens=preserve_all_isolated_tokens,
-                retroactive_pruner=retroactive_pruner,
+                retroactive_remover=retroactive_remover,
             )
 
         generation_time = time.time() - generation_start
 
         # Add experiment parameters to results
-        if use_retroactive_pruning:
+        if use_retroactive_removal:
             results["attention_threshold"] = attention_threshold
             results["use_relative_attention"] = not args.get(
                 "no_relative_attention", False
@@ -349,8 +349,8 @@ class ExperimentRunner:
                 "no_sigmoid_threshold", False
             )
             results["sigmoid_steepness"] = args.get("sigmoid_steepness", 10.0)
-            results["complete_pruning_mode"] = args.get(
-                "complete_pruning_mode", "keep_token"
+            results["complete_removal_mode"] = args.get(
+                "complete_removal_mode", "keep_token"
             )
 
         # Add Cogito-specific parameters
@@ -407,7 +407,7 @@ class ExperimentRunner:
                 ),
                 "prompt": results["prompt"],
                 "selection_threshold": results["selection_threshold"],
-                "use_retroactive_pruning": results["use_retroactive_pruning"],
+                "use_retroactive_removal": results["use_retroactive_removal"],
                 "enable_thinking": enable_thinking,
                 "use_mcts": use_mcts,
             }
@@ -420,7 +420,7 @@ class ExperimentRunner:
                     mcts_attention_threshold
                 )
 
-            # Add pruning params if available
+            # Add removal params if available
             if "attention_threshold" in results:
                 serializable_results["attention_threshold"] = results[
                     "attention_threshold"
@@ -445,9 +445,9 @@ class ExperimentRunner:
                 ]
             if "sigmoid_steepness" in results:
                 serializable_results["sigmoid_steepness"] = results["sigmoid_steepness"]
-            if "complete_pruning_mode" in results:
-                serializable_results["complete_pruning_mode"] = results[
-                    "complete_pruning_mode"
+            if "complete_removal_mode" in results:
+                serializable_results["complete_removal_mode"] = results[
+                    "complete_removal_mode"
                 ]
 
             json.dump(serializable_results, f, indent=2)

@@ -10,19 +10,19 @@ export const testSettings = {
     maxTokens: 50,
     selectionThreshold: 0.1,
     attentionThreshold: 0.02,
-    useRetroactivePruning: false,
+    useRetroactiveRemoval: false,
   },
   creative: {
     maxTokens: 100,
     selectionThreshold: 0.15,
     attentionThreshold: 0.03,
-    useRetroactivePruning: true,
+    useRetroactiveRemoval: true,
   },
   conservative: {
     maxTokens: 30,
     selectionThreshold: 0.05,
     attentionThreshold: 0.01,
-    useRetroactivePruning: false,
+    useRetroactiveRemoval: false,
   },
 };
 
@@ -37,7 +37,7 @@ export const apiResponses = {
     stats: {
       total_generated: 15,
       parallel_considered: 45,
-      pruning_time: 0.05
+      removal_time: 0.05
     }
   },
   error: {
@@ -58,7 +58,7 @@ function generateMockSteps(count: number) {
         { token_text: ` token${i}_2`, token_id: i * 100 + 2, probability: 0.35 },
         { token_text: ` token${i}_3`, token_id: i * 100 + 3, probability: 0.20 }
       ],
-      pruned_tokens: [
+      removed_tokens: [
         { token_text: ` token${i}_1`, token_id: i * 100 + 1, probability: 0.45 }
       ]
     });

@@ -17,6 +17,9 @@
   import SimpleTooltip from '$lib/components/ui/simple-tooltip.svelte';
   import { getSettingHelp } from '$lib/data/settingsHelp';
   import TokenTree from '$lib/components/TokenTree.svelte';
+  import SimpleTokenView from '$lib/components/SimpleTokenView.svelte';
+  import ParallelTextView from '$lib/components/ParallelTextView.svelte';
+  import TokenFlow from '$lib/components/TokenFlow.svelte';
   import { formatCleanText, renderFormattedOutput, renderInteractiveTokens } from '$lib/utils/formatOutput';
 
   type AnsiColorMap = Record<string, string>;
@@ -33,13 +36,13 @@
       text: string;
       id: number;
       probability: number;
-      isPruned: boolean; // Flag to indicate if it was pruned out
+      isRemoved: boolean; // Flag to indicate if it was removed
   };
 
   type Step = {
       position: number;
       parallel_tokens: ApiToken[]; // Original candidates from API
-      pruned_tokens: ApiToken[];   // Kept tokens from API
+      removed_tokens: ApiToken[];   // Removed tokens from API
   };
 
   // Type for Token object in the v2 API
@@ -53,7 +56,7 @@
   type TokenSetData = {
     position: number;
     original_tokens: Token[];
-    pruned_tokens: Token[];
+    removed_tokens: Token[];
   };
 
   // Type for TimingInfo in the v2 API
@@ -81,8 +84,8 @@
     position_to_tokens?: Record<string, string[]>;
     original_parallel_positions?: number[];
     timing: TimingInfo;
-    pruning?: any;
-    retroactive_pruning?: any;
+    removal?: any;
+    retroactive_removal?: any;
     model_info: ModelInfo;
     selection_threshold: number;
     max_tokens: number;
@@ -92,6 +95,8 @@
     system_content?: string;
     // Legacy format - may still be present in some responses
     token_sets?: [number, [number, number][], [number, number][]][];
+    // Token sets with decoded text for visualization
+    token_sets_with_text?: [number, [number, number, string][], [number, number, string][]][];
     // New v2 format for visualization
     raw_token_data?: TokenSetData[];
   };
@@ -203,7 +208,7 @@
   let noLciDynamicThreshold = $settings.noLciDynamicThreshold || false;
   let noMultiScaleAttention = $settings.noMultiScaleAttention || false;
   let noPreserveIsolatedTokens = $settings.noPreserveIsolatedTokens || false;
-  let completePruningMode = $settings.completePruningMode || 'prune_all';
+  let completeRemovalMode = $settings.completeRemovalMode || 'remove_all';
   
   // Update settings when these change
   $: updateSetting('useCustomRope', useCustomRope);
@@ -218,7 +223,7 @@
   $: updateSetting('noLciDynamicThreshold', noLciDynamicThreshold);
   $: updateSetting('noMultiScaleAttention', noMultiScaleAttention);
   $: updateSetting('noPreserveIsolatedTokens', noPreserveIsolatedTokens);
-  $: updateSetting('completePruningMode', completePruningMode);
+  $: updateSetting('completeRemovalMode', completeRemovalMode);
 
   // Function to generate text
   async function generateText() {
@@ -240,53 +245,51 @@
         throw new Error('Selection threshold must be between 0 and 1');
       }
       
-      if ($settings.useRetroactivePruning && (attentionThresholdSlider[0] < 0 || attentionThresholdSlider[0] > 1)) {
+      if ($settings.useRetroactiveRemoval && (attentionThresholdSlider[0] < 0 || attentionThresholdSlider[0] > 1)) {
         throw new Error('Attention threshold must be between 0 and 1');
       }
       
-      // Create request body using the structured format for API v2
+      // Create request body in flat format for the API
       const requestBody = {
         prompt,
         max_tokens: maxTokensSlider[0],
         selection_threshold: selectionThresholdSlider[0],
         min_steps: 0,
-        // Organize parameters into their respective groups
-        threshold_settings: {
-          use_dynamic_threshold: $settings.dynamicThreshold,
-          final_threshold: finalThresholdSlider[0],
-          bezier_points: [bezierP1Slider[0], bezierP2Slider[0]],
-          use_relu: $settings.useRelu,
-          relu_activation_point: reluActivationPointSlider[0]
-        },
-        mcts_settings: {
-          use_mcts: $settings.useMcts,
-          simulations: mctsSimulationsSlider[0],
-          c_puct: mctsCPuctSlider[0],
-          depth: mctsDepthSlider[0]
-        },
-        pruning_settings: {
-          enabled: $settings.useRetroactivePruning,
-          attention_threshold: attentionThresholdSlider[0],
-          use_relative_attention: !$settings.noRelativeAttention,
-          relative_threshold: relativeThresholdSlider[0],
-          use_multi_scale_attention: !$settings.noMultiScaleAttention,
-          num_layers_to_use: numLayersToUse,
-          use_lci_dynamic_threshold: !$settings.noLciDynamicThreshold,
-          use_sigmoid_threshold: !$settings.noSigmoidThreshold,
-          sigmoid_steepness: sigmoidSteepnessSlider[0],
-          pruning_mode: $settings.completePruningMode
-        },
-        advanced_settings: {
-          use_custom_rope: $settings.useCustomRope,
-          disable_kv_cache: $settings.disableKvCache,
-          disable_kv_cache_consistency: $settings.disableKvCacheConsistency,
-          show_token_ids: $settings.showTokenIds,
-          system_content: $settings.systemContent || null,
-          enable_thinking: $settings.enableThinking,
-          allow_intraset_token_visibility: $settings.allowIntrasetTokenVisibility,
-          no_preserve_isolated_tokens: $settings.noPreserveIsolatedTokens,
-          debug_mode: $settings.debugMode
-        }
+        use_custom_rope: $settings.useCustomRope,
+        disable_kv_cache: $settings.disableKvCache,
+        show_token_ids: $settings.showTokenIds,
+        system_content: $settings.systemContent || null,
+        enable_thinking: $settings.enableThinking,
+        debug_mode: $settings.debugMode,
+        // MCTS parameters
+        use_mcts: $settings.useMcts,
+        mcts_simulations: mctsSimulationsSlider[0],
+        mcts_c_puct: mctsCPuctSlider[0],
+        mcts_depth: mctsDepthSlider[0],
+        // Dynamic threshold parameters
+        dynamic_threshold: $settings.dynamicThreshold,
+        final_threshold: finalThresholdSlider[0],
+        bezier_p1: bezierP1Slider[0],
+        bezier_p2: bezierP2Slider[0],
+        use_relu: $settings.useRelu,
+        relu_activation_point: reluActivationPointSlider[0],
+        // Removal options
+        use_retroactive_removal: $settings.useRetroactiveRemoval,
+        attention_threshold: attentionThresholdSlider[0],
+        // Parallel tokens options
+        allow_intraset_token_visibility: $settings.allowIntrasetTokenVisibility,
+        no_preserve_isolated_tokens: $settings.noPreserveIsolatedTokens,
+        // Advanced retroactive removal options
+        no_relative_attention: $settings.noRelativeAttention,
+        relative_threshold: relativeThresholdSlider[0],
+        no_multi_scale_attention: $settings.noMultiScaleAttention,
+        num_layers_to_use: numLayersToUse,
+        no_lci_dynamic_threshold: $settings.noLciDynamicThreshold,
+        no_sigmoid_threshold: $settings.noSigmoidThreshold,
+        sigmoid_steepness: sigmoidSteepnessSlider[0],
+        complete_removal_mode: $settings.completeRemovalMode,
+        // Advanced caching options
+        disable_kv_cache_consistency: $settings.disableKvCacheConsistency
       };
 
       // Use the v2 API endpoint with timeout handling
@@ -353,6 +356,9 @@
           // Format the data for the chart
           const chartData = processTokenDataForVisualization(data.raw_token_data);
           updateChart(chartData);
+        } else if (data.token_sets_with_text && data.token_sets_with_text.length > 0) {
+          // Use the new format with decoded text
+          updateChartWithText(data.token_sets_with_text);
         } else if (data.token_sets && data.token_sets.length > 0) {
           // Fallback to older format if available
           updateChart(data.token_sets);
@@ -387,13 +393,51 @@
     return rawTokenData.map(tokenSet => {
       const position = tokenSet.position;
       const originalTokens = tokenSet.original_tokens.map(token => [token.id, token.probability]);
-      const prunedTokens = tokenSet.pruned_tokens.map(token => [token.id, token.probability]);
+      const removedTokens = tokenSet.removed_tokens.map(token => [token.id, token.probability]);
       
-      return [position, originalTokens, prunedTokens];
+      return [position, originalTokens, removedTokens];
     });
   }
 
-  // Function to update the chart
+  // Function to update the chart with decoded text
+  function updateChartWithText(tokenSets: [number, [number, number, string][], [number, number, string][]][]) {
+    // Wait for next tick to ensure container is rendered
+    setTimeout(() => {
+      if (!chartContainer || !tokenSets.length) return;
+
+      // Clear existing chart
+      if (chart) {
+        chart.cleanup();
+      }
+
+      // Process token sets for chart
+      const chartData: ChartToken[] = [];
+      tokenSets.forEach(([position, original, removed]) => {
+        // IMPORTANT: 'removed' contains tokens that were REMOVED (not kept)
+        const removedIds = new Set(removed.map(([id]) => id));
+        
+        // Add all original tokens with their status
+        original.forEach(([id, prob, text]) => {
+          chartData.push({
+            text: text || `Token ${id}`, // Use decoded text, fallback to ID
+            id,
+            probability: prob,
+            isRemoved: removedIds.has(id)  // Token is removed if it's in the removed set
+          });
+        });
+      });
+
+      // Create new chart
+      const chartConfig = {
+        width: chartContainer.clientWidth || 800,
+        height: 500,
+        margin: { top: 20, right: 20, bottom: 30, left: 40 },
+      };
+      chart = createBarChart(chartContainer, chartData, chartConfig);
+    }, 0);
+  }
+
+  // Function to update the chart (legacy format without text)
   function updateChart(tokenSets: [number, [number, number][], [number, number][]][]) {
     // Wait for next tick to ensure container is rendered
     setTimeout(() => {
@@ -406,9 +450,9 @@
 
       // Process token sets for chart
       const chartData: ChartToken[] = [];
-      tokenSets.forEach(([position, original, pruned]) => {
-        // Get kept tokens (not pruned)
-        const keptIds = new Set(pruned.map(([id]) => id));
+      tokenSets.forEach(([position, original, removed]) => {
+        // IMPORTANT: 'removed' contains tokens that were REMOVED (not kept)
+        const removedIds = new Set(removed.map(([id]) => id));
         
         // Add all original tokens with their status
         original.forEach(([id, prob]) => {
@@ -416,7 +460,7 @@
             text: `Token ${id}`,
             id,
             probability: prob,
-            isPruned: !keptIds.has(id),
+            isRemoved: removedIds.has(id),  // Token is removed if it's in the removed set
           });
         });
       });
@@ -544,17 +588,17 @@
 
             <div class="flex items-center space-x-2">
               <Switch 
-                id="useRetroactivePruning" 
-                checked={$settings.useRetroactivePruning}
-                onCheckedChange={(checked) => updateSetting('useRetroactivePruning', checked)}
+                id="useRetroactiveRemoval" 
+                checked={$settings.useRetroactiveRemoval}
+                onCheckedChange={(checked) => updateSetting('useRetroactiveRemoval', checked)}
               />
-              <label for="useRetroactivePruning" class="text-sm font-medium">Use Retroactive Pruning</label>
-              {#if getHelp('useRetroactivePruning')}
-                <SimpleTooltip helpContent={getHelp('useRetroactivePruning')} />
+              <label for="useRetroactiveRemoval" class="text-sm font-medium">Use Retroactive Removal</label>
+              {#if getHelp('useRetroactiveRemoval')}
+                <SimpleTooltip helpContent={getHelp('useRetroactiveRemoval')} />
               {/if}
             </div>
 
-            {#if $settings.useRetroactivePruning}
+            {#if $settings.useRetroactiveRemoval}
             <div class="pl-4 mt-2 space-y-2 border-l-2 border-gray-200">
               <div class="flex items-center gap-1 mb-1">
                 <label for="attentionThreshold" class="block text-sm font-medium">Attention Threshold</label>
@@ -905,14 +949,14 @@
 
               <div>
                 <div class="flex items-center gap-1 mb-1">
-                  <label for="completePruningMode" class="block text-sm font-medium">Complete Pruning Mode</label>
-                  {#if getHelp('completePruningMode')}
-                    <SimpleTooltip helpContent={getHelp('completePruningMode')} />
+                  <label for="completeRemovalMode" class="block text-sm font-medium">Complete Removal Mode</label>
+                  {#if getHelp('completeRemovalMode')}
+                    <SimpleTooltip helpContent={getHelp('completeRemovalMode')} />
                   {/if}
                 </div>
                 <select
-                  id="completePruningMode"
-                  bind:value={completePruningMode}
+                  id="completeRemovalMode"
+                  bind:value={completeRemovalMode}
                   class="w-full p-2 border rounded bg-background text-foreground border-input focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
                 >
                   <option value="keep_token">Keep Token</option>
@@ -1014,6 +1058,8 @@
               if (apiResponse.raw_token_data && apiResponse.raw_token_data.length > 0) {
                 const chartData = processTokenDataForVisualization(apiResponse.raw_token_data);
                 updateChart(chartData);
+              } else if (apiResponse.token_sets_with_text && apiResponse.token_sets_with_text.length > 0) {
+                updateChartWithText(apiResponse.token_sets_with_text);
               } else if (apiResponse.token_sets && apiResponse.token_sets.length > 0) {
                 updateChart(apiResponse.token_sets);
               }
@@ -1021,53 +1067,20 @@
           }}>
             <TabsList class="grid w-full grid-cols-4 mb-4">
               <TabsTrigger value="text">Text</TabsTrigger>
-              <TabsTrigger value="tree">Tree</TabsTrigger>
+              <TabsTrigger value="flow">Flow</TabsTrigger>
               <TabsTrigger value="details">Details</TabsTrigger>
               <TabsTrigger value="chart">Chart</TabsTrigger>
             </TabsList>
             
             <TabsContent value="text" class="space-y-4">
-              <div>
-                <h3 class="text-lg font-medium mb-2">Generated Text</h3>
-                {#if apiResponse.clean_text}
-                  <div class="bg-gray-100 dark:bg-gray-800 p-6 rounded-lg overflow-auto max-h-[500px]" data-testid="generated-text">
-                    <p class="text-base leading-relaxed whitespace-pre-wrap">{apiResponse.clean_text}</p>
-                  </div>
-                {:else if apiResponse.generated_text}
-                  <!-- Interactive token display -->
-                  <div class="bg-gray-50 dark:bg-gray-900 p-6 rounded-lg overflow-auto max-h-[500px]">
-                    <div class="token-display text-base leading-relaxed">
-                      {@html renderInteractiveTokens(apiResponse.generated_text)}
-                    </div>
-                  </div>
-                  <div class="mt-2 text-sm text-gray-600 dark:text-gray-400">
-                    <p>Hover over highlighted sections to see alternative tokens that were considered</p>
-                  </div>
-                {/if}
-              </div>
+              <ParallelTextView tokenData={apiResponse} />
             </TabsContent>
             
-            <TabsContent value="tree" class="space-y-4">
+            <TabsContent value="flow" class="space-y-4">
               <div>
-                <h3 class="text-lg font-medium mb-2">Token Tree Visualization</h3>
+                <h3 class="text-lg font-medium mb-2">Token Flow</h3>
                 <div class="bg-gray-50 dark:bg-gray-900 p-4 rounded border border-gray-200 dark:border-gray-700">
-                  <TokenTree tokenData={apiResponse} height={600} />
-                </div>
-                <div class="mt-2 text-sm text-gray-600 dark:text-gray-400">
-                  <div class="flex items-center gap-4 justify-center">
-                    <div class="flex items-center gap-1">
-                      <div class="w-3 h-3 rounded-full bg-green-500"></div>
-                      <span>Kept tokens</span>
-                    </div>
-                    <div class="flex items-center gap-1">
-                      <div class="w-3 h-3 rounded-full bg-yellow-500"></div>
-                      <span>Pruned tokens</span>
-                    </div>
-                    <div class="flex items-center gap-1">
-                      <div class="w-3 h-3 rounded-full bg-indigo-500"></div>
-                      <span>Start</span>
-                    </div>
-                  </div>
+                  <TokenFlow tokenData={apiResponse} />
                 </div>
               </div>
             </TabsContent>
@@ -1112,8 +1125,8 @@
                         <span class="font-semibold">{apiResponse.timing.generation_time.toFixed(2)}s</span>
                       </div>
                       <div class="flex justify-between">
-                        <span class="text-gray-600 dark:text-gray-400">Pruning Time:</span>
-                        <span class="font-semibold">{apiResponse.timing.pruning_time.toFixed(2)}s</span>
+                        <span class="text-gray-600 dark:text-gray-400">Removal Time:</span>
+                        <span class="font-semibold">{apiResponse.timing.removal_time.toFixed(2)}s</span>
                       </div>
                       <div class="flex justify-between border-t border-gray-200 dark:border-gray-700 pt-2">
                         <span class="text-gray-600 dark:text-gray-400">Total Time:</span>
@@ -1124,27 +1137,27 @@
                 </div>
               {/if}
 
-              {#if apiResponse.retroactive_pruning}
+              {#if apiResponse.retroactive_removal}
                 <div>
-                  <h3 class="text-lg font-medium mb-2">Pruning Configuration</h3>
+                  <h3 class="text-lg font-medium mb-2">Removal Configuration</h3>
                   <div class="bg-gray-50 dark:bg-gray-800/50 p-4 rounded">
                     <div class="text-sm space-y-2">
                       <div class="flex justify-between">
                         <span class="text-gray-600 dark:text-gray-400">Attention Threshold:</span>
-                        <span class="font-semibold">{apiResponse.retroactive_pruning.attention_threshold.toFixed(3)}</span>
+                        <span class="font-semibold">{apiResponse.retroactive_removal.attention_threshold.toFixed(3)}</span>
                       </div>
                       <div class="flex justify-between">
-                        <span class="text-gray-600 dark:text-gray-400">Pruning Mode:</span>
-                        <span class="font-semibold">{apiResponse.retroactive_pruning.pruning_mode}</span>
+                        <span class="text-gray-600 dark:text-gray-400">Removal Mode:</span>
+                        <span class="font-semibold">{apiResponse.retroactive_removal.removal_mode}</span>
                       </div>
                       <div class="flex justify-between">
                         <span class="text-gray-600 dark:text-gray-400">Relative Attention:</span>
-                        <span class="font-semibold">{apiResponse.retroactive_pruning.use_relative_attention ? 'Enabled' : 'Disabled'}</span>
+                        <span class="font-semibold">{apiResponse.retroactive_removal.use_relative_attention ? 'Enabled' : 'Disabled'}</span>
                       </div>
-                      {#if apiResponse.retroactive_pruning.use_relative_attention}
+                      {#if apiResponse.retroactive_removal.use_relative_attention}
                         <div class="flex justify-between">
                           <span class="text-gray-600 dark:text-gray-400">Relative Threshold:</span>
-                          <span class="font-semibold">{apiResponse.retroactive_pruning.relative_threshold.toFixed(2)}</span>
+                          <span class="font-semibold">{apiResponse.retroactive_removal.relative_threshold.toFixed(2)}</span>
                         </div>
                       {/if}
                     </div>
@@ -1306,5 +1319,17 @@
   
   :global(.dark .alternatives-popup::after) {
     border-top-color: hsl(var(--card));
+  }
+  
+  /* Parallel position badges */
+  :global(.parallel-position-badge) {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.25rem 0.75rem;
+    background-color: hsl(var(--primary) / 0.1);
+    color: hsl(var(--primary));
+    border-radius: 9999px;
+    font-size: 0.875rem;
+    font-weight: 500;
   }
 </style>

@@ -57,17 +57,17 @@ class ArgumentParser:
             help="Model name or path to use",
         )
 
-        # Pruning parameters
+        # Removal parameters
         parser.add_argument(
-            "--use-retroactive-pruning",
+            "--use-retroactive-removal",
             action="store_true",
-            help="Use retroactive pruning to refine token sets based on future token attention",
+            help="Use retroactive removal to refine token sets based on future token attention",
         )
         parser.add_argument(
             "--attention-threshold",
             type=float,
             default=0.01,
-            help="Attention threshold for retroactive pruning (lower means more tokens kept)",
+            help="Attention threshold for retroactive removal (lower means more tokens kept)",
         )
 
         # MCTS parameters
@@ -211,10 +211,10 @@ class ArgumentParser:
         parser.add_argument(
             "--no-preserve-isolated-tokens",
             action="store_true",
-            help="Allow pruning to evaluate isolated tokens (disabled by default in isolated mode)",
+            help="Allow removal to evaluate isolated tokens (disabled by default in isolated mode)",
         )
 
-        # Parameters for RetroactivePruner
+        # Parameters for RetroactiveRemover
         parser.add_argument(
             "--use-relative-attention",
             action="store_true",
@@ -229,7 +229,7 @@ class ArgumentParser:
             "--relative-threshold",
             type=float,
             default=0.5,
-            help="Threshold for relative attention-based pruning (0-1)",
+            help="Threshold for relative attention-based removal (0-1)",
         )
         parser.add_argument(
             "--use-multi-scale-attention",
@@ -274,11 +274,11 @@ class ArgumentParser:
             help="Controls how sharp the sigmoid transition is",
         )
         parser.add_argument(
-            "--complete-pruning-mode",
+            "--complete-removal-mode",
             type=str,
             default="keep_token",
             choices=["keep_token", "keep_unattended", "remove_position"],
-            help="How to handle pruned positions: 'keep_token' (default) - keep the best token, "
+            help="How to handle removed positions: 'keep_token' (default) - keep the best token, "
             "'keep_unattended' - keep the best token but mark as unattended, "
             "'remove_position' - completely remove the position from generation",
         )

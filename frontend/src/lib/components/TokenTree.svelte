@@ -18,7 +18,60 @@
   }
   
   function buildTree(data: any): TreeNode {
-    if (!data.raw_token_data || data.raw_token_data.length === 0) {
+    // Try to get token data from various formats
+    let tokenSets = [];
+    
+    if (data.steps && data.steps.length > 0) {
+      // Use steps data which has full token info with text
+      tokenSets = data.steps.map(step => ({
+        position: step.position,
+        original_tokens: step.parallel_tokens.map(t => ({ 
+          id: t.token_id, 
+          text: t.token_text, 
+          probability: t.probability 
+        })),
+        pruned_tokens: step.pruned_tokens.map(t => ({ 
+          id: t.token_id, 
+          text: t.token_text, 
+          probability: t.probability 
+        }))
+      }));
+    } else if (data.token_sets_with_text && data.token_sets_with_text.length > 0) {
+      // New format with text
+      tokenSets = data.token_sets_with_text.map(([position, original, pruned]) => ({
+        position,
+        original_tokens: original.map(([id, prob, text]) => ({ 
+          id, 
+          text: text || `Token ${id}`, 
+          probability: prob 
+        })),
+        pruned_tokens: pruned.map(([id, prob, text]) => ({ 
+          id, 
+          text: text || `Token ${id}`, 
+          probability: prob 
+        }))
+      }));
+    } else if (data.raw_token_data && data.raw_token_data.length > 0) {
+      // Format with full token info
+      tokenSets = data.raw_token_data;
+    } else if (data.token_sets && data.token_sets.length > 0) {
+      // Old format - convert to expected structure
+      tokenSets = data.token_sets.map(([position, original, pruned]) => ({
+        position,
+        original_tokens: original.map(([id, prob]) => ({ 
+          id, 
+          text: `Token ${id}`, 
+          probability: prob 
+        })),
+        pruned_tokens: pruned.map(([id, prob]) => ({ 
+          id, 
+          text: `Token ${id}`, 
+          probability: prob 
+        }))
+      }));
+    }
+    
+    if (tokenSets.length === 0) {
       return { id: 'root', text: 'START', probability: 1, position: -1, pruned: false, children: [] };
     }
     
@@ -35,36 +88,37 @@
     // Build tree structure from token sets
     let currentLevel = [root];
     
-    data.raw_token_data.forEach((tokenSet: any, idx: number) => {
+    tokenSets.forEach((tokenSet: any, idx: number) => {
       const nextLevel: TreeNode[] = [];
       
-      // Create a map of pruned tokens for quick lookup
-      const prunedMap = new Map(tokenSet.pruned_tokens.map((t: any) => [t.id, t]));
+      // Create a map of REMOVED tokens (pruned_tokens contains removed tokens)
+      const removedMap = new Map(tokenSet.pruned_tokens.map((t: any) => [t.id, t]));
       
       // Process all original tokens
       tokenSet.original_tokens.forEach((token: any) => {
-        const isPruned = !prunedMap.has(token.id);
+        const isRemoved = removedMap.has(token.id);
+        const isKept = !isRemoved;  // Token is kept if NOT in removed set
         const node: TreeNode = {
           id: `${idx}-${token.id}`,
-          text: token.text.trim(),
+          text: token.text || `Token ${token.id}`,
           probability: token.probability,
           position: tokenSet.position,
-          pruned: isPruned,
+          pruned: isRemoved,  // Token is pruned if it was removed
           children: []
         };
         
-        // Connect to all non-pruned nodes in current level
+        // Connect to all kept nodes in current level
         currentLevel.forEach(parent => {
-          if (!parent.pruned) {
-            parent.children.push(node);
-          }
+          parent.children.push(node);
         });
         
-        nextLevel.push(node);
+        // Only kept tokens continue to next level
+        if (isKept) {
+          nextLevel.push(node);
+        }
       });
       
-      // Only non-pruned nodes continue to next level
-      currentLevel = nextLevel.filter(n => !n.pruned);
+      currentLevel = nextLevel;
     });
     
     return root;

@@ -188,7 +188,7 @@ class TestAPI:
         """Test error handling when retroactive removal initialization fails."""
         mock_model, mock_tokenizer, mock_generator = mock_generator_components
 
-        # Make generator raise an error during pruning setup
+        # Make generator raise an error during removal setup
         def raise_error(*args, **kwargs):
             raise RuntimeError("Failed to initialize retroactive removal")
 

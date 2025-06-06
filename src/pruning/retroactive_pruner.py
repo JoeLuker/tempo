@@ -7,11 +7,11 @@ import traceback
 from .dynamic_threshold import DynamicThresholdManager
 
 
-class RetroactivePruner:
+class RetroactiveRemover:
     """
-    Retroactively prunes previous parallel tokens based on attention patterns from newer tokens.
+    Retroactively removes previous parallel tokens based on attention patterns from newer tokens.
 
-    This pruner looks at how newly generated tokens attend to previous tokens, and prunes out
+    This remover looks at how newly generated tokens attend to previous tokens, and removes
     previous parallel options that receive insufficient attention.
     """
 
@@ -32,22 +32,22 @@ class RetroactivePruner:
         complete_pruning_mode: str = "keep_token",
     ):
         """
-        Initialize the retroactive pruner.
+        Initialize the retroactive remover.
 
         Args:
             model: The language model
             tokenizer: HuggingFace tokenizer
-            attention_threshold: Base threshold for attention-based pruning (0-1)
+            attention_threshold: Base threshold for attention-based removal (0-1)
             device: Device to use for computation
             debug_mode: Enable detailed logging
             dynamic_threshold_manager: Optional DynamicThresholdManager for dynamic thresholding
             use_relative_attention: Whether to use relative attention thresholds
-            relative_threshold: Threshold for relative attention-based pruning (0-1)
+            relative_threshold: Threshold for relative attention-based removal (0-1)
             use_multi_scale_attention: Whether to use multi-scale attention integration
             num_layers_to_use: Number of last layers to use (None means use all layers)
             use_sigmoid_threshold: Whether to use sigmoid-based decision boundary
             sigmoid_steepness: Controls how sharp the sigmoid transition is
-            complete_pruning_mode: How to handle pruned positions. Options:
+            complete_removal_mode: How to handle removed positions. Options:
                 "keep_token" - Keep the best token at the position (default)
                 "keep_unattended" - Keep the best token but mark it as unattended
                 "remove_position" - Remove the position entirely from generation
@@ -65,7 +65,7 @@ class RetroactivePruner:
         self.num_layers_to_use = num_layers_to_use
         self.use_sigmoid_threshold = use_sigmoid_threshold
         self.sigmoid_steepness = sigmoid_steepness
-        self.complete_pruning_mode = complete_pruning_mode
+        self.complete_removal_mode = complete_removal_mode
 
         # Initialize DynamicThresholdManager if not provided
         if dynamic_threshold_manager is None:
@@ -76,21 +76,21 @@ class RetroactivePruner:
             self.dynamic_threshold_manager = dynamic_threshold_manager
 
         # For logging and debugging
-        self.pruning_stats = {
+        self.removal_stats = {
             "total_tokens_considered": 0,
-            "tokens_pruned": 0,
+            "tokens_removed": 0,
             "positions_evaluated": 0,
-            "positions_pruned": 0,
+            "positions_with_removals": 0,
             "positions_removed": 0,
             "positions_unattended": 0,
         }
 
         if self.debug_mode:
             print(
-                f"RetroactivePruner initialized with threshold={attention_threshold}, relative_threshold={relative_threshold}, "
+                f"RetroactiveRemover initialized with threshold={attention_threshold}, relative_threshold={relative_threshold}, "
                 f"use_relative_attention={use_relative_attention}, use_multi_scale_attention={use_multi_scale_attention}, "
                 f"num_layers_to_use={num_layers_to_use}, use_sigmoid_threshold={use_sigmoid_threshold}, "
-                f"sigmoid_steepness={sigmoid_steepness}, complete_pruning_mode={complete_pruning_mode}, "
+                f"sigmoid_steepness={sigmoid_steepness}, complete_removal_mode={complete_removal_mode}, "
                 f"debug_mode={debug_mode}"
             )
 
@@ -108,23 +108,23 @@ class RetroactivePruner:
     def set_debug_mode(self, enabled=True):
         """Enable or disable debug mode."""
         self.debug_mode = enabled
-        print(f"RetroactivePruner debug mode set to: {enabled}")
+        print(f"RetroactiveRemover debug mode set to: {enabled}")
 
     def log_debug(self, message):
         """Log a debug message if debug_mode is enabled."""
         if self.debug_mode:
             print(message)
 
-    def get_pruning_threshold(self, step: Optional[int] = None) -> float:
+    def get_removal_threshold(self, step: Optional[int] = None) -> float:
         """
-        Get the current pruning threshold based on generation progress.
+        Get the current removal threshold based on generation progress.
         This method now delegates to DynamicThresholdManager for all threshold calculations.
 
         Args:
             step: Current generation step (optional)
 
         Returns:
-            float: Current pruning threshold
+            float: Current removal threshold
         """
         return self.dynamic_threshold_manager.get_current_threshold(step)
 
@@ -136,11 +136,11 @@ class RetroactivePruner:
         Args:
             step: Current generation step (source of truth)
         """
-        self.attention_threshold = self.get_pruning_threshold(step)
+        self.attention_threshold = self.get_removal_threshold(step)
 
         if self.debug_mode:
             print(
-                f"Updated retroactive pruner threshold to {self.attention_threshold:.4f} at step {step}"
+                f"Updated retroactive remover threshold to {self.attention_threshold:.4f} at step {step}"
             )
 
     def apply_sigmoid_threshold(self, attention_score: float, threshold: float) -> bool:
@@ -152,7 +152,7 @@ class RetroactivePruner:
             threshold: The threshold value where sigmoid equals 0.5
 
         Returns:
-            bool: True if the token should be kept, False if it should be pruned
+            bool: True if the token should be kept (survives), False if it should be removed
         """
         sigmoid_value = 1.0 / (
             1.0 + math.exp(-self.sigmoid_steepness * (attention_score - threshold))
@@ -194,14 +194,14 @@ class RetroactivePruner:
         # Return boolean tensor: True for positions to keep
         return sigmoid_values > 0.5  # Tokens survive if above 0.5
 
-    def retroactively_prune(
+    def retroactively_remove(
         self,
         prompt_length: int,
         all_parallel_tokens: Dict[int, List[Tuple[int, float]]],
         step: Optional[int] = None,
     ) -> Dict[int, List[Tuple[int, float]]]:
         """
-        Retroactively prune previous parallel sets based on newest token's attention.
+        Retroactively remove previous parallel sets based on newest token's attention.
 
         Args:
             prompt_length: Length of the original prompt
@@ -209,13 +209,13 @@ class RetroactivePruner:
             step: Current generation step (source of truth)
 
         Returns:
-            Dict[int, List[Tuple[int, float]]]: Updated parallel tokens after pruning
+            Dict[int, List[Tuple[int, float]]]: Tokens that SURVIVED removal
         """
         if self.debug_mode:
-            print(f"\nRetroactive pruning at step {step}")
+            print(f"\nRetroactive removal at step {step}")
             print(f"Number of parallel positions: {len(all_parallel_tokens)}")
             print(f"Token generator available: {self.token_generator is not None}")
-            print(f"Pruning mode: {self.complete_pruning_mode}")
+            print(f"Removal mode: {self.complete_removal_mode}")
 
         if not self.token_generator:
             if self.debug_mode:
@@ -228,7 +228,7 @@ class RetroactivePruner:
         cached_attention, seq_len = self.token_generator.get_cached_attention()
         if cached_attention is None:
             if self.debug_mode:
-                print("Warning: No cached attention available for retroactive pruning")
+                print("Warning: No cached attention available for retroactive removal")
             return all_parallel_tokens
 
         if self.debug_mode:
@@ -280,7 +280,7 @@ class RetroactivePruner:
             if self.debug_mode:
                 print(
                     f"CRITICAL: Attention window size mismatch. Have {attention_window_size} positions, "
-                    f"need {highest_abs_position+1}. Using fallback pruning."
+                    f"need {highest_abs_position+1}. Using fallback removal."
                 )
                 print(
                     "This likely means the token_generator used by RetroactivePruner is not "
@@ -428,7 +428,7 @@ class RetroactivePruner:
                     )
 
             # Process each position with parallel tokens
-            pruned_positions = {}  # Store pruned positions
+            surviving_positions = {}  # Store tokens that survive removal
 
             # Check if we're beyond the attention window
             if positions_out_of_bounds:
@@ -436,7 +436,7 @@ class RetroactivePruner:
                 fallback_thresh = 0.1  # Keep tokens with probability above 10%
                 if self.debug_mode:
                     print(
-                        f"Using fallback pruning with probability threshold: {fallback_thresh}"
+                        f"Using fallback removal with probability threshold: {fallback_thresh}"
                     )
 
                 for pos, token_list in all_parallel_tokens.items():
@@ -455,35 +455,35 @@ class RetroactivePruner:
                         )
                         kept_tokens = [sorted_tokens[0]]
 
-                    pruned_positions[pos] = kept_tokens
+                    surviving_positions[pos] = kept_tokens
 
-                # Update pruning stats
+                # Update removal stats
                 total_tokens = sum(
                     len(tokens) for tokens in all_parallel_tokens.values()
                 )
-                kept_tokens = sum(len(tokens) for tokens in pruned_positions.values())
+                kept_tokens = sum(len(tokens) for tokens in surviving_positions.values())
 
-                self.pruning_stats["total_tokens_considered"] += total_tokens
-                self.pruning_stats["tokens_pruned"] += total_tokens - kept_tokens
-                self.pruning_stats["positions_evaluated"] += len(all_parallel_tokens)
+                self.removal_stats["total_tokens_considered"] += total_tokens
+                self.removal_stats["tokens_removed"] += total_tokens - kept_tokens
+                self.removal_stats["positions_evaluated"] += len(all_parallel_tokens)
 
                 # Log what happened
                 if self.debug_mode:
-                    print(f"Fallback pruning kept {kept_tokens}/{total_tokens} tokens")
+                    print(f"Fallback removal kept {kept_tokens}/{total_tokens} tokens (removed {total_tokens - kept_tokens})")
 
-                return pruned_positions
+                return surviving_positions
 
             # Normal processing when attention matrix matches required positions
             for pos, token_list in all_parallel_tokens.items():
-                # Skip the current step itself - retroactive pruning should only apply to previous steps
+                # Skip the current step itself - retroactive removal should only apply to previous steps
                 if step is not None and pos == step:
                     # Keep all tokens for the current step - it's being processed right now
                     if self.debug_mode:
                         print(
                             f"Skipping position {pos} as it is the current step being generated"
                         )
-                    pruned_positions[pos] = token_list
-                    self.pruning_stats["positions_evaluated"] += 1
+                    surviving_positions[pos] = token_list
+                    self.removal_stats["positions_evaluated"] += 1
                     continue
 
                 # Calculate the absolute position (including prompt)
@@ -500,36 +500,36 @@ class RetroactivePruner:
                     ]
                     if not kept_tokens and token_list:
                         kept_tokens = [max(token_list, key=lambda x: x[1])]
-                    pruned_positions[pos] = kept_tokens
-                    self.pruning_stats["positions_evaluated"] += 1
+                    surviving_positions[pos] = kept_tokens
+                    self.removal_stats["positions_evaluated"] += 1
                     continue
 
                 # Extract attention score
                 attention_score = normalized_attn[abs_pos].item()
 
-                # Filter tokens based on pruning mode
-                if self.complete_pruning_mode == "keep_token":
+                # Filter tokens based on removal mode
+                if self.complete_removal_mode == "keep_token":
                     # Keep token with highest probability (default)
                     if attention_score >= self.attention_threshold:
-                        pruned_positions[pos] = token_list
+                        surviving_positions[pos] = token_list
                         if self.debug_mode:
                             print(
                                 f"Position {pos} (abs: {abs_pos}) kept {len(token_list)} tokens - attention: {attention_score:.4f}"
                             )
                     else:
                         # Only keep highest probability token
-                        pruned_positions[pos] = [max(token_list, key=lambda x: x[1])]
+                        surviving_positions[pos] = [max(token_list, key=lambda x: x[1])]
                         if self.debug_mode:
                             print(
-                                f"Position {pos} (abs: {abs_pos}) pruned to 1 token - attention: {attention_score:.4f}"
+                                f"Position {pos} (abs: {abs_pos}) reduced to 1 token - attention: {attention_score:.4f}"
                             )
-                        self.pruning_stats["positions_pruned"] += 1
+                        self.removal_stats["positions_with_removals"] += 1
 
-                elif self.complete_pruning_mode == "keep_unattended":
+                elif self.complete_removal_mode == "keep_unattended":
                     # Keep best token with a flag for unattended positions
                     # The flag can be used later for special visualization
                     if attention_score >= self.attention_threshold:
-                        pruned_positions[pos] = token_list
+                        surviving_positions[pos] = token_list
                         if self.debug_mode:
                             print(
                                 f"Position {pos} (abs: {abs_pos}) kept {len(token_list)} tokens - attention: {attention_score:.4f}"
@@ -537,17 +537,17 @@ class RetroactivePruner:
                     else:
                         # Mark as unattended position
                         best_token = max(token_list, key=lambda x: x[1])
-                        pruned_positions[pos] = [best_token]
+                        surviving_positions[pos] = [best_token]
                         if self.debug_mode:
                             print(
                                 f"Position {pos} (abs: {abs_pos}) marked as unattended - attention: {attention_score:.4f}"
                             )
-                        self.pruning_stats["positions_unattended"] += 1
+                        self.removal_stats["positions_unattended"] += 1
 
-                elif self.complete_pruning_mode == "remove_position":
+                elif self.complete_removal_mode == "remove_position":
                     # Completely remove unattended positions (more aggressive)
                     if attention_score >= self.attention_threshold:
-                        pruned_positions[pos] = token_list
+                        surviving_positions[pos] = token_list
                         if self.debug_mode:
                             print(
                                 f"Position {pos} (abs: {abs_pos}) kept {len(token_list)} tokens - attention: {attention_score:.4f}"
@@ -558,60 +558,60 @@ class RetroactivePruner:
                             print(
                                 f"Position {pos} (abs: {abs_pos}) completely removed - attention: {attention_score:.4f}"
                             )
-                        self.pruning_stats["positions_removed"] += 1
+                        self.removal_stats["positions_removed"] += 1
 
                 else:
                     # Unknown mode, keep all tokens
-                    pruned_positions[pos] = token_list
+                    surviving_positions[pos] = token_list
                     if self.debug_mode:
                         print(
-                            f"Unknown pruning mode '{self.complete_pruning_mode}', keeping all tokens"
+                            f"Unknown removal mode '{self.complete_removal_mode}', keeping all tokens"
                         )
 
                 # Update statistics
                 before_tokens = len(token_list)
-                after_tokens = len(pruned_positions.get(pos, []))
-                self.pruning_stats["total_tokens_considered"] += before_tokens
-                self.pruning_stats["tokens_pruned"] += before_tokens - after_tokens
-                self.pruning_stats["positions_evaluated"] += 1
+                after_tokens = len(surviving_positions.get(pos, []))
+                self.removal_stats["total_tokens_considered"] += before_tokens
+                self.removal_stats["tokens_removed"] += before_tokens - after_tokens
+                self.removal_stats["positions_evaluated"] += 1
 
-            return pruned_positions
+            return surviving_positions
 
         except Exception as e:
             if self.debug_mode:
-                print(f"Error in retroactive pruning: {e}")
+                print(f"Error in retroactive removal: {e}")
                 import traceback
 
                 traceback.print_exc()
 
-            # Fall back to no pruning on error
+            # Fall back to no removal on error
             return all_parallel_tokens
 
     def print_stats(self):
-        """Print retroactive pruning statistics."""
-        print("\nRetroactive Pruning Stats:")
-        print(f"  Positions evaluated: {self.pruning_stats['positions_evaluated']}")
-        print(f"  Positions pruned: {self.pruning_stats['positions_pruned']}")
+        """Print retroactive removal statistics."""
+        print("\nRetroactive Removal Stats:")
+        print(f"  Positions evaluated: {self.removal_stats['positions_evaluated']}")
+        print(f"  Positions with removals: {self.removal_stats['positions_with_removals']}")
         print(
-            f"  Positions marked as unattended: {self.pruning_stats['positions_unattended']}"
+            f"  Positions marked as unattended: {self.removal_stats['positions_unattended']}"
         )
         print(
-            f"  Positions completely removed: {self.pruning_stats['positions_removed']}"
+            f"  Positions completely removed: {self.removal_stats['positions_removed']}"
         )
         print(
-            f"  Total tokens considered: {self.pruning_stats['total_tokens_considered']}"
+            f"  Total tokens considered: {self.removal_stats['total_tokens_considered']}"
         )
-        print(f"  Tokens pruned: {self.pruning_stats['tokens_pruned']}")
+        print(f"  Tokens removed: {self.removal_stats['tokens_removed']}")
 
-        if self.pruning_stats["total_tokens_considered"] > 0:
-            prune_rate = (
-                self.pruning_stats["tokens_pruned"]
-                / self.pruning_stats["total_tokens_considered"]
+        if self.removal_stats["total_tokens_considered"] > 0:
+            removal_rate = (
+                self.removal_stats["tokens_removed"]
+                / self.removal_stats["total_tokens_considered"]
             ) * 100
-            print(f"  Pruning rate: {prune_rate:.1f}%")
+            print(f"  Removal rate: {removal_rate:.1f}%")
 
         print(f"  Current attention threshold: {self.attention_threshold}")
-        print(f"  Pruning mode: {self.complete_pruning_mode}")
+        print(f"  Removal mode: {self.complete_removal_mode}")
         if self.use_relative_attention:
             print(
                 f"  Using relative attention with threshold: {self.relative_threshold}"

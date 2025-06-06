@@ -11,7 +11,7 @@ from src.generation.parallel_generator import ParallelGenerator
 from src.visualization.token_visualizer import TokenVisualizer
 from src.visualization.position_visualizer import PositionVisualizer
 import traceback
-from src.pruning import RetroactivePruner
+from src.pruning import RetroactiveRemover
 from src.generation.token_generator import TokenGenerator
 import re
 
@@ -229,16 +229,16 @@ class GenerationRequest(BaseModel):
         description="Point at which ReLU transition begins (0-1)",
     )
 
-    # Pruning options
-    use_retroactive_pruning: bool = Field(
+    # Removal options
+    use_retroactive_removal: bool = Field(
         default=True,
-        description="Use retroactive pruning to refine token sets based on future token attention",
+        description="Use retroactive removal to refine token sets based on future token attention",
     )
     attention_threshold: float = Field(
         default=0.01,
         ge=0.0,
         le=1.0,
-        description="Attention threshold for retroactive pruning (lower means more tokens kept)",
+        description="Attention threshold for retroactive removal (lower means more tokens kept)",
     )
 
     # Parallel tokens options
@@ -248,10 +248,10 @@ class GenerationRequest(BaseModel):
     )
     no_preserve_isolated_tokens: bool = Field(
         default=False,
-        description="Allow pruning to evaluate isolated tokens even when tokens are isolated",
+        description="Allow removal to evaluate isolated tokens even when tokens are isolated",
     )
 
-    # Advanced retroactive pruning options
+    # Advanced retroactive removal options
     no_relative_attention: bool = Field(
         default=False,
         description="Disable relative attention thresholds",
@@ -260,7 +260,7 @@ class GenerationRequest(BaseModel):
         default=0.5,
         ge=0.0,
         le=1.0,
-        description="Threshold for relative attention-based pruning (0-1)",
+        description="Threshold for relative attention-based removal (0-1)",
     )
     no_multi_scale_attention: bool = Field(
         default=False,
@@ -283,9 +283,9 @@ class GenerationRequest(BaseModel):
         ge=1.0,
         description="Controls how sharp the sigmoid transition is",
     )
-    complete_pruning_mode: str = Field(
+    complete_removal_mode: str = Field(
         default="keep_token",
-        description="How to handle pruned positions: 'keep_token' (keep best token), 'keep_unattended' (mark as unattended), 'remove_position' (remove position)",
+        description="How to handle removed positions: 'keep_token' (keep best token), 'keep_unattended' (mark as unattended), 'remove_position' (remove position)",
     )
 
     # Advanced caching options
@@ -308,12 +308,12 @@ class GenerationRequest(BaseModel):
             raise ValueError("Bezier points must be between 0 and 1")
         return v
 
-    # Validator for complete pruning mode
-    @field_validator("complete_pruning_mode")
-    def validate_complete_pruning_mode(cls, v):
+    # Validator for complete removal mode
+    @field_validator("complete_removal_mode")
+    def validate_complete_removal_mode(cls, v):
         valid_modes = ["keep_token", "keep_unattended", "remove_position"]
         if v not in valid_modes:
-            raise ValueError(f"Complete pruning mode must be one of {valid_modes}")
+            raise ValueError(f"Complete removal mode must be one of {valid_modes}")
         return v
 
 
@@ -326,11 +326,11 @@ class TokenInfo(BaseModel):
 
 class StepInfo(BaseModel):
     position: int
-    parallel_tokens: List[TokenInfo]
-    pruned_tokens: List[TokenInfo]
+    parallel_tokens: List[TokenInfo]  # All tokens considered at this position
+    removed_tokens: List[TokenInfo]    # Tokens that were REMOVED
 
 
-class PruningInfo(BaseModel):
+class RemovalInfo(BaseModel)
     strategy: str
     coherence_threshold: float
     diversity_clusters: int
@@ -340,10 +340,10 @@ class PruningInfo(BaseModel):
     use_relu: bool = False
     relu_activation_point: float = 0.5
     bezier_points: List[float] = Field(default=[0.2, 0.8])
-    pruning_time: float
+    removal_time: float
 
 
-class RetroactivePruningInfo(BaseModel):
+class RetroactiveRemovalInfo(BaseModel)
     attention_threshold: float
     use_relative_attention: bool = True
     relative_threshold: float = 0.5
@@ -352,12 +352,12 @@ class RetroactivePruningInfo(BaseModel):
     use_lci_dynamic_threshold: bool = True
     use_sigmoid_threshold: bool = True
     sigmoid_steepness: float = 10.0
-    complete_pruning_mode: str = "keep_token"
+    complete_removal_mode: str = "keep_token"
 
 
 class TimingInfo(BaseModel):
     generation_time: float
-    pruning_time: float
+    removal_time: float
     elapsed_time: float
 
 
@@ -383,9 +383,9 @@ class GenerationResponse(BaseModel):
     # Performance and timing
     timing: TimingInfo
 
-    # Pruning information
-    pruning: Optional[PruningInfo] = None
-    retroactive_pruning: Optional[RetroactivePruningInfo] = None
+    # Removal information
+    removal: Optional[RemovalInfo] = None
+    retroactive_removal: Optional[RetroactiveRemovalInfo] = None
 
     # Model information
     model_info: ModelInfo
@@ -402,10 +402,13 @@ class GenerationResponse(BaseModel):
 
     # Token sets data for visualization (raw data from generator)
     token_sets: List[Tuple[int, List[Tuple[int, float]], List[Tuple[int, float]]]] = []
+    
+    # Token sets with decoded text for visualization
+    token_sets_with_text: List[Tuple[int, List[Tuple[int, float, str]], List[Tuple[int, float, str]]]] = []
 
     # Raw token information for visualization
     tokens_by_position: Dict[str, Any] = {}
-    final_pruned_sets: Dict[str, Any] = {}
+    final_removed_sets: Dict[str, Any] = {}
 
 
 # Dependency for getting model components
@@ -536,12 +539,12 @@ async def generate_text(
         )
         start_time = time.time()
 
-        # --- Pruner Creation ---
-        retroactive_pruner = None
-        if request.use_retroactive_pruning:
+        # --- Remover Creation ---
+        retroactive_remover = None
+        if request.use_retroactive_removal:
             try:
-                # Create RetroactivePruner
-                retroactive_pruner = RetroactivePruner(
+                # Create RetroactiveRemover
+                retroactive_remover = RetroactiveRemover(
                     model=model_wrapper,
                     tokenizer=tokenizer,
                     device=generator.device,
@@ -552,37 +555,37 @@ async def generate_text(
                     num_layers_to_use=request.num_layers_to_use,
                     use_sigmoid_threshold=not request.no_sigmoid_threshold,
                     sigmoid_steepness=request.sigmoid_steepness,
-                    complete_pruning_mode=request.complete_pruning_mode,
+                    complete_removal_mode=request.complete_removal_mode,
                 )
-                # Set the SHARED token generator on the retroactive pruner
-                if hasattr(retroactive_pruner, "set_token_generator"):
-                    retroactive_pruner.set_token_generator(shared_token_generator)
+                # Set the SHARED token generator on the retroactive remover
+                if hasattr(retroactive_remover, "set_token_generator"):
+                    retroactive_remover.set_token_generator(shared_token_generator)
                     logger.info(
-                        f"Set shared TokenGenerator (ID: {id(shared_token_generator)}) on RetroactivePruner"
+                        f"Set shared TokenGenerator (ID: {id(shared_token_generator)}) on RetroactiveRemover"
                     )
                 else:
                     logger.warning(
-                        "RetroactivePruner does not have set_token_generator method."
+                        "RetroactiveRemover does not have set_token_generator method."
                     )
 
                 logger.info(
-                    f"Created retroactive pruner with threshold: {request.attention_threshold}"
+                    f"Created retroactive remover with threshold: {request.attention_threshold}"
                 )
 
             except ImportError as e:
-                logger.error(f"Failed to import pruning components: {e}")
+                logger.error(f"Failed to import removal components: {e}")
                 raise HTTPException(
                     status_code=500,
-                    detail="Server configuration error: Pruning components not available",
+                    detail="Server configuration error: Removal components not available",
                 )
             except Exception as e:
-                logger.error(f"Failed to initialize retroactive pruning: {e}")
+                logger.error(f"Failed to initialize retroactive removal: {e}")
                 logger.error(
                     traceback.format_exc()
                 )  # Log full traceback for init errors
                 raise HTTPException(
                     status_code=500,
-                    detail=f"Failed to initialize retroactive pruning: {str(e)}",
+                    detail=f"Failed to initialize retroactive removal: {str(e)}",
                 )
 
         # Configure RoPE modifier KV cache consistency if RoPE is enabled
@@ -606,13 +609,13 @@ async def generate_text(
 
         try:
             # --- Call the SINGLETON's generator ---
-            # Pass the newly created pruners for this request
+            # Pass the newly created removers for this request
             generation_result = generator.generate(
                 prompt=request.prompt,
                 max_tokens=request.max_tokens,
                 selection_threshold=request.selection_threshold,  # Initial selection threshold
                 return_parallel_sets=True,  # Needed for visualization
-                use_retroactive_pruning=request.use_retroactive_pruning,  # Control whether retroactive pruning is applied
+                use_retroactive_removal=request.use_retroactive_removal,  # Control whether retroactive removal is applied
                 min_steps=request.min_steps,
                 show_token_ids=request.show_token_ids,
                 # debug_mode already set on the generator instance
@@ -624,7 +627,7 @@ async def generate_text(
                     if not request.allow_intraset_token_visibility
                     else None
                 ),
-                retroactive_pruner=retroactive_pruner,  # Pass the request-specific RetroactivePruner
+                retroactive_remover=retroactive_remover,  # Pass the request-specific RetroactiveRemover
                 # New MCTS parameters
                 use_mcts=request.use_mcts,
                 mcts_simulations=request.mcts_simulations,
@@ -669,16 +672,38 @@ async def generate_text(
             generated_text_with_colors = generation_result["generated_text"]
             raw_text = generation_result.get("raw_generated_text", "")
             
+            # Extract clean text with fallbacks
+            clean_text = extract_clean_text(generated_text_with_colors) if generated_text_with_colors else ""
+            
+            # If clean_text is empty but we have other text, use raw_text as fallback
+            if not clean_text and raw_text:
+                clean_text = strip_ansi_codes(raw_text)
+            
+            # Final fallback: use stripped version of generated_text
+            if not clean_text and generated_text_with_colors:
+                clean_text = strip_ansi_codes(generated_text_with_colors)
+            
+            # Debug logging for clean_text generation
+            if request.debug_mode:
+                logger.debug(f"Generated text length: {len(generated_text_with_colors) if generated_text_with_colors else 0}")
+                logger.debug(f"Raw text length: {len(raw_text) if raw_text else 0}")
+                logger.debug(f"Clean text length: {len(clean_text) if clean_text else 0}")
+                logger.debug(f"Clean text preview: {repr(clean_text[:100]) if clean_text else 'None'}")
+            
+            # Always log when clean_text is empty as this might indicate an issue
+            if not clean_text:
+                logger.warning(f"Clean text is empty - generated_text: {len(generated_text_with_colors) if generated_text_with_colors else 0} chars, raw_text: {len(raw_text) if raw_text else 0} chars")
+            
             response = GenerationResponse(
                 generated_text=generated_text_with_colors,  # Keep ANSI codes for terminal display
                 raw_generated_text=raw_text,
-                clean_text=extract_clean_text(generated_text_with_colors),  # Clean text without brackets
+                clean_text=clean_text,  # Clean text without brackets and ANSI codes
                 steps=[],  # Populated below
                 timing=TimingInfo(
                     generation_time=generation_result.get(
                         "generation_time", elapsed_time
                     ),
-                    pruning_time=generation_result.get("pruning_time", 0.0),
+                    removal_time=generation_result.get("removal_time", 0.0),
                     elapsed_time=elapsed_time,
                 ),
                 model_info=ModelInfo(
@@ -695,11 +720,12 @@ async def generate_text(
                 had_repetition_loop=generation_result.get("had_repetition_loop", False),
                 system_content=system_content,
                 token_sets=[],  # Populated below
+                token_sets_with_text=[],  # Populated below
                 position_to_tokens=generation_result.get("position_to_tokens", {}),
                 original_parallel_positions=list(
                     generation_result.get("original_parallel_positions", set())
                 ),
-                final_pruned_sets=generation_result.get("final_pruned_sets", {}),
+                final_removed_sets=generation_result.get("final_removed_sets", {}),
             )
 
             # Process token sets safely
@@ -710,31 +736,33 @@ async def generate_text(
                 for step_data in token_sets_data:
                     try:
                         if isinstance(step_data, tuple) and len(step_data) == 3:
-                            position, original_data, pruned_data = step_data
+                            # Third element contains tokens that were REMOVED
+                            position, original_data, removed_data = step_data
                             if (
                                 isinstance(original_data, tuple)
                                 and len(original_data) == 2
-                                and isinstance(pruned_data, tuple)
-                                and len(pruned_data) == 2
+                                and isinstance(removed_data, tuple)
+                                and len(removed_data) == 2
                             ):
 
                                 original_ids, original_probs = original_data
-                                pruned_ids_raw, pruned_probs_raw = pruned_data
+                                removed_ids_raw, removed_probs_raw = removed_data
 
                                 # Convert to basic types safely
                                 original_pairs = [
                                     (int(tid), float(prob))
                                     for tid, prob in zip(original_ids, original_probs)
                                 ]
-                                pruned_pairs = [
+                                removed_pairs = [
                                     (int(tid), float(prob))
                                     for tid, prob in zip(
-                                        pruned_ids_raw, pruned_probs_raw
+                                        removed_ids_raw, removed_probs_raw
                                     )
                                 ]
 
+                                # Keep original format for backward compatibility
                                 formatted_token_sets.append(
-                                    (position, original_pairs, pruned_pairs)
+                                    (position, original_pairs, removed_pairs)
                                 )
 
                                 # Build step info
@@ -747,19 +775,19 @@ async def generate_text(
                                         )
                                         for tid, prob in original_pairs
                                     ]
-                                    pruned_tokens_info = [
+                                    removed_tokens_info = [
                                         TokenInfo(
                                             token_text=tokenizer.decode([tid]),
                                             token_id=tid,
                                             probability=prob,
                                         )
-                                        for tid, prob in pruned_pairs
+                                        for tid, prob in removed_pairs
                                     ]
                                     steps_list.append(
                                         StepInfo(
                                             position=position,
                                             parallel_tokens=parallel_tokens,
-                                            pruned_tokens=pruned_tokens_info,
+                                            removed_tokens=removed_tokens_info,
                                         )
                                     )
                                 except Exception as e:
@@ -781,10 +809,45 @@ async def generate_text(
 
                 response.token_sets = formatted_token_sets
                 response.steps = steps_list
+                
+                # Add token sets with decoded text for visualization
+                token_sets_with_text = []
+                for step_data in token_sets_data:
+                    try:
+                        if isinstance(step_data, tuple) and len(step_data) == 3:
+                            # Third element contains tokens that were REMOVED
+                            position, original_data, removed_data = step_data
+                            if (
+                                isinstance(original_data, tuple)
+                                and len(original_data) == 2
+                                and isinstance(removed_data, tuple)
+                                and len(removed_data) == 2
+                            ):
+                                original_ids, original_probs = original_data
+                                removed_ids_raw, removed_probs_raw = removed_data
+                                
+                                # Create tuples with decoded text
+                                original_with_text = [
+                                    (int(tid), float(prob), tokenizer.decode([tid]))
+                                    for tid, prob in zip(original_ids, original_probs)
+                                ]
+                                removed_with_text = [
+                                    (int(tid), float(prob), tokenizer.decode([tid]))
+                                    for tid, prob in zip(removed_ids_raw, removed_probs_raw)
+                                ]
+                                
+                                token_sets_with_text.append(
+                                    (position, original_with_text, removed_with_text)
+                                )
+                    except Exception as e:
+                        logger.warning(f"Error creating token_sets_with_text: {e}")
+                        continue
+                
+                response.token_sets_with_text = token_sets_with_text
 
-            # Add pruning info safely
-            if request.use_retroactive_pruning:
-                response.retroactive_pruning = RetroactivePruningInfo(
+            # Add removal info safely
+            if request.use_retroactive_removal:
+                response.retroactive_removal = RetroactiveRemovalInfo(
                     attention_threshold=request.attention_threshold,
                     use_relative_attention=not request.no_relative_attention,
                     relative_threshold=request.relative_threshold,
@@ -792,7 +855,7 @@ async def generate_text(
                     num_layers_to_use=request.num_layers_to_use,
                     use_sigmoid_threshold=not request.no_sigmoid_threshold,
                     sigmoid_steepness=request.sigmoid_steepness,
-                    complete_pruning_mode=request.complete_pruning_mode,
+                    complete_removal_mode=request.complete_removal_mode,
                 )
 
             return response

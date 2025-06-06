@@ -24,11 +24,11 @@ class TokenVisualizer:
             return
 
         token_sets = results["parallel_sets"]
-        pruned_sets = results.get("pruned_sets", None)
-        use_retroactive_pruning = results.get("use_retroactive_pruning", False)
+        surviving_sets = results.get("surviving_sets", None)  # Sets that survived removal
+        use_retroactive_removal = results.get("use_retroactive_removal", False)
         dynamic_threshold = results.get("dynamic_threshold", False)
         bezier_points = results.get("bezier_points", [0.2, 0.8])
-        pruning_strategy = results.get("pruning_strategy", "coherence")
+        removal_strategy = results.get("removal_strategy", "coherence")
         diversity_steps = results.get("diversity_steps", 0)
         min_steps = results.get("min_steps", 0)
 
@@ -36,10 +36,10 @@ class TokenVisualizer:
         steps = list(range(len(token_sets)))
         token_counts = [len(s) for s in token_sets]
 
-        # Initialize pruned_counts as empty list to avoid undefined variable error
-        pruned_counts = []
-        if pruned_sets:
-            pruned_counts = [len(s) for s in pruned_sets]
+        # Initialize surviving_counts as empty list to avoid undefined variable error
+        surviving_counts = []
+        if surviving_sets:
+            surviving_counts = [len(s) for s in surviving_sets]
 
         plt.figure(figsize=(12, 6 if not dynamic_threshold else 9))
 
@@ -47,12 +47,12 @@ class TokenVisualizer:
         plt.subplot(1 if not dynamic_threshold else 3, 2, 1)
         plt.bar(steps, token_counts, alpha=0.7, label="Original")
 
-        if pruned_sets:
-            plt.bar(steps, pruned_counts, alpha=0.5, label="After Pruning")
+        if surviving_sets:
+            plt.bar(steps, surviving_counts, alpha=0.5, label="Survived Removal")
 
             # If using hybrid strategy, show where the switch happens
             if (
-                pruning_strategy == "hybrid"
+                removal_strategy == "hybrid"
                 and diversity_steps > 0
                 and diversity_steps < len(steps)
             ):
@@ -78,10 +78,10 @@ class TokenVisualizer:
         plt.ylabel("Number of Parallel Tokens")
 
         strategy_text = f"Threshold={results['threshold']}"
-        if pruning_strategy == "hybrid":
+        if removal_strategy == "hybrid":
             strategy_text += f", Hybrid (Diversity→Coherence at step {diversity_steps})"
-        elif pruning_strategy:
-            strategy_text += f", {pruning_strategy.capitalize()} pruning"
+        elif removal_strategy:
+            strategy_text += f", {removal_strategy.capitalize()} removal strategy"
 
         if min_steps > 0:
             strategy_text += f", Min Steps={min_steps}"
@@ -98,7 +98,7 @@ class TokenVisualizer:
 
         # If using hybrid strategy, show where the switch happens
         if (
-            pruning_strategy == "hybrid"
+            removal_strategy == "hybrid"
             and diversity_steps > 0
             and diversity_steps < 20
         ):
@@ -113,18 +113,18 @@ class TokenVisualizer:
         plt.title("Token Probabilities by Step")
 
         # If dynamic threshold is used, plot the threshold progression
-        if dynamic_threshold and pruned_sets:
+        if dynamic_threshold and surviving_sets:
             plt.subplot(3, 2, (3, 5))
 
-            # Create estimated threshold values based on pruned tokens
+            # Create estimated threshold values based on surviving tokens
             thresholds = []
-            for i, (orig_set, pruned_set) in enumerate(zip(token_sets, pruned_sets)):
-                if len(orig_set) <= 1 or len(pruned_set) <= 0:
-                    # Skip steps with no pruning effect
+            for i, (orig_set, surviving_set) in enumerate(zip(token_sets, surviving_sets)):
+                if len(orig_set) <= 1 or len(surviving_set) <= 0:
+                    # Skip steps with no removal effect
                     continue
 
-                # Estimate threshold as the lowest probability in pruned set
-                min_prob_kept = min([t[1] for t in pruned_set])
+                # Estimate threshold as the lowest probability in surviving set
+                min_prob_kept = min([t[1] for t in surviving_set])
                 thresholds.append((i, min_prob_kept))
 
             if thresholds:
@@ -200,40 +200,40 @@ class TokenVisualizer:
         print(f"Max tokens in a step: {max(token_counts)}")
 
         if results.get("use_retroactive_pruning") and "pruned_sets" in results:
-            pruned_sets = results["pruned_sets"]
-            pruned_counts = [len(s) for s in pruned_sets]
-            pruning_strategy = results.get("pruning_strategy", "coherence")
+            removed_sets = results["pruned_sets"]
+            removed_counts = [len(s) for s in removed_sets]
+            removal_strategy = results.get("pruning_strategy", "coherence")
 
-            print(f"\nPruning Statistics ({pruning_strategy} strategy):")
-            if pruning_strategy == "hybrid":
+            print(f"\nRemoval Statistics ({removal_strategy} strategy):")
+            if removal_strategy == "hybrid":
                 print(
                     f"Strategy: Diversity for {results.get('diversity_steps', 0)} steps, then Coherence"
                 )
-            print(f"Average tokens before pruning: {np.mean(token_counts):.2f}")
-            print(f"Average tokens after pruning: {np.mean(pruned_counts):.2f}")
-            print(f"Max tokens before pruning: {max(token_counts)}")
-            print(f"Max tokens after pruning: {max(pruned_counts)}")
+            print(f"Average tokens before removal: {np.mean(token_counts):.2f}")
+            print(f"Average tokens after removal: {np.mean(removed_counts):.2f}")
+            print(f"Max tokens before removal: {max(token_counts)}")
+            print(f"Max tokens after removal: {max(removed_counts)}")
 
             # Calculate the average reduction percentage
             # Avoid division by zero
             reductions = []
-            for orig, pruned in zip(token_counts, pruned_counts):
+            for orig, removed in zip(token_counts, removed_counts):
                 if orig > 0:
-                    reduction = (1 - pruned / orig) * 100
+                    reduction = (1 - removed / orig) * 100
                     reductions.append(reduction)
 
             if reductions:
                 avg_reduction = np.mean(reductions)
                 print(f"Average reduction: {avg_reduction:.1f}%")
 
-                # Count how many sets had any pruning applied
-                sets_pruned = sum(
+                # Count how many sets had any removal applied
+                sets_with_removals = sum(
                     1
-                    for orig, pruned in zip(token_counts, pruned_counts)
-                    if orig > pruned
+                    for orig, removed in zip(token_counts, removed_counts)
+                    if orig > removed
                 )
                 print(
-                    f"Sets with pruning applied: {sets_pruned}/{len(token_sets)} ({(sets_pruned/len(token_sets))*100:.1f}%)"
+                    f"Sets with removals applied: {sets_with_removals}/{len(token_sets)} ({(sets_with_removals/len(token_sets))*100:.1f}%)"
                 )
             else:
                 print("No reduction data available")
