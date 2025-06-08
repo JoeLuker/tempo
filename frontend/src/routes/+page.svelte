@@ -546,9 +546,10 @@
             >
               <option value="custom">Custom Settings</option>
               <option value="default">Default</option>
+              <option value="exploration">TEMPO Explorer</option>
               <option value="creative">Creative</option>
               <option value="precise">Precise</option>
-              <option value="mcts">MCTS Explorer</option>
+              <option value="mcts">MCTS Mode</option>
             </select>
             
             <!-- Action Buttons -->

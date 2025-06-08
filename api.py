@@ -464,6 +464,9 @@ def extract_clean_text(text_with_brackets: str) -> str:
                 # Split by '/' and take the first non-empty token
                 tokens = [t.strip() for t in bracket_content.split('/')]
                 if tokens and tokens[0]:
+                    # Add space before token if needed (unless it's punctuation)
+                    if result and result[-1] not in ' \n' and tokens[0] not in '.,;:!?"\'':
+                        result.append(' ')
                     result.append(tokens[0])
                 i = j
             else:

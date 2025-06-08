@@ -52,28 +52,28 @@ export type Settings = {
 // Default settings
 const defaultSettings: Settings = {
   // General settings
-  maxTokens: 50,
-  selectionThreshold: 0.1,
-  useRetroactiveRemoval: true,
-  attentionThreshold: 0.01,
+  maxTokens: 100,  // Increased from 50 - gives more room for generation
+  selectionThreshold: 0.05,  // Lowered from 0.1 - shows more of TEMPO's parallel exploration
+  useRetroactiveRemoval: true,  // Keep enabled - key TEMPO feature
+  attentionThreshold: 0.01,  // Good default - balances quality vs exploration
   debugMode: false,
   
   // MCTS settings
   useMcts: false,
-  mctsSimulations: 10,
-  mctsCPuct: 1.0,
+  mctsSimulations: 15,  // Increased from 10 - better exploration/exploitation balance
+  mctsCPuct: 1.2,  // Slightly increased from 1.0 - encourages more exploration
   mctsDepth: 5,
   
   // Dynamic threshold settings
-  dynamicThreshold: false,
-  finalThreshold: 1.0,
-  bezierP1: 0.2,
-  bezierP2: 0.8,
+  dynamicThreshold: false,  // Keep disabled by default - advanced feature
+  finalThreshold: 0.3,  // Lowered from 1.0 - more reasonable ending threshold
+  bezierP1: 0.1,  // Lowered from 0.2 - smoother initial ramp
+  bezierP2: 0.9,  // Increased from 0.8 - maintains exploration longer
   useRelu: false,
   reluActivationPoint: 0.5,
   
   // Advanced settings
-  useCustomRope: true,
+  useCustomRope: true,  // Essential for TEMPO - must stay true
   disableKvCache: false,
   showTokenIds: false,
   systemContent: '',
@@ -171,26 +171,33 @@ export const presets = {
   creative: (): void => {
     settings.update(s => ({
       ...s,
-      selectionThreshold: 0.05,
+      selectionThreshold: 0.02,  // Very low - maximum exploration
+      maxTokens: 150,  // More tokens for creative output
       useRetroactiveRemoval: true,
-      attentionThreshold: 0.005,
-      dynamicThreshold: true,
-      finalThreshold: 0.8,
-      bezierP1: 0.1,
-      bezierP2: 0.9,
+      attentionThreshold: 0.005,  // Lower threshold for more creative retention
+      dynamicThreshold: true,  // Enable dynamic threshold for varied exploration
+      finalThreshold: 0.2,  // Low final threshold
+      bezierP1: 0.05,  // Very smooth initial ramp
+      bezierP2: 0.95,  // Maintain exploration almost to the end
+      allowIntrasetTokenVisibility: true,  // Let parallel tokens influence each other
     }));
   },
   
   precise: (): void => {
     settings.update(s => ({
       ...s,
-      selectionThreshold: 0.3,
+      selectionThreshold: 0.2,  // Higher threshold for more focused generation
+      maxTokens: 50,  // Shorter, more controlled output
       useRetroactiveRemoval: true,
-      attentionThreshold: 0.03,
+      attentionThreshold: 0.02,  // Moderate removal threshold
       dynamicThreshold: false,
       useCustomRope: true,
-      noRelativeAttention: false,
-      relativeThreshold: 0.7,
+      disableRelativeAttention: false,
+      relativeThreshold: 0.7,  // Higher relative threshold for stricter pruning
+      completeRemovalMode: 'keep_token',  // Always keep best token
+      disableLciDynamicThreshold: false,
+      disableSigmoidThreshold: false,
+      sigmoidSteepness: 15.0,  // Sharper decision boundary
     }));
   },
   
@@ -198,10 +205,38 @@ export const presets = {
     settings.update(s => ({
       ...s,
       useMcts: true,
-      mctsSimulations: 15,
-      mctsCPuct: 1.2,
-      mctsDepth: 5,
-      selectionThreshold: 0.15,
+      mctsSimulations: 30,  // More simulations for better tree exploration
+      mctsCPuct: 1.5,  // Higher exploration constant
+      mctsDepth: 8,  // Deeper search
+      selectionThreshold: 0.1,  // Moderate threshold works well with MCTS
+      maxTokens: 100,
+      useRetroactiveRemoval: false,  // MCTS handles its own pruning
+      dynamicThreshold: false,
+    }));
+  },
+  
+  exploration: (): void => {
+    // Preset to showcase TEMPO's unique parallel exploration features
+    settings.update(s => ({
+      ...s,
+      selectionThreshold: 0.03,  // Low threshold to see many parallel paths
+      maxTokens: 80,
+      useRetroactiveRemoval: true,
+      attentionThreshold: 0.008,  // Lower to keep more interesting paths
+      dynamicThreshold: true,  // Show how threshold changes over time
+      finalThreshold: 0.15,  // Moderate final threshold
+      bezierP1: 0.2,  // Standard curve
+      bezierP2: 0.8,
+      useCustomRope: true,  // Essential TEMPO feature
+      allowIntrasetTokenVisibility: false,  // Keep tokens isolated for clearer visualization
+      showTokenIds: false,  // Focus on text, not IDs
+      // Enable advanced pruning features
+      disableRelativeAttention: false,
+      relativeThreshold: 0.4,  // Moderate relative pruning
+      disableMultiScaleAttention: false,
+      disableLciDynamicThreshold: false,
+      disableSigmoidThreshold: false,
+      sigmoidSteepness: 8.0,  // Gentler sigmoid transition
     }));
   },
 };
