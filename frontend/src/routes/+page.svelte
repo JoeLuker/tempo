@@ -20,6 +20,7 @@
   import SimpleTokenView from '$lib/components/SimpleTokenView.svelte';
   import ParallelTextView from '$lib/components/ParallelTextView.svelte';
   import TokenFlow from '$lib/components/TokenFlow.svelte';
+  import ThresholdCurvePreview from '$lib/components/ThresholdCurvePreview.svelte';
   import { formatCleanText, renderFormattedOutput, renderInteractiveTokens } from '$lib/utils/formatOutput';
 
   type AnsiColorMap = Record<string, string>;
@@ -624,6 +625,22 @@
                 step={0.01}
               />
               <div class="text-sm text-gray-500 mt-1">{selectionThresholdSlider[0].toFixed(2)}</div>
+              
+              {#if !$settings.dynamicThreshold}
+              <!-- Small constant threshold preview -->
+              <div class="mt-3 p-3 border rounded bg-gray-50 dark:bg-gray-900/50" style="height: 120px;">
+                <ThresholdCurvePreview
+                  dynamicThreshold={false}
+                  selectionThreshold={selectionThresholdSlider[0]}
+                  finalThreshold={finalThresholdSlider[0]}
+                  useRelu={false}
+                  reluActivationPoint={0.5}
+                  bezierP1={0.2}
+                  bezierP2={0.8}
+                  maxSteps={maxTokensSlider[0]}
+                />
+              </div>
+              {/if}
             </div>
 
             <div class="flex items-center space-x-2">
@@ -832,6 +849,20 @@
                 <div class="text-sm text-gray-500 mt-1">{bezierP2Slider[0].toFixed(2)}</div>
               </div>
               {/if}
+              
+              <!-- Threshold Curve Preview -->
+              <div class="mt-4 p-4 border rounded-lg bg-gray-50 dark:bg-gray-900">
+                <ThresholdCurvePreview
+                  dynamicThreshold={$settings.dynamicThreshold}
+                  selectionThreshold={selectionThresholdSlider[0]}
+                  finalThreshold={finalThresholdSlider[0]}
+                  useRelu={$settings.useRelu}
+                  reluActivationPoint={reluActivationPointSlider[0]}
+                  bezierP1={bezierP1Slider[0]}
+                  bezierP2={bezierP2Slider[0]}
+                  maxSteps={maxTokensSlider[0]}
+                />
+              </div>
             </div>
             {/if}
           </TabsContent>
