@@ -330,7 +330,7 @@ class StepInfo(BaseModel):
     removed_tokens: List[TokenInfo]    # Tokens that were REMOVED
 
 
-class RemovalInfo(BaseModel)
+class RemovalInfo(BaseModel):
     strategy: str
     coherence_threshold: float
     diversity_clusters: int
@@ -343,7 +343,7 @@ class RemovalInfo(BaseModel)
     removal_time: float
 
 
-class RetroactiveRemovalInfo(BaseModel)
+class RetroactiveRemovalInfo(BaseModel):
     attention_threshold: float
     use_relative_attention: bool = True
     relative_threshold: float = 0.5
@@ -555,7 +555,7 @@ async def generate_text(
                     num_layers_to_use=request.num_layers_to_use,
                     use_sigmoid_threshold=not request.no_sigmoid_threshold,
                     sigmoid_steepness=request.sigmoid_steepness,
-                    complete_removal_mode=request.complete_removal_mode,
+                    complete_pruning_mode=request.complete_removal_mode,
                 )
                 # Set the SHARED token generator on the retroactive remover
                 if hasattr(retroactive_remover, "set_token_generator"):
@@ -855,7 +855,7 @@ async def generate_text(
                     num_layers_to_use=request.num_layers_to_use,
                     use_sigmoid_threshold=not request.no_sigmoid_threshold,
                     sigmoid_steepness=request.sigmoid_steepness,
-                    complete_removal_mode=request.complete_removal_mode,
+                    complete_pruning_mode=request.complete_removal_mode,
                 )
 
             return response

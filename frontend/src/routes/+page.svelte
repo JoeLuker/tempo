@@ -3,7 +3,7 @@
   import type * as d3 from 'd3';
   import { createBarChart } from '$lib/visualizations/barChart';
   import { theme, getAnsiColorMap, toggleTheme } from '$lib/theme';
-  import { settings, presets, updateSetting } from '$lib/stores/settings';
+  import { settings, presets, updateSetting, resetSettings } from '$lib/stores/settings';
   import { registerKeyboardShortcuts, getAllShortcuts } from '$lib/utils/keyboard';
 
   // Import shadcn components
@@ -294,7 +294,7 @@
 
       // Use the v2 API endpoint with timeout handling
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 60000); // 60-second timeout
+      const timeoutId = setTimeout(() => controller.abort(), 180000); // 180-second timeout (3 minutes)
       
       try {
         const fetchResponse = await fetch('/api/v2/generate', {
@@ -835,67 +835,73 @@
             {/if}
           </TabsContent>
 
-          <TabsContent value="advanced" class="space-y-6">
-            <!-- Model Settings Section -->
-            <div class="space-y-4">
-              <h3 class="text-sm font-semibold text-gray-700 dark:text-gray-300 uppercase tracking-wider">Model Settings</h3>
-              <div class="space-y-3 pl-4">
-                <div class="flex items-center space-x-2">
-                  <Switch id="useCustomRope" bind:checked={useCustomRope} />
-                  <label for="useCustomRope" class="text-sm font-medium">Use Custom RoPE (Rotary Position Embeddings)</label>
-                  {#if getHelp('useCustomRope')}
-                    <SimpleTooltip helpContent={getHelp('useCustomRope')} />
+          <TabsContent value="advanced" class="space-y-4">
+            <!-- Core Model Configuration -->
+            <div class="space-y-3">
+              <div class="flex items-center space-x-2">
+                <Switch id="useCustomRope" bind:checked={useCustomRope} />
+                <label for="useCustomRope" class="text-sm font-medium">Enable TEMPO (Custom RoPE)</label>
+                {#if getHelp('useCustomRope')}
+                  <SimpleTooltip helpContent={getHelp('useCustomRope')} />
+                {/if}
+              </div>
+
+              <div class="flex items-center space-x-2">
+                <Switch id="enableThinking" bind:checked={enableThinking} />
+                <label for="enableThinking" class="text-sm font-medium">Deep Thinking Mode</label>
+                {#if getHelp('enableThinking')}
+                  <SimpleTooltip helpContent={getHelp('enableThinking')} />
+                {/if}
+              </div>
+
+              <div class="flex items-center space-x-2">
+                <Switch id="showTokenIds" bind:checked={showTokenIds} />
+                <label for="showTokenIds" class="text-sm font-medium">Show Token IDs</label>
+                {#if getHelp('showTokenIds')}
+                  <SimpleTooltip helpContent={getHelp('showTokenIds')} />
+                {/if}
+              </div>
+
+              <div>
+                <div class="flex items-center gap-1 mb-2">
+                  <label for="systemContent" class="block text-sm font-medium">System Prompt</label>
+                  {#if getHelp('systemContent')}
+                    <SimpleTooltip helpContent={getHelp('systemContent')} />
                   {/if}
                 </div>
-
-                <div class="flex items-center space-x-2">
-                  <Switch id="disableKvCache" bind:checked={disableKvCache} />
-                  <label for="disableKvCache" class="text-sm font-medium">Disable KV Cache</label>
-                  {#if getHelp('disableKvCache')}
-                    <SimpleTooltip helpContent={getHelp('disableKvCache')} />
-                  {/if}
-                </div>
-
-                <div class="flex items-center space-x-2">
-                  <Switch id="disableKvCacheConsistency" bind:checked={disableKvCacheConsistency} />
-                  <label for="disableKvCacheConsistency" class="text-sm font-medium">Disable KV Cache Consistency Checks</label>
-                  {#if getHelp('disableKvCacheConsistency')}
-                    <SimpleTooltip helpContent={getHelp('disableKvCacheConsistency')} />
-                  {/if}
-                </div>
-
-                <div class="flex items-center space-x-2">
-                  <Switch id="enableThinking" bind:checked={enableThinking} />
-                  <label for="enableThinking" class="text-sm font-medium">Enable Deep Thinking Mode</label>
-                  {#if getHelp('enableThinking')}
-                    <SimpleTooltip helpContent={getHelp('enableThinking')} />
-                  {/if}
-                </div>
-
-                <div>
-                  <div class="flex items-center gap-1 mb-1">
-                    <label for="systemContent" class="block text-sm font-medium">System Prompt</label>
-                    {#if getHelp('systemContent')}
-                      <SimpleTooltip helpContent={getHelp('systemContent')} />
-                    {/if}
-                  </div>
-                  <Textarea
-                    id="systemContent"
-                    bind:value={systemContent}
-                    placeholder="Optional system instructions for the model..."
-                    rows={2}
-                  />
-                </div>
+                <Textarea
+                  id="systemContent"
+                  bind:value={systemContent}
+                  placeholder="Optional system instructions for the model..."
+                  rows={2}
+                />
               </div>
             </div>
 
-            <!-- Attention Settings Section -->
-            <div class="space-y-4">
-              <h3 class="text-sm font-semibold text-gray-700 dark:text-gray-300 uppercase tracking-wider">Attention Settings</h3>
-              <div class="space-y-3 pl-4">
+            <!-- Collapsible Advanced Sections -->
+            {@const showAttentionSettings = allowIntrasetTokenVisibility || !noRelativeAttention || !noMultiScaleAttention || numLayersToUse}
+            {@const showPruningSettings = noPreserveIsolatedTokens || completeRemovalMode !== 'keep_token' || !noLciDynamicThreshold || !noSigmoidThreshold}
+            {@const showCacheSettings = disableKvCache || disableKvCacheConsistency}
+
+            <!-- Attention Mechanics (Collapsible) -->
+            <details class="border rounded-lg">
+              <summary class="px-4 py-3 cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800 flex items-center justify-between">
+                <div class="flex items-center gap-2">
+                  <span class="font-medium">Attention Mechanics</span>
+                  {#if showAttentionSettings}
+                    <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200">
+                      Modified
+                    </span>
+                  {/if}
+                </div>
+                <svg class="w-4 h-4 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+                </svg>
+              </summary>
+              <div class="px-4 pb-4 space-y-3 border-t">
                 <div class="flex items-center space-x-2">
                   <Switch id="allowIntrasetTokenVisibility" bind:checked={allowIntrasetTokenVisibility} />
-                  <label for="allowIntrasetTokenVisibility" class="text-sm font-medium">Allow Parallel Tokens to See Each Other</label>
+                  <label for="allowIntrasetTokenVisibility" class="text-sm">Parallel Tokens See Each Other</label>
                   {#if getHelp('allowIntrasetTokenVisibility')}
                     <SimpleTooltip helpContent={getHelp('allowIntrasetTokenVisibility')} />
                   {/if}
@@ -903,16 +909,16 @@
 
                 <div class="flex items-center space-x-2">
                   <Switch id="disableRelativeAttention" bind:checked={noRelativeAttention} />
-                  <label for="disableRelativeAttention" class="text-sm font-medium">Disable Relative Attention</label>
+                  <label for="disableRelativeAttention" class="text-sm">Disable Relative Attention</label>
                   {#if getHelp('noRelativeAttention')}
                     <SimpleTooltip helpContent={getHelp('noRelativeAttention')} />
                   {/if}
                 </div>
 
                 {#if !noRelativeAttention}
-                <div class="pl-4">
-                  <div class="flex items-center gap-1 mb-1">
-                    <label for="relativeThreshold" class="block text-sm font-medium">Relative Attention Threshold</label>
+                <div class="pl-6 space-y-2">
+                  <div class="flex items-center gap-1">
+                    <label for="relativeThreshold" class="block text-sm">Relative Threshold</label>
                     {#if getHelp('relativeThreshold')}
                       <SimpleTooltip helpContent={getHelp('relativeThreshold')} />
                     {/if}
@@ -924,21 +930,21 @@
                     max={1}
                     step={0.01}
                   />
-                  <div class="text-sm text-gray-500 mt-1">{relativeThresholdSlider[0].toFixed(2)}</div>
+                  <div class="text-xs text-gray-500">{relativeThresholdSlider[0].toFixed(2)}</div>
                 </div>
                 {/if}
 
                 <div class="flex items-center space-x-2">
                   <Switch id="disableMultiScaleAttention" bind:checked={noMultiScaleAttention} />
-                  <label for="disableMultiScaleAttention" class="text-sm font-medium">Disable Multi-Scale Attention</label>
+                  <label for="disableMultiScaleAttention" class="text-sm">Disable Multi-Scale Attention</label>
                   {#if getHelp('noMultiScaleAttention')}
                     <SimpleTooltip helpContent={getHelp('noMultiScaleAttention')} />
                   {/if}
                 </div>
 
-                <div>
-                  <div class="flex items-center gap-1 mb-1">
-                    <label for="numLayersToUse" class="block text-sm font-medium">Number of Attention Layers</label>
+                <div class="space-y-2">
+                  <div class="flex items-center gap-1">
+                    <label for="numLayersToUse" class="block text-sm">Attention Layers Limit</label>
                     {#if getHelp('numLayersToUse')}
                       <SimpleTooltip helpContent={getHelp('numLayersToUse')} />
                     {/if}
@@ -947,28 +953,40 @@
                     id="numLayersToUse"
                     type="number"
                     bind:value={numLayersToUse}
-                    placeholder="All layers (default)"
+                    placeholder="All layers"
                     min={1}
                   />
                 </div>
               </div>
-            </div>
+            </details>
 
-            <!-- Pruning & Threshold Settings Section -->
-            <div class="space-y-4">
-              <h3 class="text-sm font-semibold text-gray-700 dark:text-gray-300 uppercase tracking-wider">Pruning & Thresholds</h3>
-              <div class="space-y-3 pl-4">
+            <!-- Pruning & Thresholds (Collapsible) -->
+            <details class="border rounded-lg">
+              <summary class="px-4 py-3 cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800 flex items-center justify-between">
+                <div class="flex items-center gap-2">
+                  <span class="font-medium">Pruning & Thresholds</span>
+                  {#if showPruningSettings}
+                    <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200">
+                      Modified
+                    </span>
+                  {/if}
+                </div>
+                <svg class="w-4 h-4 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+                </svg>
+              </summary>
+              <div class="px-4 pb-4 space-y-3 border-t">
                 <div class="flex items-center space-x-2">
                   <Switch id="allowIsolatedTokenRemoval" bind:checked={noPreserveIsolatedTokens} />
-                  <label for="allowIsolatedTokenRemoval" class="text-sm font-medium">Allow Isolated Token Removal</label>
+                  <label for="allowIsolatedTokenRemoval" class="text-sm">Allow Isolated Token Removal</label>
                   {#if getHelp('noPreserveIsolatedTokens')}
                     <SimpleTooltip helpContent={getHelp('noPreserveIsolatedTokens')} />
                   {/if}
                 </div>
 
-                <div>
-                  <div class="flex items-center gap-1 mb-1">
-                    <label for="completeRemovalMode" class="block text-sm font-medium">Complete Removal Mode</label>
+                <div class="space-y-2">
+                  <div class="flex items-center gap-1">
+                    <label for="completeRemovalMode" class="block text-sm">Complete Removal Mode</label>
                     {#if getHelp('completeRemovalMode')}
                       <SimpleTooltip helpContent={getHelp('completeRemovalMode')} />
                     {/if}
@@ -976,7 +994,7 @@
                   <select
                     id="completeRemovalMode"
                     bind:value={completeRemovalMode}
-                    class="w-full p-2 border rounded bg-background text-foreground border-input focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
+                    class="w-full p-2 text-sm border rounded bg-background text-foreground border-input focus:outline-none focus:ring-2 focus:ring-ring"
                   >
                     <option value="keep_token">Keep Best Token</option>
                     <option value="keep_unattended">Keep Unattended Tokens</option>
@@ -986,7 +1004,7 @@
 
                 <div class="flex items-center space-x-2">
                   <Switch id="disableLciDynamicThreshold" bind:checked={noLciDynamicThreshold} />
-                  <label for="disableLciDynamicThreshold" class="text-sm font-medium">Disable LCI Dynamic Threshold</label>
+                  <label for="disableLciDynamicThreshold" class="text-sm">Disable LCI Dynamic Threshold</label>
                   {#if getHelp('noLciDynamicThreshold')}
                     <SimpleTooltip helpContent={getHelp('noLciDynamicThreshold')} />
                   {/if}
@@ -994,16 +1012,16 @@
 
                 <div class="flex items-center space-x-2">
                   <Switch id="disableSigmoidThreshold" bind:checked={noSigmoidThreshold} />
-                  <label for="disableSigmoidThreshold" class="text-sm font-medium">Disable Sigmoid Decision Boundary</label>
+                  <label for="disableSigmoidThreshold" class="text-sm">Disable Sigmoid Decision Boundary</label>
                   {#if getHelp('noSigmoidThreshold')}
                     <SimpleTooltip helpContent={getHelp('noSigmoidThreshold')} />
                   {/if}
                 </div>
 
                 {#if !noSigmoidThreshold}
-                <div class="pl-4">
-                  <div class="flex items-center gap-1 mb-1">
-                    <label for="sigmoidSteepness" class="block text-sm font-medium">Sigmoid Steepness</label>
+                <div class="pl-6 space-y-2">
+                  <div class="flex items-center gap-1">
+                    <label for="sigmoidSteepness" class="block text-sm">Sigmoid Steepness</label>
                     {#if getHelp('sigmoidSteepness')}
                       <SimpleTooltip helpContent={getHelp('sigmoidSteepness')} />
                     {/if}
@@ -1015,25 +1033,45 @@
                     max={20}
                     step={0.1}
                   />
-                  <div class="text-sm text-gray-500 mt-1">{sigmoidSteepnessSlider[0].toFixed(1)}</div>
+                  <div class="text-xs text-gray-500">{sigmoidSteepnessSlider[0].toFixed(1)}</div>
                 </div>
                 {/if}
               </div>
-            </div>
+            </details>
 
-            <!-- Output Settings Section -->
-            <div class="space-y-4">
-              <h3 class="text-sm font-semibold text-gray-700 dark:text-gray-300 uppercase tracking-wider">Output Settings</h3>
-              <div class="space-y-3 pl-4">
+            <!-- Cache & Debug (Collapsible) -->
+            <details class="border rounded-lg">
+              <summary class="px-4 py-3 cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800 flex items-center justify-between">
+                <div class="flex items-center gap-2">
+                  <span class="font-medium">Cache & Debug</span>
+                  {#if showCacheSettings}
+                    <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200">
+                      Warning
+                    </span>
+                  {/if}
+                </div>
+                <svg class="w-4 h-4 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+                </svg>
+              </summary>
+              <div class="px-4 pb-4 space-y-3 border-t">
                 <div class="flex items-center space-x-2">
-                  <Switch id="showTokenIds" bind:checked={showTokenIds} />
-                  <label for="showTokenIds" class="text-sm font-medium">Show Token IDs in Output</label>
-                  {#if getHelp('showTokenIds')}
-                    <SimpleTooltip helpContent={getHelp('showTokenIds')} />
+                  <Switch id="disableKvCache" bind:checked={disableKvCache} />
+                  <label for="disableKvCache" class="text-sm">Disable KV Cache</label>
+                  {#if getHelp('disableKvCache')}
+                    <SimpleTooltip helpContent={getHelp('disableKvCache')} />
+                  {/if}
+                </div>
+
+                <div class="flex items-center space-x-2">
+                  <Switch id="disableKvCacheConsistency" bind:checked={disableKvCacheConsistency} />
+                  <label for="disableKvCacheConsistency" class="text-sm">Disable KV Cache Consistency</label>
+                  {#if getHelp('disableKvCacheConsistency')}
+                    <SimpleTooltip helpContent={getHelp('disableKvCacheConsistency')} />
                   {/if}
                 </div>
               </div>
-            </div>
+            </details>
           </TabsContent>
           </Tabs>
 
@@ -1134,8 +1172,14 @@
                   <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
                   <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
                 </svg>
-                <div class="text-sm text-gray-500">
-                  Processing your request. This may take a moment depending on the model size and settings.
+                <div class="text-sm text-gray-500 text-center">
+                  <div class="mb-2">Processing TEMPO generation...</div>
+                  <div class="text-xs opacity-75">
+                    {#if $settings.useRetroactiveRemoval}This may take 1-2 minutes with retroactive removal enabled.{:else}This may take 30-60 seconds.{/if}
+                  </div>
+                  <div class="text-xs opacity-75 mt-1">
+                    Lower selection thresholds take longer to process.
+                  </div>
                 </div>
               </div>
             </div>
