@@ -1,232 +1,24 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
-  import type * as d3 from 'd3';
-  import { createBarChart } from '$lib/visualizations/barChart';
-  import { theme, getAnsiColorMap, toggleTheme } from '$lib/theme';
-  import { settings, presets, updateSetting, resetSettings } from '$lib/stores/settings';
-  import { registerKeyboardShortcuts, getAllShortcuts } from '$lib/utils/keyboard';
-
-  // Import shadcn components
-  import { Card, CardContent, CardHeader, CardTitle, CardDescription, CardFooter } from '$lib/components/ui/card';
+  import { Card, CardContent, CardHeader, CardTitle } from '$lib/components/ui/card';
   import { Button } from '$lib/components/ui/button';
-  import { Input } from '$lib/components/ui/input';
   import { Textarea } from '$lib/components/ui/textarea';
-  import { Slider } from '$lib/components/ui/slider';
-  import { Switch } from '$lib/components/ui/switch';
-  import { Tabs, TabsContent, TabsList, TabsTrigger } from '$lib/components/ui/tabs';
-  import SimpleTooltip from '$lib/components/ui/simple-tooltip.svelte';
-  import { getSettingHelp } from '$lib/data/settingsHelp';
-  import TokenTree from '$lib/components/TokenTree.svelte';
-  import SimpleTokenView from '$lib/components/SimpleTokenView.svelte';
-  import ParallelTextView from '$lib/components/ParallelTextView.svelte';
-  import TokenFlow from '$lib/components/TokenFlow.svelte';
-  import ThresholdCurvePreview from '$lib/components/ThresholdCurvePreview.svelte';
-  import { formatCleanText, renderFormattedOutput, renderInteractiveTokens } from '$lib/utils/formatOutput';
-
-  type AnsiColorMap = Record<string, string>;
-
-  // Adjusted Token type for clarity within Svelte processing
-  type ApiToken = {
-      token_text: string;
-      token_id: number;
-      probability: number;
-  };
-
-  // Type for data passed to the chart
-  type ChartToken = {
-      text: string;
-      id: number;
-      probability: number;
-      isRemoved: boolean; // Flag to indicate if it was removed
-  };
-
-  type Step = {
-      position: number;
-      parallel_tokens: ApiToken[]; // Original candidates from API
-      removed_tokens: ApiToken[];   // Removed tokens from API
-  };
-
-  // Type for Token object in the v2 API
-  type Token = {
-    id: number;
-    text: string;
-    probability: number;
-  };
-
-  // Type for TokenSetData object in the v2 API
-  type TokenSetData = {
-    position: number;
-    original_tokens: Token[];
-    removed_tokens: Token[];
-  };
-
-  // Type for TimingInfo in the v2 API
-  type TimingInfo = {
-    generation_time: number;
-    pruning_time: number;
-    elapsed_time: number;
-  };
-
-  // Type for ModelInfo in the v2 API
-  type ModelInfo = {
-    model_name: string;
-    is_qwen_model: boolean;
-    use_custom_rope: boolean;
-    device: string;
-    model_type?: string;
-  };
-
-  // Full API response type from the v2 API
-  type ApiResponse = {
-    generated_text: string;  // Text with ANSI color codes
-    raw_generated_text: string;  // Raw token sequence
-    clean_text: string;  // Clean text without ANSI codes
-    steps?: any[];
-    position_to_tokens?: Record<string, string[]>;
-    original_parallel_positions?: number[];
-    timing: TimingInfo;
-    removal?: any;
-    retroactive_removal?: any;
-    model_info: ModelInfo;
-    selection_threshold: number;
-    max_tokens: number;
-    min_steps: number;
-    prompt: string;
-    had_repetition_loop?: boolean;
-    system_content?: string;
-    // Legacy format - may still be present in some responses
-    token_sets?: [number, [number, number][], [number, number][]][];
-    // Token sets with decoded text for visualization
-    token_sets_with_text?: [number, [number, number, string][], [number, number, string][]][];
-    // New v2 format for visualization
-    raw_token_data?: TokenSetData[];
-  };
-
-  // --- Existing functions (ansiToHtml, stripAnsiCodes) remain the same ---
-
-  function ansiToHtml(text: string): string {
-    if (!text) return '';
-
-    const ansiColorMap = getAnsiColorMap($theme === 'dark');
-
-    let result = '';
-    let currentColor = '';
-    let inAnsi = false;
-    let ansiCode = '';
-
-    for (let i = 0; i < text.length; i++) {
-      const char = text[i];
-
-      if (char === '\x1b' && text[i + 1] === '[') {
-        inAnsi = true;
-        ansiCode = '';
-        i++; // Skip the '['
-        continue;
-      }
-
-      if (inAnsi) {
-        if (char === 'm') {
-          inAnsi = false;
-          const color = ansiColorMap[ansiCode as keyof typeof ansiColorMap];
-          if (color) {
-            if (currentColor) {
-              result += `</span>`;
-            }
-            currentColor = color;
-            result += `<span style="color: ${color}">`;
-          }
-        } else {
-          ansiCode += char;
-        }
-        continue;
-      }
-
-      result += char;
-    }
-
-    if (currentColor) {
-      result += '</span>';
-    }
-
-    return result;
-  }
-
-  function stripAnsiCodes(text: string): string {
-    if (!text) return '';
-    return text.replace(/\x1b\[[0-9;]*m/g, '');
-  }
-
-  // UI state variables
+  import SimplifiedSettings from '$lib/components/SimplifiedSettings.svelte';
+  import OutputVisualization from '$lib/components/OutputVisualization.svelte';
+  import GenerationHistory from '$lib/components/GenerationHistory.svelte';
+  import { settings, updateSetting, presets } from '$lib/stores/settings';
+  import { generationHistory } from '$lib/stores/history';
+  import { registerKeyboardShortcuts } from '$lib/utils/keyboard';
+  
   let prompt = '';
   let isGenerating = false;
   let error = '';
-  let apiResponse: ApiResponse | null = null;
+  let apiResponse: any = null;
+  let showHistory = false;
+  let promptTextarea: HTMLTextAreaElement;
+  let outputVisualization: OutputVisualization;
   
-  let chart: { update: (data: ChartToken[]) => void; cleanup: () => void } | null = null;
-  let chartContainer: HTMLElement;
-  
-  // Used for sliders (needs to be an array for ShadCN components)
-  let maxTokensSlider = [$settings.maxTokens];
-  let selectionThresholdSlider = [$settings.selectionThreshold];
-  let attentionThresholdSlider = [$settings.attentionThreshold];
-  let mctsSimulationsSlider = [$settings.mctsSimulations];
-  let mctsCPuctSlider = [$settings.mctsCPuct];
-  let mctsDepthSlider = [$settings.mctsDepth];
-  let finalThresholdSlider = [$settings.finalThreshold];
-  let bezierP1Slider = [$settings.bezierP1];
-  let bezierP2Slider = [$settings.bezierP2];
-  let reluActivationPointSlider = [$settings.reluActivationPoint];
-  let relativeThresholdSlider = [$settings.relativeThreshold];
-  let sigmoidSteepnessSlider = [$settings.sigmoidSteepness];
-  
-  // Syncing slider values with store
-  $: if (maxTokensSlider[0] !== $settings.maxTokens) updateSetting('maxTokens', maxTokensSlider[0]);
-  $: if (selectionThresholdSlider[0] !== $settings.selectionThreshold) updateSetting('selectionThreshold', selectionThresholdSlider[0]);
-  $: if (attentionThresholdSlider[0] !== $settings.attentionThreshold) updateSetting('attentionThreshold', attentionThresholdSlider[0]);
-  $: if (mctsSimulationsSlider[0] !== $settings.mctsSimulations) updateSetting('mctsSimulations', mctsSimulationsSlider[0]);
-  $: if (mctsCPuctSlider[0] !== $settings.mctsCPuct) updateSetting('mctsCPuct', mctsCPuctSlider[0]);
-  $: if (mctsDepthSlider[0] !== $settings.mctsDepth) updateSetting('mctsDepth', mctsDepthSlider[0]);
-  $: if (finalThresholdSlider[0] !== $settings.finalThreshold) updateSetting('finalThreshold', finalThresholdSlider[0]);
-  $: if (bezierP1Slider[0] !== $settings.bezierP1) updateSetting('bezierP1', bezierP1Slider[0]);
-  $: if (bezierP2Slider[0] !== $settings.bezierP2) updateSetting('bezierP2', bezierP2Slider[0]);
-  $: if (reluActivationPointSlider[0] !== $settings.reluActivationPoint) updateSetting('reluActivationPoint', reluActivationPointSlider[0]);
-  $: if (relativeThresholdSlider[0] !== $settings.relativeThreshold) updateSetting('relativeThreshold', relativeThresholdSlider[0]);
-  $: if (sigmoidSteepnessSlider[0] !== $settings.sigmoidSteepness) updateSetting('sigmoidSteepness', sigmoidSteepnessSlider[0]);
-  
-  // Other settings that don't need a special slider binding
-  let numLayersToUse: number | null = null; // Not persisting this one as it's model-specific
-  
-  // Additional settings variables
-  let useCustomRope = $settings.useCustomRope;
-  let disableKvCache = $settings.disableKvCache;
-  let disableKvCacheConsistency = $settings.disableKvCacheConsistency;
-  let showTokenIds = $settings.showTokenIds;
-  let systemContent = $settings.systemContent || '';
-  let noRelativeAttention = $settings.disableRelativeAttention;
-  let noSigmoidThreshold = $settings.disableSigmoidThreshold;
-  let enableThinking = $settings.enableThinking || false;
-  let allowIntrasetTokenVisibility = $settings.allowIntrasetTokenVisibility || false;
-  let noLciDynamicThreshold = $settings.disableLciDynamicThreshold || false;
-  let noMultiScaleAttention = $settings.disableMultiScaleAttention || false;
-  let noPreserveIsolatedTokens = $settings.allowIsolatedTokenRemoval || false;
-  let completeRemovalMode = $settings.completeRemovalMode || 'keep_token';
-  
-  // Update settings when these change
-  $: updateSetting('useCustomRope', useCustomRope);
-  $: updateSetting('disableKvCache', disableKvCache);
-  $: updateSetting('disableKvCacheConsistency', disableKvCacheConsistency);
-  $: updateSetting('showTokenIds', showTokenIds);
-  $: updateSetting('systemContent', systemContent);
-  $: updateSetting('disableRelativeAttention', noRelativeAttention);
-  $: updateSetting('disableSigmoidThreshold', noSigmoidThreshold);
-  $: updateSetting('enableThinking', enableThinking);
-  $: updateSetting('allowIntrasetTokenVisibility', allowIntrasetTokenVisibility);
-  $: updateSetting('disableLciDynamicThreshold', noLciDynamicThreshold);
-  $: updateSetting('disableMultiScaleAttention', noMultiScaleAttention);
-  $: updateSetting('allowIsolatedTokenRemoval', noPreserveIsolatedTokens);
-  $: updateSetting('completeRemovalMode', completeRemovalMode);
-
-  // Function to generate text
+  // Generate text with current settings
   async function generateText() {
     if (!prompt.trim()) {
       error = 'Please enter a prompt';
@@ -237,1280 +29,443 @@
     error = '';
 
     try {
-      // Input validation with better error messages
-      if (maxTokensSlider[0] <= 0) {
-        throw new Error('Max tokens must be greater than 0');
-      }
-      
-      if (selectionThresholdSlider[0] < 0 || selectionThresholdSlider[0] > 1) {
-        throw new Error('Selection threshold must be between 0 and 1');
-      }
-      
-      if ($settings.useRetroactiveRemoval && (attentionThresholdSlider[0] < 0 || attentionThresholdSlider[0] > 1)) {
-        throw new Error('Attention threshold must be between 0 and 1');
-      }
-      
-      // Create request body in flat format for the API
       const requestBody = {
         prompt,
-        max_tokens: maxTokensSlider[0],
-        selection_threshold: selectionThresholdSlider[0],
-        min_steps: 0,
+        max_tokens: $settings.maxTokens,
+        selection_threshold: $settings.selectionThreshold,
         use_custom_rope: $settings.useCustomRope,
-        disable_kv_cache: $settings.disableKvCache,
+        use_retroactive_removal: $settings.useRetroactiveRemoval,
+        attention_threshold: $settings.attentionThreshold,
+        use_mcts: $settings.useMcts,
+        mcts_simulations: $settings.mctsSimulations,
+        mcts_c_puct: $settings.mctsCPuct,
+        mcts_depth: $settings.mctsDepth,
+        dynamic_threshold: $settings.dynamicThreshold,
+        final_threshold: $settings.finalThreshold,
+        bezier_p1: $settings.bezierP1,
+        bezier_p2: $settings.bezierP2,
+        use_relu: $settings.useRelu,
+        relu_activation_point: $settings.reluActivationPoint,
+        debug_mode: $settings.debugMode,
         show_token_ids: $settings.showTokenIds,
         system_content: $settings.systemContent || null,
         enable_thinking: $settings.enableThinking,
-        debug_mode: $settings.debugMode,
-        // MCTS parameters
-        use_mcts: $settings.useMcts,
-        mcts_simulations: mctsSimulationsSlider[0],
-        mcts_c_puct: mctsCPuctSlider[0],
-        mcts_depth: mctsDepthSlider[0],
-        // Dynamic threshold parameters
-        dynamic_threshold: $settings.dynamicThreshold,
-        final_threshold: finalThresholdSlider[0],
-        bezier_p1: bezierP1Slider[0],
-        bezier_p2: bezierP2Slider[0],
-        use_relu: $settings.useRelu,
-        relu_activation_point: reluActivationPointSlider[0],
-        // Removal options
-        use_retroactive_removal: $settings.useRetroactiveRemoval,
-        attention_threshold: attentionThresholdSlider[0],
-        // Parallel tokens options
+        disable_kv_cache: $settings.disableKvCache,
+        disable_kv_cache_consistency: $settings.disableKvCacheConsistency,
         allow_intraset_token_visibility: $settings.allowIntrasetTokenVisibility,
-        no_preserve_isolated_tokens: $settings.noPreserveIsolatedTokens,
-        // Advanced retroactive removal options
-        no_relative_attention: $settings.noRelativeAttention,
-        relative_threshold: relativeThresholdSlider[0],
-        no_multi_scale_attention: $settings.noMultiScaleAttention,
-        num_layers_to_use: numLayersToUse,
-        no_lci_dynamic_threshold: $settings.noLciDynamicThreshold,
-        no_sigmoid_threshold: $settings.noSigmoidThreshold,
-        sigmoid_steepness: sigmoidSteepnessSlider[0],
+        no_preserve_isolated_tokens: $settings.allowIsolatedTokenRemoval,
+        no_relative_attention: $settings.disableRelativeAttention,
+        relative_threshold: $settings.relativeThreshold,
+        no_multi_scale_attention: $settings.disableMultiScaleAttention,
+        no_lci_dynamic_threshold: $settings.disableLciDynamicThreshold,
+        no_sigmoid_threshold: $settings.disableSigmoidThreshold,
+        sigmoid_steepness: $settings.sigmoidSteepness,
         complete_removal_mode: $settings.completeRemovalMode,
-        // Advanced caching options
-        disable_kv_cache_consistency: $settings.disableKvCacheConsistency
+        num_layers_to_use: $settings.numLayersToUse || null
       };
 
-      // Use the v2 API endpoint with timeout handling
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 180000); // 180-second timeout (3 minutes)
+      const response = await fetch('/api/v2/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(requestBody)
+      });
       
-      try {
-        const fetchResponse = await fetch('/api/v2/generate', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify(requestBody),
-          signal: controller.signal
-        });
-        
-        clearTimeout(timeoutId);
-  
-        if (!fetchResponse.ok) {
-          // Parse error message from API response
-          let errorDetail = `HTTP error! status: ${fetchResponse.status}`;
-          let statusCode = fetchResponse.status;
-          
-          try {
-            const errorData = await fetchResponse.json();
-            
-            if (errorData) {
-              if (errorData.message) errorDetail = errorData.message;
-              else if (errorData.detail) errorDetail = errorData.detail;
-              else if (errorData.error) errorDetail = errorData.error;
-            }
-            
-            // Provide user-friendly error messages based on status code
-            switch (statusCode) {
-              case 400:
-                throw new Error(`Invalid request: ${errorDetail}`);
-              case 401:
-                throw new Error('Authentication required. Please log in again.');
-              case 403:
-                throw new Error('You do not have permission to perform this action.');
-              case 404:
-                throw new Error('The requested resource was not found.');
-              case 422:
-                throw new Error(`Validation error: ${errorDetail}`);
-              case 429:
-                throw new Error('Rate limit exceeded. Please try again later.');
-              case 500:
-                throw new Error(`Server error: ${errorDetail}`);
-              case 503:
-                throw new Error('Service unavailable. The model may be loading or offline.');
-              default:
-                throw new Error(`Request failed: ${errorDetail}`);
-            }
-          } catch (parseError) {
-            throw new Error(`Request failed: ${errorDetail}`);
-          }
-        }
-  
-        const data = await fetchResponse.json() as ApiResponse;
-        apiResponse = data;
-  
-        // Update chart if we have raw token data from the API v2 format
-        if (data.raw_token_data && data.raw_token_data.length > 0) {
-          // Format the data for the chart
-          const chartData = processTokenDataForVisualization(data.raw_token_data);
-          updateChart(chartData);
-        } else if (data.token_sets_with_text && data.token_sets_with_text.length > 0) {
-          // Use the new format with decoded text
-          updateChartWithText(data.token_sets_with_text);
-        } else if (data.token_sets && data.token_sets.length > 0) {
-          // Fallback to older format if available
-          updateChart(data.token_sets);
-        }
-      } catch (fetchError) {
-        if (fetchError.name === 'AbortError') {
-          throw new Error('Request timed out. The server may be busy or the model may be taking too long to generate.');
-        }
-        throw fetchError;
+      if (!response.ok) {
+        throw new Error(`Request failed: ${response.statusText}`);
+      }
+
+      apiResponse = await response.json();
+      
+      // Save to history
+      if (apiResponse) {
+        generationHistory.addGeneration(apiResponse, $settings);
       }
     } catch (e) {
-      // Handle specific error types with user-friendly messages
-      if (e instanceof Error) {
-        if (e.message.includes('Failed to fetch') || e.message.includes('NetworkError')) {
-          error = 'Network error. Please check your internet connection and try again. Make sure the backend server is running on port 8000.';
-        } else if (e.message.includes('timeout') || e.message.includes('timed out')) {
-          error = 'The request timed out. The server may be busy or the model may be taking too long to generate.';
-        } else {
-          error = e.message;
-        }
-      } else {
-        error = 'An unexpected error occurred. Please try again.';
-      }
+      error = e instanceof Error ? e.message : 'An error occurred';
     } finally {
       isGenerating = false;
     }
   }
   
-  // Helper function to process the new API v2 token data format for visualization
-  function processTokenDataForVisualization(rawTokenData) {
-    // Convert the new structure to the old format that the chart expects
-    return rawTokenData.map(tokenSet => {
-      const position = tokenSet.position;
-      const originalTokens = tokenSet.original_tokens.map(token => [token.id, token.probability]);
-      const removedTokens = tokenSet.removed_tokens.map(token => [token.id, token.probability]);
-      
-      return [position, originalTokens, removedTokens];
-    });
-  }
-
-  // Function to update the chart with decoded text
-  function updateChartWithText(tokenSets: [number, [number, number, string][], [number, number, string][]][]) {
-    // Wait for next tick to ensure container is rendered
-    setTimeout(() => {
-      if (!chartContainer || !tokenSets.length) return;
-
-      // Clear existing chart
-      if (chart) {
-        chart.cleanup();
-      }
-
-      // Process token sets for chart
-      const chartData: ChartToken[] = [];
-      tokenSets.forEach(([position, original, removed]) => {
-        // IMPORTANT: 'removed' contains tokens that were REMOVED (not kept)
-        const removedIds = new Set(removed.map(([id]) => id));
-        
-        // Add all original tokens with their status
-        original.forEach(([id, prob, text]) => {
-          chartData.push({
-            text: text || `Token ${id}`, // Use decoded text, fallback to ID
-            id,
-            probability: prob,
-            isRemoved: removedIds.has(id)  // Token is removed if it's in the removed set
-          });
-        });
-      });
-
-      // Create new chart
-      const chartConfig = {
-        width: chartContainer.clientWidth || 800,
-        height: 500,
-        margin: { top: 20, right: 20, bottom: 30, left: 40 },
-      };
-      chart = createBarChart(chartContainer, chartData, chartConfig);
-    }, 0);
-  }
-
-  // Function to update the chart (legacy format without text)
-  function updateChart(tokenSets: [number, [number, number][], [number, number][]][]) {
-    // Wait for next tick to ensure container is rendered
-    setTimeout(() => {
-      if (!chartContainer || !tokenSets.length) return;
-
-      // Clear existing chart
-      if (chart) {
-        chart.cleanup();
-      }
-
-      // Process token sets for chart
-      const chartData: ChartToken[] = [];
-      tokenSets.forEach(([position, original, removed]) => {
-        // IMPORTANT: 'removed' contains tokens that were REMOVED (not kept)
-        const removedIds = new Set(removed.map(([id]) => id));
-        
-        // Add all original tokens with their status
-        original.forEach(([id, prob]) => {
-          chartData.push({
-            text: `Token ${id}`,
-            id,
-            probability: prob,
-            isRemoved: removedIds.has(id),  // Token is removed if it's in the removed set
-          });
-        });
-      });
-
-      // Create new chart
-      const chartConfig = {
-        width: chartContainer.clientWidth || 800,
-        height: 500,
-        margin: { top: 20, right: 20, bottom: 30, left: 40 },
-      };
-      chart = createBarChart(chartContainer, chartData, chartConfig);
-    }, 100);
-  }
-
-  // Track active tab for keyboard navigation
-  let activeTab = 'basic';
+  // Preset configurations
+  const applyPreset = (presetName: string) => {
+    if (typeof presets[presetName] === 'function') {
+      presets[presetName]();
+    }
+  };
   
-  // Get help content for settings
-  function getHelp(settingId: string) {
-    return getSettingHelp(settingId);
-  }
-  
-  // Handle window resize and register keyboard shortcuts
-  let unregisterShortcuts: () => void;
-  
-  onMount(() => {
-    // Handle window resize
-    window.addEventListener('resize', () => {
-      if (apiResponse?.token_sets) {
-        updateChart(apiResponse.token_sets);
-      }
-    });
+  // Load generation from history
+  function handleHistoryLoad(event: CustomEvent) {
+    const { apiResponse: response, settings: historySettings, prompt: historyPrompt } = event.detail;
     
-    // Register keyboard shortcuts
-    unregisterShortcuts = registerKeyboardShortcuts({
+    // Update the UI with the loaded data
+    apiResponse = response;
+    prompt = historyPrompt;
+    
+    // Optionally update settings to match the historical generation
+    // You might want to ask the user if they want to restore settings
+    if (confirm('Also restore the settings used for this generation?')) {
+      Object.entries(historySettings).forEach(([key, value]) => {
+        updateSetting(key, value);
+      });
+    }
+    
+    // Close history panel
+    showHistory = false;
+  }
+  
+  // Set up keyboard shortcuts
+  onMount(() => {
+    const unregister = registerKeyboardShortcuts({
       generate: () => {
-        if (!isGenerating && prompt.trim()) {
+        if (prompt.trim() && !isGenerating) {
           generateText();
         }
       },
-      reset: () => presets.default(),
-      theme: () => toggleTheme(),
-      basicTab: () => activeTab = 'basic',
-      mctsTab: () => activeTab = 'mcts',
-      advancedTab: () => activeTab = 'advanced'
+      clearPrompt: () => {
+        prompt = '';
+        promptTextarea?.focus();
+      },
+      toggleHistory: () => {
+        showHistory = !showHistory;
+      },
+      export: () => {
+        if (apiResponse && outputVisualization) {
+          // Trigger export dialog through OutputVisualization
+          const exportButton = document.querySelector('.stats-bar button');
+          if (exportButton instanceof HTMLElement) {
+            exportButton.click();
+          }
+        }
+      },
+      focusPrompt: () => {
+        promptTextarea?.focus();
+        // Prevent the '/' from being typed
+        setTimeout(() => {
+          if (promptTextarea && prompt.endsWith('/')) {
+            prompt = prompt.slice(0, -1);
+          }
+        }, 0);
+      },
+      nextTab: () => {
+        // Handle in OutputVisualization component
+      },
+      prevTab: () => {
+        // Handle in OutputVisualization component
+      },
+      reset: () => {
+        applyPreset('default');
+      },
+      theme: () => {
+        document.documentElement.classList.toggle('dark');
+      },
+      showShortcuts: () => {
+        // Show shortcuts dialog (to be implemented)
+        alert('Keyboard Shortcuts:\n\n' +
+          'Ctrl+Enter - Generate text\n' +
+          'Escape - Clear prompt\n' +
+          'Ctrl+H - Toggle history\n' +
+          'Ctrl+E - Export results\n' +
+          '/ - Focus prompt\n' +
+          'Alt+R - Reset settings\n' +
+          'Alt+T - Toggle theme\n' +
+          'Alt+? - Show this help'
+        );
+      },
+      basicTab: () => {},
+      mctsTab: () => {},
+      advancedTab: () => {}
     });
+    
+    return unregister;
   });
-  
-  onDestroy(() => {
-    if (unregisterShortcuts) {
-      unregisterShortcuts();
-    }
-  });
-  
-  // Get all keyboard shortcuts for help/display
-  const keyboardShortcuts = getAllShortcuts();
 </script>
 
-<main class="container mx-auto p-4">
-  <h1 class="text-3xl font-bold mb-4">TEMPO Text Generation</h1>
+<main class="container mx-auto p-4 max-w-7xl">
+  <div class="header">
+    <div class="header-content">
+      <h1 class="title">TEMPO</h1>
+      <p class="subtitle">Threshold-Enabled Multipath Parallel Output</p>
+    </div>
+    <div class="header-actions">
+      <Button 
+        variant="outline"
+        on:click={() => showHistory = !showHistory}
+      >
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="mr-2">
+          <circle cx="12" cy="12" r="10"></circle>
+          <polyline points="16 12 12 8 8 12"></polyline>
+          <line x1="12" y1="16" x2="12" y2="8"></line>
+        </svg>
+        History
+      </Button>
+    </div>
+  </div>
 
-  <!-- Responsive layout that stacks on mobile and ensures proper spacing -->
-  <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 max-w-screen-xl mx-auto">
-    <!-- Input Section -->
-    <Card>
-      <CardHeader>
-        <div class="flex items-start justify-between gap-4">
-          <div>
-            <CardTitle>Input</CardTitle>
-            <CardDescription>Enter your prompt and adjust generation parameters</CardDescription>
+  <div class="main-grid">
+    <!-- Input & Settings Column -->
+    <div class="input-column">
+      <Card>
+        <CardHeader>
+          <CardTitle>Generate Text</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <!-- Prompt Input -->
+          <div class="prompt-section">
+            <label for="prompt">Prompt</label>
+            <Textarea
+              id="prompt"
+              bind:this={promptTextarea}
+              bind:value={prompt}
+              placeholder="Enter your prompt here..."
+              rows={4}
+              class="w-full"
+            />
           </div>
-          <div class="flex items-center gap-2">
-            <!-- Preset Dropdown -->
-            <select
-              class="px-3 py-1.5 text-sm border rounded bg-background text-foreground border-input focus:outline-none focus:ring-2 focus:ring-ring"
-              on:change={(e) => {
-                const preset = e.target.value;
-                if (preset && preset !== 'custom') {
-                  presets[preset]();
-                  e.target.value = 'custom'; // Reset to custom after applying
-                }
-              }}
+          
+          <!-- Quick Presets -->
+          <div class="presets">
+            <button 
+              class="preset-button"
+              class:active={!$settings.useCustomRope}
+              on:click={() => applyPreset('default')}
             >
-              <option value="custom">Custom Settings</option>
-              <option value="default">Default</option>
-              <option value="exploration">TEMPO Explorer</option>
-              <option value="creative">Creative</option>
-              <option value="precise">Precise</option>
-              <option value="mcts">MCTS Mode</option>
-            </select>
-            
-            <!-- Action Buttons -->
-            <Button
-              variant="outline"
-              size="sm"
-              on:click={() => {
-                if (confirm('Reset all settings to defaults?')) {
-                  resetSettings();
-                }
-              }}
-              title="Reset to defaults"
+              Standard
+            </button>
+            <button 
+              class="preset-button"
+              class:active={$settings.useCustomRope && $settings.selectionThreshold > 0.1}
+              on:click={() => applyPreset('precise')}
             >
-              <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
-                <path fill-rule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clip-rule="evenodd" />
-              </svg>
-            </Button>
+              Precise TEMPO
+            </button>
+            <button 
+              class="preset-button"
+              class:active={$settings.useCustomRope && $settings.selectionThreshold <= 0.1}
+              on:click={() => applyPreset('exploration')}
+            >
+              Exploratory
+            </button>
+            <button 
+              class="preset-button"
+              class:active={$settings.useMcts}
+              on:click={() => applyPreset('mcts')}
+            >
+              MCTS Search
+            </button>
           </div>
-        </div>
-      </CardHeader>
-      <CardContent class="flex flex-col">
-        <!-- Settings Interface -->
-        <!-- Mobile-friendly tab navigation -->
-        <Tabs bind:value={activeTab} class="w-full">
-            <TabsList class="grid w-full grid-cols-3 mb-4">
-              <TabsTrigger value="basic" class="text-sm sm:text-base">Basic</TabsTrigger>
-              <TabsTrigger value="mcts" class="text-sm sm:text-base">MCTS</TabsTrigger>
-              <TabsTrigger value="advanced" class="text-sm sm:text-base">Advanced</TabsTrigger>
-            </TabsList>
-            <TabsContent value="basic" class="space-y-5">
-            <!-- Expert mode keeps the original tabbed interface -->
-            <div>
-              <label for="prompt" class="block text-sm font-medium mb-2">Prompt</label>
-              <Textarea
-                id="prompt"
-                bind:value={prompt}
-                placeholder="Enter your prompt here..."
-                rows={4}
-                class="w-full min-h-[120px] text-base"
-              />
-            </div>
-
-            <div>
-              <div class="flex items-center gap-1 mb-1">
-                <label for="maxTokens" class="block text-sm font-medium">Max Tokens</label>
-                {#if getHelp('maxTokens')}
-                  <SimpleTooltip helpContent={getHelp('maxTokens')} />
-                {/if}
-              </div>
-              <Slider
-                id="maxTokens"
-                bind:value={maxTokensSlider}
-                min={1}
-                max={500}
-                step={1}
-              />
-              <div class="text-sm text-gray-500 mt-1">{maxTokensSlider[0]} tokens</div>
-            </div>
-
-            <div>
-              <div class="flex items-center gap-1 mb-1">
-                <label for="selectionThreshold" class="block text-sm font-medium">Selection Threshold</label>
-                {#if getHelp('selectionThreshold')}
-                  <SimpleTooltip helpContent={getHelp('selectionThreshold')} />
-                {/if}
-              </div>
-              <Slider
-                id="selectionThreshold"
-                bind:value={selectionThresholdSlider}
-                min={0}
-                max={1}
-                step={0.01}
-              />
-              <div class="text-sm text-gray-500 mt-1">{selectionThresholdSlider[0].toFixed(2)}</div>
-              
-              {#if !$settings.dynamicThreshold}
-              <!-- Small constant threshold preview -->
-              <div class="mt-3 p-3 border rounded bg-gray-50 dark:bg-gray-900/50" style="height: 120px;">
-                <ThresholdCurvePreview
-                  dynamicThreshold={false}
-                  selectionThreshold={selectionThresholdSlider[0]}
-                  finalThreshold={finalThresholdSlider[0]}
-                  useRelu={false}
-                  reluActivationPoint={0.5}
-                  bezierP1={0.2}
-                  bezierP2={0.8}
-                  maxSteps={maxTokensSlider[0]}
-                />
-              </div>
-              {/if}
-            </div>
-
-            <div class="flex items-center space-x-2">
-              <Switch 
-                id="useRetroactiveRemoval" 
-                checked={$settings.useRetroactiveRemoval}
-                onCheckedChange={(checked) => updateSetting('useRetroactiveRemoval', checked)}
-              />
-              <label for="useRetroactiveRemoval" class="text-sm font-medium">Use Retroactive Removal</label>
-              {#if getHelp('useRetroactiveRemoval')}
-                <SimpleTooltip helpContent={getHelp('useRetroactiveRemoval')} />
-              {/if}
-            </div>
-
-            {#if $settings.useRetroactiveRemoval}
-            <div class="pl-4 mt-2 space-y-2 border-l-2 border-gray-200">
-              <div class="flex items-center gap-1 mb-1">
-                <label for="attentionThreshold" class="block text-sm font-medium">Attention Threshold</label>
-                {#if getHelp('attentionThreshold')}
-                  <SimpleTooltip helpContent={getHelp('attentionThreshold')} />
-                {/if}
-              </div>
-              <Slider
-                id="attentionThreshold"
-                bind:value={attentionThresholdSlider}
-                min={0}
-                max={0.1}
-                step={0.001}
-              />
-              <div class="text-sm text-gray-500 mt-1">{attentionThresholdSlider[0].toFixed(3)}</div>
-            </div>
+          
+          <!-- Settings -->
+          <div class="settings-container">
+            <SimplifiedSettings 
+              settings={$settings} 
+              onUpdate={updateSetting}
+            />
+          </div>
+          
+          <!-- Generate Button -->
+          <Button
+            on:click={generateText}
+            disabled={isGenerating || !prompt.trim()}
+            size="lg"
+            class="w-full generate-button"
+          >
+            {#if isGenerating}
+              <span class="generating">Generating...</span>
+            {:else}
+              Generate Text
             {/if}
-
-            <div class="flex items-center space-x-2">
-              <Switch 
-                id="debugMode" 
-                checked={$settings.debugMode}
-                onCheckedChange={(checked) => updateSetting('debugMode', checked)}
-              />
-              <label for="debugMode" class="text-sm font-medium">Debug Mode</label>
-              {#if getHelp('debugMode')}
-                <SimpleTooltip helpContent={getHelp('debugMode')} />
-              {/if}
-            </div>
-          </TabsContent>
-
-          <TabsContent value="mcts" class="space-y-4">
-            <div class="flex items-center space-x-2">
-              <Switch 
-                id="useMcts" 
-                checked={$settings.useMcts}
-                onCheckedChange={(checked) => updateSetting('useMcts', checked)}
-              />
-              <label for="useMcts" class="text-sm font-medium">Use MCTS</label>
-              {#if getHelp('useMcts')}
-                <SimpleTooltip helpContent={getHelp('useMcts')} />
-              {/if}
-            </div>
-
-            {#if $settings.useMcts}
-            <div class="pl-4 mt-2 space-y-4 border-l-2 border-gray-200">
-              <div>
-                <div class="flex items-center gap-1 mb-1">
-                  <label for="mctsSimulations" class="block text-sm font-medium">MCTS Simulations</label>
-                  {#if getHelp('mctsSimulations')}
-                    <SimpleTooltip helpContent={getHelp('mctsSimulations')} />
-                  {/if}
-                </div>
-                <Slider
-                  id="mctsSimulations"
-                  bind:value={mctsSimulationsSlider}
-                  min={5}
-                  max={200}
-                  step={5}
-                />
-                <div class="text-sm text-gray-500 mt-1">{mctsSimulationsSlider[0]} simulations</div>
-              </div>
-
-              <div>
-                <div class="flex items-center gap-1 mb-1">
-                  <label for="mctsCPuct" class="block text-sm font-medium">MCTS C_PUCT</label>
-                  {#if getHelp('mctsCPuct')}
-                    <SimpleTooltip helpContent={getHelp('mctsCPuct')} />
-                  {/if}
-                </div>
-                <Slider
-                  id="mctsCPuct"
-                  bind:value={mctsCPuctSlider}
-                  min={0.1}
-                  max={5.0}
-                  step={0.1}
-                />
-                <div class="text-sm text-gray-500 mt-1">{mctsCPuctSlider[0].toFixed(1)}</div>
-              </div>
-
-              <div>
-                <div class="flex items-center gap-1 mb-1">
-                  <label for="mctsDepth" class="block text-sm font-medium">MCTS Depth</label>
-                  {#if getHelp('mctsDepth')}
-                    <SimpleTooltip helpContent={getHelp('mctsDepth')} />
-                  {/if}
-                </div>
-                <Slider
-                  id="mctsDepth"
-                  bind:value={mctsDepthSlider}
-                  min={2}
-                  max={20}
-                  step={1}
-                />
-                <div class="text-sm text-gray-500 mt-1">{mctsDepthSlider[0]} steps</div>
-              </div>
-            </div>
-            {/if}
-
-            <div class="flex items-center space-x-2">
-              <Switch 
-                id="dynamicThreshold" 
-                checked={$settings.dynamicThreshold}
-                onCheckedChange={(checked) => updateSetting('dynamicThreshold', checked)}
-              />
-              <label for="dynamicThreshold" class="text-sm font-medium">Use Dynamic Threshold</label>
-              {#if getHelp('dynamicThreshold')}
-                <SimpleTooltip helpContent={getHelp('dynamicThreshold')} />
-              {/if}
-            </div>
-
-            {#if $settings.dynamicThreshold}
-            <div class="pl-4 mt-2 space-y-4 border-l-2 border-gray-200">
-              <div>
-                <div class="flex items-center gap-1 mb-1">
-                  <label for="finalThreshold" class="block text-sm font-medium">Final Threshold</label>
-                  {#if getHelp('finalThreshold')}
-                    <SimpleTooltip helpContent={getHelp('finalThreshold')} />
-                  {/if}
-                </div>
-                <Slider
-                  id="finalThreshold"
-                  bind:value={finalThresholdSlider}
-                  min={0.01}
-                  max={0.5}
-                  step={0.01}
-                />
-                <div class="text-sm text-gray-500 mt-1">{finalThresholdSlider[0].toFixed(2)}</div>
-              </div>
-
-              <div class="flex items-center space-x-2">
-                <Switch 
-                  id="useRelu" 
-                  checked={$settings.useRelu}
-                  onCheckedChange={(checked) => updateSetting('useRelu', checked)}
-                />
-                <label for="useRelu" class="text-sm font-medium">Use ReLU Transition</label>
-                {#if getHelp('useRelu')}
-                  <SimpleTooltip helpContent={getHelp('useRelu')} />
-                {/if}
-              </div>
-
-              {#if $settings.useRelu}
-              <div>
-                <div class="flex items-center gap-1 mb-1">
-                  <label for="reluActivationPoint" class="block text-sm font-medium">ReLU Activation Point</label>
-                  {#if getHelp('reluActivationPoint')}
-                    <SimpleTooltip helpContent={getHelp('reluActivationPoint')} />
-                  {/if}
-                </div>
-                <Slider
-                  id="reluActivationPoint"
-                  bind:value={reluActivationPointSlider}
-                  min={0}
-                  max={1}
-                  step={0.01}
-                />
-                <div class="text-sm text-gray-500 mt-1">{reluActivationPointSlider[0].toFixed(2)}</div>
-              </div>
-              {:else}
-              <div>
-                <div class="flex items-center gap-1 mb-1">
-                  <label for="bezierP1" class="block text-sm font-medium">Bezier P1</label>
-                  {#if getHelp('bezierP1')}
-                    <SimpleTooltip helpContent={getHelp('bezierP1')} />
-                  {/if}
-                </div>
-                <Slider
-                  id="bezierP1"
-                  bind:value={bezierP1Slider}
-                  min={0}
-                  max={1}
-                  step={0.01}
-                />
-                <div class="text-sm text-gray-500 mt-1">{bezierP1Slider[0].toFixed(2)}</div>
-              </div>
-              <div>
-                <div class="flex items-center gap-1 mb-1">
-                  <label for="bezierP2" class="block text-sm font-medium">Bezier P2</label>
-                  {#if getHelp('bezierP2')}
-                    <SimpleTooltip helpContent={getHelp('bezierP2')} />
-                  {/if}
-                </div>
-                <Slider
-                  id="bezierP2"
-                  bind:value={bezierP2Slider}
-                  min={0}
-                  max={1}
-                  step={0.01}
-                />
-                <div class="text-sm text-gray-500 mt-1">{bezierP2Slider[0].toFixed(2)}</div>
-              </div>
-              {/if}
-              
-              <!-- Threshold Curve Preview -->
-              <div class="mt-4 p-4 border rounded-lg bg-gray-50 dark:bg-gray-900">
-                <ThresholdCurvePreview
-                  dynamicThreshold={$settings.dynamicThreshold}
-                  selectionThreshold={selectionThresholdSlider[0]}
-                  finalThreshold={finalThresholdSlider[0]}
-                  useRelu={$settings.useRelu}
-                  reluActivationPoint={reluActivationPointSlider[0]}
-                  bezierP1={bezierP1Slider[0]}
-                  bezierP2={bezierP2Slider[0]}
-                  maxSteps={maxTokensSlider[0]}
-                />
-              </div>
-            </div>
-            {/if}
-          </TabsContent>
-
-          <TabsContent value="advanced" class="space-y-4">
-            <!-- Core Model Configuration -->
-            <div class="space-y-3">
-              <div class="flex items-center space-x-2">
-                <Switch id="useCustomRope" bind:checked={useCustomRope} />
-                <label for="useCustomRope" class="text-sm font-medium">Enable TEMPO (Custom RoPE)</label>
-                {#if getHelp('useCustomRope')}
-                  <SimpleTooltip helpContent={getHelp('useCustomRope')} />
-                {/if}
-              </div>
-
-              <div class="flex items-center space-x-2">
-                <Switch id="enableThinking" bind:checked={enableThinking} />
-                <label for="enableThinking" class="text-sm font-medium">Deep Thinking Mode</label>
-                {#if getHelp('enableThinking')}
-                  <SimpleTooltip helpContent={getHelp('enableThinking')} />
-                {/if}
-              </div>
-
-              <div class="flex items-center space-x-2">
-                <Switch id="showTokenIds" bind:checked={showTokenIds} />
-                <label for="showTokenIds" class="text-sm font-medium">Show Token IDs</label>
-                {#if getHelp('showTokenIds')}
-                  <SimpleTooltip helpContent={getHelp('showTokenIds')} />
-                {/if}
-              </div>
-
-              <div>
-                <div class="flex items-center gap-1 mb-2">
-                  <label for="systemContent" class="block text-sm font-medium">System Prompt</label>
-                  {#if getHelp('systemContent')}
-                    <SimpleTooltip helpContent={getHelp('systemContent')} />
-                  {/if}
-                </div>
-                <Textarea
-                  id="systemContent"
-                  bind:value={systemContent}
-                  placeholder="Optional system instructions for the model..."
-                  rows={2}
-                />
-              </div>
-            </div>
-
-            <!-- Collapsible Advanced Sections -->
-            {@const showAttentionSettings = allowIntrasetTokenVisibility || !noRelativeAttention || !noMultiScaleAttention || numLayersToUse}
-            {@const showPruningSettings = noPreserveIsolatedTokens || completeRemovalMode !== 'keep_token' || !noLciDynamicThreshold || !noSigmoidThreshold}
-            {@const showCacheSettings = disableKvCache || disableKvCacheConsistency}
-
-            <!-- Attention Mechanics (Collapsible) -->
-            <details class="border rounded-lg">
-              <summary class="px-4 py-3 cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800 flex items-center justify-between">
-                <div class="flex items-center gap-2">
-                  <span class="font-medium">Attention Mechanics</span>
-                  {#if showAttentionSettings}
-                    <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200">
-                      Modified
-                    </span>
-                  {/if}
-                </div>
-                <svg class="w-4 h-4 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
-                </svg>
-              </summary>
-              <div class="px-4 pb-4 space-y-3 border-t">
-                <div class="flex items-center space-x-2">
-                  <Switch id="allowIntrasetTokenVisibility" bind:checked={allowIntrasetTokenVisibility} />
-                  <label for="allowIntrasetTokenVisibility" class="text-sm">Parallel Tokens See Each Other</label>
-                  {#if getHelp('allowIntrasetTokenVisibility')}
-                    <SimpleTooltip helpContent={getHelp('allowIntrasetTokenVisibility')} />
-                  {/if}
-                </div>
-
-                <div class="flex items-center space-x-2">
-                  <Switch id="disableRelativeAttention" bind:checked={noRelativeAttention} />
-                  <label for="disableRelativeAttention" class="text-sm">Disable Relative Attention</label>
-                  {#if getHelp('noRelativeAttention')}
-                    <SimpleTooltip helpContent={getHelp('noRelativeAttention')} />
-                  {/if}
-                </div>
-
-                {#if !noRelativeAttention}
-                <div class="pl-6 space-y-2">
-                  <div class="flex items-center gap-1">
-                    <label for="relativeThreshold" class="block text-sm">Relative Threshold</label>
-                    {#if getHelp('relativeThreshold')}
-                      <SimpleTooltip helpContent={getHelp('relativeThreshold')} />
-                    {/if}
-                  </div>
-                  <Slider
-                    id="relativeThreshold"
-                    bind:value={relativeThresholdSlider}
-                    min={0}
-                    max={1}
-                    step={0.01}
-                  />
-                  <div class="text-xs text-gray-500">{relativeThresholdSlider[0].toFixed(2)}</div>
-                </div>
-                {/if}
-
-                <div class="flex items-center space-x-2">
-                  <Switch id="disableMultiScaleAttention" bind:checked={noMultiScaleAttention} />
-                  <label for="disableMultiScaleAttention" class="text-sm">Disable Multi-Scale Attention</label>
-                  {#if getHelp('noMultiScaleAttention')}
-                    <SimpleTooltip helpContent={getHelp('noMultiScaleAttention')} />
-                  {/if}
-                </div>
-
-                <div class="space-y-2">
-                  <div class="flex items-center gap-1">
-                    <label for="numLayersToUse" class="block text-sm">Attention Layers Limit</label>
-                    {#if getHelp('numLayersToUse')}
-                      <SimpleTooltip helpContent={getHelp('numLayersToUse')} />
-                    {/if}
-                  </div>
-                  <Input
-                    id="numLayersToUse"
-                    type="number"
-                    bind:value={numLayersToUse}
-                    placeholder="All layers"
-                    min={1}
-                  />
-                </div>
-              </div>
-            </details>
-
-            <!-- Pruning & Thresholds (Collapsible) -->
-            <details class="border rounded-lg">
-              <summary class="px-4 py-3 cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800 flex items-center justify-between">
-                <div class="flex items-center gap-2">
-                  <span class="font-medium">Pruning & Thresholds</span>
-                  {#if showPruningSettings}
-                    <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200">
-                      Modified
-                    </span>
-                  {/if}
-                </div>
-                <svg class="w-4 h-4 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
-                </svg>
-              </summary>
-              <div class="px-4 pb-4 space-y-3 border-t">
-                <div class="flex items-center space-x-2">
-                  <Switch id="allowIsolatedTokenRemoval" bind:checked={noPreserveIsolatedTokens} />
-                  <label for="allowIsolatedTokenRemoval" class="text-sm">Allow Isolated Token Removal</label>
-                  {#if getHelp('noPreserveIsolatedTokens')}
-                    <SimpleTooltip helpContent={getHelp('noPreserveIsolatedTokens')} />
-                  {/if}
-                </div>
-
-                <div class="space-y-2">
-                  <div class="flex items-center gap-1">
-                    <label for="completeRemovalMode" class="block text-sm">Complete Removal Mode</label>
-                    {#if getHelp('completeRemovalMode')}
-                      <SimpleTooltip helpContent={getHelp('completeRemovalMode')} />
-                    {/if}
-                  </div>
-                  <select
-                    id="completeRemovalMode"
-                    bind:value={completeRemovalMode}
-                    class="w-full p-2 text-sm border rounded bg-background text-foreground border-input focus:outline-none focus:ring-2 focus:ring-ring"
-                  >
-                    <option value="keep_token">Keep Best Token</option>
-                    <option value="keep_unattended">Keep Unattended Tokens</option>
-                    <option value="remove_position">Remove Entire Position</option>
-                  </select>
-                </div>
-
-                <div class="flex items-center space-x-2">
-                  <Switch id="disableLciDynamicThreshold" bind:checked={noLciDynamicThreshold} />
-                  <label for="disableLciDynamicThreshold" class="text-sm">Disable LCI Dynamic Threshold</label>
-                  {#if getHelp('noLciDynamicThreshold')}
-                    <SimpleTooltip helpContent={getHelp('noLciDynamicThreshold')} />
-                  {/if}
-                </div>
-
-                <div class="flex items-center space-x-2">
-                  <Switch id="disableSigmoidThreshold" bind:checked={noSigmoidThreshold} />
-                  <label for="disableSigmoidThreshold" class="text-sm">Disable Sigmoid Decision Boundary</label>
-                  {#if getHelp('noSigmoidThreshold')}
-                    <SimpleTooltip helpContent={getHelp('noSigmoidThreshold')} />
-                  {/if}
-                </div>
-
-                {#if !noSigmoidThreshold}
-                <div class="pl-6 space-y-2">
-                  <div class="flex items-center gap-1">
-                    <label for="sigmoidSteepness" class="block text-sm">Sigmoid Steepness</label>
-                    {#if getHelp('sigmoidSteepness')}
-                      <SimpleTooltip helpContent={getHelp('sigmoidSteepness')} />
-                    {/if}
-                  </div>
-                  <Slider
-                    id="sigmoidSteepness"
-                    bind:value={sigmoidSteepnessSlider}
-                    min={1}
-                    max={20}
-                    step={0.1}
-                  />
-                  <div class="text-xs text-gray-500">{sigmoidSteepnessSlider[0].toFixed(1)}</div>
-                </div>
-                {/if}
-              </div>
-            </details>
-
-            <!-- Cache & Debug (Collapsible) -->
-            <details class="border rounded-lg">
-              <summary class="px-4 py-3 cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800 flex items-center justify-between">
-                <div class="flex items-center gap-2">
-                  <span class="font-medium">Cache & Debug</span>
-                  {#if showCacheSettings}
-                    <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200">
-                      Warning
-                    </span>
-                  {/if}
-                </div>
-                <svg class="w-4 h-4 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
-                </svg>
-              </summary>
-              <div class="px-4 pb-4 space-y-3 border-t">
-                <div class="flex items-center space-x-2">
-                  <Switch id="disableKvCache" bind:checked={disableKvCache} />
-                  <label for="disableKvCache" class="text-sm">Disable KV Cache</label>
-                  {#if getHelp('disableKvCache')}
-                    <SimpleTooltip helpContent={getHelp('disableKvCache')} />
-                  {/if}
-                </div>
-
-                <div class="flex items-center space-x-2">
-                  <Switch id="disableKvCacheConsistency" bind:checked={disableKvCacheConsistency} />
-                  <label for="disableKvCacheConsistency" class="text-sm">Disable KV Cache Consistency</label>
-                  {#if getHelp('disableKvCacheConsistency')}
-                    <SimpleTooltip helpContent={getHelp('disableKvCacheConsistency')} />
-                  {/if}
-                </div>
-              </div>
-            </details>
-          </TabsContent>
-          </Tabs>
-
-        <!-- Generate Button -->
-        <Button
-          on:click={generateText}
-          disabled={isGenerating || !prompt.trim()}
-          size="lg"
-          class="w-full mt-6"
-          data-testid="generate-button"
-        >
-        {#if isGenerating}
-          <div class="flex items-center justify-center gap-2">
-            <svg class="animate-spin h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-              <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-              <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-            </svg>
-            <span>Generating...</span>
-          </div>
-        {:else}
-          <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 mr-2 inline" viewBox="0 0 20 20" fill="currentColor">
-            <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clip-rule="evenodd" />
-          </svg>
-          Generate Text
-        {/if}
-        </Button>
-      </CardContent>
-    </Card>
-
-    <!-- Output Section -->
-    <Card>
-      <CardHeader>
-        <div class="flex items-start justify-between gap-4">
-          <div>
-            <CardTitle>Output</CardTitle>
-            <CardDescription>Generated text and visualization</CardDescription>
-          </div>
-          {#if apiResponse && apiResponse.clean_text}
-          <div class="flex items-center gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              on:click={() => {
-                const text = apiResponse.clean_text || '';
-                const blob = new Blob([text], { type: 'text/plain' });
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url;
-                a.download = `tempo-generation-${new Date().toISOString().slice(0, 10)}.txt`;
-                a.click();
-                URL.revokeObjectURL(url);
-              }}
-              title="Export as text file"
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 mr-1" viewBox="0 0 20 20" fill="currentColor">
-                <path fill-rule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm3.293-7.707a1 1 0 011.414 0L9 10.586V3a1 1 0 112 0v7.586l1.293-1.293a1 1 0 111.414 1.414l-3 3a1 1 0 01-1.414 0l-3-3a1 1 0 010-1.414z" clip-rule="evenodd" />
-              </svg>
-              Export
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              on:click={() => {
-                const text = apiResponse.clean_text || '';
-                navigator.clipboard.writeText(text).then(() => {
-                  // Optional: Show a toast notification
-                });
-              }}
-              title="Copy to clipboard"
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
-                <path d="M8 3a1 1 0 011-1h2a1 1 0 110 2H9a1 1 0 01-1-1z" />
-                <path d="M6 3a2 2 0 00-2 2v11a2 2 0 002 2h8a2 2 0 002-2V5a2 2 0 00-2-2 3 3 0 01-3 3H9a3 3 0 01-3-3z" />
-              </svg>
-            </Button>
-          </div>
+          </Button>
+          
+          {#if error}
+            <div class="error-message">{error}</div>
           {/if}
-        </div>
-      </CardHeader>
-      <CardContent>
-        {#if error}
-          <div class="text-red-500 mb-4 p-3 border border-red-200 rounded bg-red-50 dark:bg-red-900/20 dark:border-red-800">
-            <div class="flex items-start gap-2">
-              <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-red-500 mt-0.5" viewBox="0 0 20 20" fill="currentColor">
-                <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clip-rule="evenodd" />
-              </svg>
-              <div>{error}</div>
-            </div>
-          </div>
-        {/if}
-
-        {#if isGenerating}
-          <div class="space-y-4 animate-pulse">
-            <div>
-              <h3 class="text-lg font-medium mb-2">Generating...</h3>
-              <div class="bg-gray-100 dark:bg-gray-800 p-4 rounded h-48 flex flex-col items-center justify-center">
-                <svg class="animate-spin h-10 w-10 mb-4 text-primary" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                  <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                  <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                </svg>
-                <div class="text-sm text-gray-500 text-center">
-                  <div class="mb-2">Processing TEMPO generation...</div>
-                  <div class="text-xs opacity-75">
-                    {#if $settings.useRetroactiveRemoval}This may take 1-2 minutes with retroactive removal enabled.{:else}This may take 30-60 seconds.{/if}
-                  </div>
-                  <div class="text-xs opacity-75 mt-1">
-                    Lower selection thresholds take longer to process.
-                  </div>
-                </div>
-              </div>
-            </div>
-            
-            <!-- Loading placeholders for other sections -->
-            <div>
-              <h3 class="text-lg font-medium mb-2">Model Information</h3>
-              <div class="grid grid-cols-2 gap-2">
-                <div class="h-6 bg-gray-200 dark:bg-gray-700 rounded"></div>
-                <div class="h-6 bg-gray-200 dark:bg-gray-700 rounded"></div>
-                <div class="h-6 bg-gray-200 dark:bg-gray-700 rounded"></div>
-                <div class="h-6 bg-gray-200 dark:bg-gray-700 rounded"></div>
-              </div>
-            </div>
-            
-            <div>
-              <h3 class="text-lg font-medium mb-2">Visualization</h3>
-              <div class="h-[300px] bg-gray-200 dark:bg-gray-700 rounded"></div>
-            </div>
-          </div>
-        {:else if apiResponse}
-          <Tabs value="text" class="w-full" on:change={(e) => {
-            // Re-render chart when switching to chart tab
-            if (e.detail === 'chart' && apiResponse) {
-              if (apiResponse.raw_token_data && apiResponse.raw_token_data.length > 0) {
-                const chartData = processTokenDataForVisualization(apiResponse.raw_token_data);
-                updateChart(chartData);
-              } else if (apiResponse.token_sets_with_text && apiResponse.token_sets_with_text.length > 0) {
-                updateChartWithText(apiResponse.token_sets_with_text);
-              } else if (apiResponse.token_sets && apiResponse.token_sets.length > 0) {
-                updateChart(apiResponse.token_sets);
-              }
-            }
-          }}>
-            <TabsList class="grid w-full grid-cols-4 mb-4">
-              <TabsTrigger value="text">Text</TabsTrigger>
-              <TabsTrigger value="flow">Flow</TabsTrigger>
-              <TabsTrigger value="details">Details</TabsTrigger>
-              <TabsTrigger value="chart">Chart</TabsTrigger>
-            </TabsList>
-            
-            <TabsContent value="text" class="space-y-4">
-              <ParallelTextView tokenData={apiResponse} />
-            </TabsContent>
-            
-            <TabsContent value="flow" class="space-y-4">
-              <div>
-                <h3 class="text-lg font-medium mb-2">Token Flow</h3>
-                <div class="bg-gray-50 dark:bg-gray-900 p-4 rounded border border-gray-200 dark:border-gray-700">
-                  <TokenFlow tokenData={apiResponse} />
-                </div>
-              </div>
-            </TabsContent>
-            
-            <TabsContent value="details" class="space-y-4">
-              <!-- Model info from v2 API -->
-              {#if apiResponse.model_info}
-                <div>
-                  <h3 class="text-lg font-medium mb-2">Model Information</h3>
-                  <div class="bg-gray-50 dark:bg-gray-800/50 p-4 rounded">
-                    <div class="text-sm grid grid-cols-2 gap-3">
-                      <div class="flex justify-between">
-                        <span class="text-gray-600 dark:text-gray-400">Model:</span>
-                        <span class="font-semibold">{apiResponse.model_info.model_name}</span>
-                      </div>
-                      <div class="flex justify-between">
-                        <span class="text-gray-600 dark:text-gray-400">Device:</span>
-                        <span class="font-semibold">{apiResponse.model_info.device}</span>
-                      </div>
-                      {#if apiResponse.model_info.model_type}
-                        <div class="flex justify-between">
-                          <span class="text-gray-600 dark:text-gray-400">Type:</span>
-                          <span class="font-semibold">{apiResponse.model_info.model_type}</span>
-                        </div>
-                      {/if}
-                      <div class="flex justify-between">
-                        <span class="text-gray-600 dark:text-gray-400">Custom RoPE:</span>
-                        <span class="font-semibold">{apiResponse.model_info.use_custom_rope ? 'Enabled' : 'Disabled'}</span>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              {/if}
-
-              {#if apiResponse.timing}
-                <div>
-                  <h3 class="text-lg font-medium mb-2">Performance Metrics</h3>
-                  <div class="bg-gray-50 dark:bg-gray-800/50 p-4 rounded">
-                    <div class="text-sm space-y-2">
-                      <div class="flex justify-between">
-                        <span class="text-gray-600 dark:text-gray-400">Generation Time:</span>
-                        <span class="font-semibold">{apiResponse.timing.generation_time.toFixed(2)}s</span>
-                      </div>
-                      <div class="flex justify-between">
-                        <span class="text-gray-600 dark:text-gray-400">Removal Time:</span>
-                        <span class="font-semibold">{apiResponse.timing.removal_time.toFixed(2)}s</span>
-                      </div>
-                      <div class="flex justify-between border-t border-gray-200 dark:border-gray-700 pt-2">
-                        <span class="text-gray-600 dark:text-gray-400">Total Time:</span>
-                        <span class="font-semibold text-primary">{apiResponse.timing.elapsed_time.toFixed(2)}s</span>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              {/if}
-
-              {#if apiResponse.retroactive_removal}
-                <div>
-                  <h3 class="text-lg font-medium mb-2">Removal Configuration</h3>
-                  <div class="bg-gray-50 dark:bg-gray-800/50 p-4 rounded">
-                    <div class="text-sm space-y-2">
-                      <div class="flex justify-between">
-                        <span class="text-gray-600 dark:text-gray-400">Attention Threshold:</span>
-                        <span class="font-semibold">{apiResponse.retroactive_removal.attention_threshold.toFixed(3)}</span>
-                      </div>
-                      <div class="flex justify-between">
-                        <span class="text-gray-600 dark:text-gray-400">Removal Mode:</span>
-                        <span class="font-semibold">{apiResponse.retroactive_removal.removal_mode}</span>
-                      </div>
-                      <div class="flex justify-between">
-                        <span class="text-gray-600 dark:text-gray-400">Relative Attention:</span>
-                        <span class="font-semibold">{apiResponse.retroactive_removal.use_relative_attention ? 'Enabled' : 'Disabled'}</span>
-                      </div>
-                      {#if apiResponse.retroactive_removal.use_relative_attention}
-                        <div class="flex justify-between">
-                          <span class="text-gray-600 dark:text-gray-400">Relative Threshold:</span>
-                          <span class="font-semibold">{apiResponse.retroactive_removal.relative_threshold.toFixed(2)}</span>
-                        </div>
-                      {/if}
-                    </div>
-                  </div>
-                </div>
-              {/if}
-
-              {#if apiResponse.selection_threshold}
-                <div>
-                  <h3 class="text-lg font-medium mb-2">Generation Parameters</h3>
-                  <div class="bg-gray-50 dark:bg-gray-800/50 p-4 rounded">
-                    <div class="text-sm space-y-2">
-                      <div class="flex justify-between">
-                        <span class="text-gray-600 dark:text-gray-400">Selection Threshold:</span>
-                        <span class="font-semibold">{apiResponse.selection_threshold.toFixed(3)}</span>
-                      </div>
-                      <div class="flex justify-between">
-                        <span class="text-gray-600 dark:text-gray-400">Max Tokens:</span>
-                        <span class="font-semibold">{apiResponse.max_tokens}</span>
-                      </div>
-                      {#if apiResponse.had_repetition_loop !== undefined}
-                        <div class="flex justify-between">
-                          <span class="text-gray-600 dark:text-gray-400">Repetition Loop:</span>
-                          <span class="font-semibold {apiResponse.had_repetition_loop ? 'text-yellow-600' : 'text-green-600'}">
-                            {apiResponse.had_repetition_loop ? 'Detected' : 'None'}
-                          </span>
-                        </div>
-                      {/if}
-                    </div>
-                  </div>
-                </div>
-              {/if}
-            </TabsContent>
-            
-            <TabsContent value="chart" class="space-y-4">
-              <!-- Token visualization - works with both v1 and v2 API formats -->
-              {#if (apiResponse.raw_token_data && apiResponse.raw_token_data.length > 0) || (apiResponse.token_sets && apiResponse.token_sets.length > 0)}
-                <div>
-                  <h3 class="text-lg font-medium mb-2">Token Probability Distribution</h3>
-                  <div
-                    bind:this={chartContainer}
-                    class="w-full h-[500px] chart-container bg-gray-50 dark:bg-gray-900 p-4 rounded"
-                    data-testid="visualization-chart"
-                  />
-                </div>
-              {:else}
-                <div class="flex items-center justify-center h-[400px] text-gray-500">
-                  <p>No token probability data available for this generation</p>
-                </div>
-              {/if}
-            </TabsContent>
-          </Tabs>
-        {/if}
-      </CardContent>
-    </Card>
+        </CardContent>
+      </Card>
+    </div>
+    
+    <!-- Output Column -->
+    <div class="output-column">
+      <Card class="h-full">
+        <CardHeader>
+          <CardTitle>Output</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <OutputVisualization 
+            bind:this={outputVisualization}
+            {apiResponse} 
+            {isGenerating}
+            settings={$settings}
+          />
+        </CardContent>
+      </Card>
+    </div>
+    
+    <!-- History Panel -->
+    {#if showHistory}
+      <div class="history-column">
+        <GenerationHistory on:load={handleHistoryLoad} />
+      </div>
+    {/if}
   </div>
 </main>
 
 <style>
-  :global(.code-output) {
-    scrollbar-width: thin;
-    scrollbar-color: hsl(var(--muted)) transparent;
-  }
-  :global(.code-output::-webkit-scrollbar) { width: 8px; height: 8px; }
-  :global(.code-output::-webkit-scrollbar-track) { background: transparent; }
-  :global(.code-output::-webkit-scrollbar-thumb) {
-    background-color: hsl(var(--muted));
-    border-radius: 4px;
-    border: 2px solid hsl(var(--background));
+  .container {
+    min-height: 100vh;
   }
   
-  /* Interactive token display */
-  :global(.token-display) {
-    font-size: 1.125rem;
-    color: hsl(var(--foreground));
-  }
-  
-  :global(.token-choice) {
-    position: relative;
-    display: inline;
-  }
-  
-  :global(.chosen-token) {
-    background-color: hsl(var(--primary) / 0.1);
-    border-bottom: 2px solid hsl(var(--primary));
-    padding: 2px 4px;
-    border-radius: 4px;
-    cursor: help;
-    transition: all 0.2s ease;
-  }
-  
-  :global(.token-choice:hover .chosen-token) {
-    background-color: hsl(var(--primary) / 0.2);
-  }
-  
-  :global(.alternatives-popup) {
-    position: absolute;
-    bottom: 100%;
-    left: 50%;
-    transform: translateX(-50%) translateY(-8px);
-    background: white;
-    border: 1px solid hsl(var(--border));
-    border-radius: 8px;
-    padding: 12px;
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-    opacity: 0;
-    visibility: hidden;
-    transition: all 0.2s ease;
-    z-index: 1000;
-    min-width: 200px;
-    max-width: 300px;
-  }
-  
-  :global(.dark .alternatives-popup) {
-    background: hsl(var(--card));
-  }
-  
-  :global(.token-choice:hover .alternatives-popup) {
-    opacity: 1;
-    visibility: visible;
-  }
-  
-  :global(.popup-header) {
-    font-size: 0.75rem;
-    font-weight: 600;
-    color: hsl(var(--muted-foreground));
-    margin-bottom: 8px;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-  }
-  
-  :global(.alternatives-list) {
+  .header {
     display: flex;
-    flex-direction: column;
-    gap: 4px;
-  }
-  
-  :global(.alternative-token) {
-    padding: 4px 8px;
-    background-color: hsl(var(--muted));
-    border-radius: 4px;
-    font-size: 0.875rem;
-    font-family: monospace;
-  }
-  
-  /* Arrow pointing down from popup */
-  :global(.alternatives-popup::after) {
-    content: '';
-    position: absolute;
-    top: 100%;
-    left: 50%;
-    transform: translateX(-50%);
-    width: 0;
-    height: 0;
-    border-left: 8px solid transparent;
-    border-right: 8px solid transparent;
-    border-top: 8px solid white;
-  }
-  
-  :global(.dark .alternatives-popup::after) {
-    border-top-color: hsl(var(--card));
-  }
-  
-  /* Parallel position badges */
-  :global(.parallel-position-badge) {
-    display: inline-flex;
     align-items: center;
-    padding: 0.25rem 0.75rem;
-    background-color: hsl(var(--primary) / 0.1);
-    color: hsl(var(--primary));
-    border-radius: 9999px;
+    justify-content: space-between;
+    margin-bottom: 2rem;
+  }
+  
+  .header-content {
+    text-align: left;
+  }
+  
+  .header-actions {
+    display: flex;
+    gap: 0.5rem;
+  }
+  
+  .title {
+    font-size: 3rem;
+    font-weight: 700;
+    margin: 0;
+    background: linear-gradient(135deg, hsl(var(--primary)), hsl(var(--primary) / 0.7));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+  
+  .subtitle {
+    font-size: 1.125rem;
+    color: hsl(var(--muted-foreground));
+    margin: 0.5rem 0 0 0;
+  }
+  
+  .main-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 2rem;
+    transition: grid-template-columns 0.3s ease;
+  }
+  
+  .main-grid:has(.history-column) {
+    grid-template-columns: 1fr 1fr 350px;
+  }
+  
+  .history-column {
+    height: calc(100vh - 200px);
+    overflow: hidden;
+  }
+  
+  @media (max-width: 1024px) {
+    .main-grid {
+      grid-template-columns: 1fr;
+    }
+    
+    .main-grid:has(.history-column) {
+      grid-template-columns: 1fr;
+    }
+    
+    .history-column {
+      position: fixed;
+      right: 0;
+      top: 0;
+      height: 100vh;
+      width: 90%;
+      max-width: 400px;
+      z-index: 1000;
+      box-shadow: -4px 0 12px rgba(0, 0, 0, 0.15);
+    }
+  }
+  
+  .prompt-section {
+    margin-bottom: 1.5rem;
+  }
+  
+  .prompt-section label {
+    display: block;
+    font-weight: 500;
+    margin-bottom: 0.5rem;
+  }
+  
+  .presets {
+    display: flex;
+    gap: 0.5rem;
+    margin-bottom: 1.5rem;
+    flex-wrap: wrap;
+  }
+  
+  .preset-button {
+    padding: 0.5rem 1rem;
+    border: 1px solid hsl(var(--border));
+    border-radius: 0.375rem;
+    background: hsl(var(--card));
     font-size: 0.875rem;
     font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s ease;
+  }
+  
+  .preset-button:hover {
+    background: hsl(var(--muted));
+  }
+  
+  .preset-button.active {
+    background: hsl(var(--primary));
+    color: hsl(var(--primary-foreground));
+    border-color: hsl(var(--primary));
+  }
+  
+  .settings-container {
+    margin-bottom: 1.5rem;
+  }
+  
+  .generate-button {
+    font-size: 1.125rem;
+    font-weight: 600;
+  }
+  
+  .generating {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+  
+  .generating::before {
+    content: '';
+    width: 16px;
+    height: 16px;
+    border: 2px solid currentColor;
+    border-top-color: transparent;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+  
+  @keyframes spin {
+    to { transform: rotate(360deg); }
+  }
+  
+  .error-message {
+    margin-top: 1rem;
+    padding: 0.75rem;
+    background: hsl(var(--destructive) / 0.1);
+    color: hsl(var(--destructive));
+    border-radius: 0.375rem;
+    font-size: 0.875rem;
+  }
+  
+  .output-column :global(.card) {
+    display: flex;
+    flex-direction: column;
+  }
+  
+  .output-column :global(.card-content) {
+    flex: 1;
   }
 </style>

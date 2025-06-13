@@ -1,9 +1,13 @@
+"""Legacy parallel generator for backward compatibility.
+
+This module provides the ParallelGenerator class that maintains the existing
+API while delegating to the new domain-driven architecture components.
+"""
+
 import torch
-import random
 import time
-import numpy as np
 import traceback
-from typing import List, Dict, Tuple, Any, Optional, Set, Callable
+from typing import List, Dict, Tuple, Any, Optional, Callable
 from tqdm import tqdm
 
 # Import necessary components
@@ -13,6 +17,21 @@ from src.generation.token_selector import TokenSelector
 from src.generation.token_generator import TokenGenerator
 from src.generation.text_formatter import TextFormatter
 from src.utils.logging_utils import LoggingMixin
+
+# Import new domain-driven components
+from src.domain.entities.parallel_generation import (
+    GenerationConfig, GenerationResult, LogicalPosition, MCTSState
+)
+from src.domain.entities.generation_state import GenerationState
+from src.application.use_cases.generate_text import GenerateTextUseCase
+from src.application.use_cases.mcts_generation import MCTSGenerationUseCase
+from src.application.services.sequence_manager import SequenceManager
+from src.infrastructure.search.mcts_search import MCTSSearchStrategy
+from src.infrastructure.visualization.generation_formatter import (
+    GenerationFormatter, FormattingOptions
+)
+from src.infrastructure.generation.token_generator_impl import TokenGeneratorImpl
+from src.infrastructure.tokenization.tokenizer_adapter import TokenizerAdapter
 
 
 class ParallelGenerator(LoggingMixin):

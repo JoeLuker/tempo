@@ -41,6 +41,7 @@ export type Settings = {
   sigmoidSteepness: number;
   completeRemovalMode: string;
   disableKvCacheConsistency: boolean;
+  numLayersToUse: number | null;
   // Legacy support
   noPreserveIsolatedTokens?: boolean;
   noRelativeAttention?: boolean;
@@ -89,6 +90,7 @@ const defaultSettings: Settings = {
   sigmoidSteepness: 10.0,
   completeRemovalMode: 'keep_token',
   disableKvCacheConsistency: false,
+  numLayersToUse: null,
 };
 
 // Migrate old setting names to new ones

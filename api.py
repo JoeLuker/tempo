@@ -1,911 +1,396 @@
-from fastapi import FastAPI, HTTPException, Depends, APIRouter
+"""Monadic API for TEMPO generation using functional programming patterns.
+
+This module implements the TEMPO API using monadic design for better error handling,
+composition, and dependency injection.
+"""
+
+from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field, field_validator
-from typing import List, Dict, Any, Optional, Tuple
-import torch
-import time
+from pydantic import BaseModel, Field
+from typing import List, Dict, Any, Optional
 import logging
-from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig
-from src.modeling.model_wrapper import TEMPOModelWrapper
-from src.generation.parallel_generator import ParallelGenerator
-from src.visualization.token_visualizer import TokenVisualizer
-from src.visualization.position_visualizer import PositionVisualizer
 import traceback
-from src.pruning import RetroactiveRemover
-from src.generation.token_generator import TokenGenerator
-import re
+
+from src.domain.monads import Result, Ok, Err, IO, IOResult, Reader
+from src.domain.monads.composition import sequence_results, log_result
+from src.application.services.monadic_generation_service import (
+    MonadicGenerationService, 
+    validate_request
+)
+from src.presentation.api.models.requests import GenerationRequest
+from src.presentation.api.models.responses import GenerationResponse
 
 # Configure logging
 logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    level=logging.INFO, 
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
-logger = logging.getLogger("tempo-api")
-
-
-# Import centralized model utilities
-from src.utils.model_utils import (
-    get_best_device,
-    get_device_dtype,
-    load_tempo_components,
-)
-
-
-# Singleton for model and components to keep them in memory
-class ModelSingleton:
-    model_wrapper = None  # Store the wrapped model
-    tokenizer = None
-    generator = None  # This will be ParallelGenerator
-    token_generator = None  # Store the shared TokenGenerator
-    initialized = False
-
-    @classmethod
-    def get_instance(cls, device="auto"):
-        """Get or initialize model instance, maintaining the singleton invariant"""
-        # Auto-detect device if "auto" is specified
-        if device == "auto":
-            device = get_best_device()
-
-        if not cls.initialized:
-            logger.info(f"Loading model for the first time (device: {device})...")
-            cls._initialize_model(device)
-            cls.initialized = True
-
-        # INVARIANT: After initialization, all components must exist
-        assert cls.model_wrapper is not None, "Model Wrapper initialization failed"
-        assert cls.tokenizer is not None, "Tokenizer initialization failed"
-        assert cls.generator is not None, "Generator initialization failed"
-        assert cls.token_generator is not None, "TokenGenerator initialization failed"
-        # Ensure the generator has its internal token_generator
-        assert (
-            hasattr(cls.generator, "token_generator")
-            and cls.generator.token_generator is not None
-        ), "Singleton Generator missing internal TokenGenerator"
-
-        return cls.model_wrapper, cls.tokenizer, cls.generator, cls.token_generator
-
-    @classmethod
-    def _initialize_model(cls, device):
-        """Initialize model components with proper error handling"""
-        try:
-            # Load model and all TEMPO components using the centralized function
-            model_name = "deepcogito/cogito-v1-preview-llama-3B"
-            logger.info(
-                f"Loading TEMPO components for model '{model_name}' on device '{device}'..."
-            )
-
-            # Use the centralized component loading function
-            components = load_tempo_components(
-                model_id=model_name,
-                device=device,
-                load_model_wrapper=True,
-                load_token_generator=True,
-                load_parallel_generator=True,
-                debug_mode=False,
-                use_fast_tokenizer=True,
-                attn_implementation="eager",  # Force eager attention implementation
-            )
-
-            # Extract and store components
-            cls.model_wrapper = components["model_wrapper"]
-            cls.tokenizer = components["tokenizer"]
-            cls.token_generator = components["token_generator"]
-            cls.generator = components["parallel_generator"]
-
-            # Log successful initialization
-            logger.info(f"ModelWrapper created on device: {cls.model_wrapper.device}")
-            logger.info(
-                f"TokenGenerator created on device: {cls.token_generator.device}"
-            )
-            logger.info(
-                f"ParallelGenerator created with TokenGenerator (ID: {id(cls.token_generator)})"
-            )
-
-        except Exception as e:
-            logger.error(f"Error initializing model: {e}")
-            logger.error(traceback.format_exc())
-            raise HTTPException(
-                status_code=500, detail=f"Model initialization failed: {str(e)}"
-            )
+logger = logging.getLogger("tempo-monadic-api")
 
 
 # Create FastAPI app
 app = FastAPI(
-    title="TEMPO API",
-    description="API for TEMPO text generation with invariant guarantees",
+    title="TEMPO Monadic API",
+    description="Monadic API for TEMPO text generation using functional programming patterns",
+    version="1.0.0"
 )
 
-# Create API router with /api prefix
-api_router = APIRouter(prefix="/api")
-
-# Create v2 router for backwards compatibility
-v2_router = APIRouter(prefix="/api/v2")
-
-# Configure CORS
+# Enable CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # For development - restrict in production
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 
-# Request model with validators
-class GenerationRequest(BaseModel):
-    # Core parameters
-    prompt: str = Field(description="Text prompt to start generation")
-    max_tokens: int = Field(
-        default=50, ge=1, le=200, description="Maximum number of tokens to generate"
-    )
-    selection_threshold: float = Field(
-        default=0.1,
-        ge=0.0,
-        le=1.0,
-        description="Probability threshold for initial token candidate selection - lower values allow more potential paths",
-    )
-
-    # Advanced generation settings
-    min_steps: int = Field(
-        default=0,
-        ge=0,
-        description="Minimum steps to generate before considering EOS tokens",
-    )
-    use_custom_rope: bool = Field(
-        default=True,
-        description="Use custom RoPE modifications for improved parallel token positioning",
-    )
-    disable_kv_cache: bool = Field(
-        default=False,
-        description="Disable KV caching for more consistent attention patterns (slower but more accurate)",
-    )
-    show_token_ids: bool = Field(
-        default=False, description="Include token IDs in the formatted output"
-    )
-    system_content: Optional[str] = Field(
-        default=None,
-        description="Optional system message content for chat models to adjust generation behavior",
-    )
-    enable_thinking: bool = Field(
-        default=False,
-        description="Enable Cogito's deep thinking mode for more thoughtful responses",
-    )
-    debug_mode: bool = Field(
-        default=False,
-        description="Enable debug mode for detailed logging and performance information",
-    )
-
-    # MCTS parameters
-    use_mcts: bool = Field(
-        default=False,
-        description="Use Monte Carlo Tree Search for text generation",
-    )
-    mcts_simulations: int = Field(
-        default=10,
-        ge=1,
-        description="Number of MCTS simulations per step",
-    )
-    mcts_c_puct: float = Field(
-        default=1.0,
-        ge=0.0,
-        description="Exploration constant for MCTS",
-    )
-    mcts_depth: int = Field(
-        default=5,
-        ge=1,
-        description="Maximum depth for MCTS simulations",
-    )
-
-    # Dynamic threshold parameters
-    dynamic_threshold: bool = Field(
-        default=False,
-        description="Use dynamic threshold that increases over steps",
-    )
-    final_threshold: float = Field(
-        default=1.0,
-        ge=0.0,
-        le=1.0,
-        description="Final threshold value for dynamic thresholding",
-    )
-    bezier_p1: float = Field(
-        default=0.2,
-        ge=0.0,
-        le=1.0,
-        description="First Bezier control point for dynamic threshold",
-    )
-    bezier_p2: float = Field(
-        default=0.8,
-        ge=0.0,
-        le=1.0,
-        description="Second Bezier control point for dynamic threshold",
-    )
-    use_relu: bool = Field(
-        default=False,
-        description="Use ReLU transition instead of Bezier curve for dynamic threshold",
-    )
-    relu_activation_point: float = Field(
-        default=0.5,
-        ge=0.0,
-        le=1.0,
-        description="Point at which ReLU transition begins (0-1)",
-    )
-
-    # Removal options
-    use_retroactive_removal: bool = Field(
-        default=True,
-        description="Use retroactive removal to refine token sets based on future token attention",
-    )
-    attention_threshold: float = Field(
-        default=0.01,
-        ge=0.0,
-        le=1.0,
-        description="Attention threshold for retroactive removal (lower means more tokens kept)",
-    )
-
-    # Parallel tokens options
-    allow_intraset_token_visibility: bool = Field(
-        default=False,
-        description="Allow tokens within the same parallel set to see each other during generation",
-    )
-    no_preserve_isolated_tokens: bool = Field(
-        default=False,
-        description="Allow removal to evaluate isolated tokens even when tokens are isolated",
-    )
-
-    # Advanced retroactive removal options
-    no_relative_attention: bool = Field(
-        default=False,
-        description="Disable relative attention thresholds",
-    )
-    relative_threshold: float = Field(
-        default=0.5,
-        ge=0.0,
-        le=1.0,
-        description="Threshold for relative attention-based removal (0-1)",
-    )
-    no_multi_scale_attention: bool = Field(
-        default=False,
-        description="Disable multi-scale attention integration",
-    )
-    num_layers_to_use: Optional[int] = Field(
-        default=None,
-        description="Number of last layers to use for attention (None means use all layers)",
-    )
-    no_lci_dynamic_threshold: bool = Field(
-        default=False,
-        description="Disable LCI-based dynamic thresholding",
-    )
-    no_sigmoid_threshold: bool = Field(
-        default=False,
-        description="Disable sigmoid-based decision boundary",
-    )
-    sigmoid_steepness: float = Field(
-        default=10.0,
-        ge=1.0,
-        description="Controls how sharp the sigmoid transition is",
-    )
-    complete_removal_mode: str = Field(
-        default="keep_token",
-        description="How to handle removed positions: 'keep_token' (keep best token), 'keep_unattended' (mark as unattended), 'remove_position' (remove position)",
-    )
-
-    # Advanced caching options
-    disable_kv_cache_consistency: bool = Field(
-        default=False,
-        description="Disable KV cache consistency checks (faster but may cause issues)",
-    )
-
-    # Validator for prompt
-    @field_validator("prompt")
-    def prompt_must_not_be_empty(cls, v):
-        if not v.strip():
-            raise ValueError("Prompt cannot be empty")
-        return v
-
-    # Validator for bezier points
-    @field_validator("bezier_p1", "bezier_p2")
-    def validate_bezier_points(cls, v):
-        if not 0 <= v <= 1:
-            raise ValueError("Bezier points must be between 0 and 1")
-        return v
-
-    # Validator for complete removal mode
-    @field_validator("complete_removal_mode")
-    def validate_complete_removal_mode(cls, v):
-        valid_modes = ["keep_token", "keep_unattended", "remove_position"]
-        if v not in valid_modes:
-            raise ValueError(f"Complete removal mode must be one of {valid_modes}")
-        return v
-
-
-# Response models with proper typing
-class TokenInfo(BaseModel):
-    token_text: str
-    token_id: int
-    probability: float
-
-
-class StepInfo(BaseModel):
-    position: int
-    parallel_tokens: List[TokenInfo]  # All tokens considered at this position
-    removed_tokens: List[TokenInfo]    # Tokens that were REMOVED
-
-
-class RemovalInfo(BaseModel):
-    strategy: str
-    coherence_threshold: float
-    diversity_clusters: int
-    use_dynamic_threshold: bool
-    diversity_steps: int
-    final_threshold: float = 1.0
-    use_relu: bool = False
-    relu_activation_point: float = 0.5
-    bezier_points: List[float] = Field(default=[0.2, 0.8])
-    removal_time: float
-
-
-class RetroactiveRemovalInfo(BaseModel):
-    attention_threshold: float
-    use_relative_attention: bool = True
-    relative_threshold: float = 0.5
-    use_multi_scale_attention: bool = True
-    num_layers_to_use: Optional[int] = None
-    use_lci_dynamic_threshold: bool = True
-    use_sigmoid_threshold: bool = True
-    sigmoid_steepness: float = 10.0
-    complete_removal_mode: str = "keep_token"
-
-
-class TimingInfo(BaseModel):
-    generation_time: float
-    removal_time: float
-    elapsed_time: float
-
-
-class ModelInfo(BaseModel):
-    model_name: str
-    is_qwen_model: bool
-    use_custom_rope: bool
-    device: str = "unknown"
-    model_type: Optional[str] = None
-
-
-class GenerationResponse(BaseModel):
-    # Core output
-    generated_text: str  # Text with ANSI color codes for terminal display
-    raw_generated_text: str  # Clean text without any formatting
-    clean_text: str = ""  # Clean text for API consumers (no ANSI codes)
-
-    # Token-level data
-    steps: List[StepInfo]
-    position_to_tokens: Dict[str, List[str]] = {}
-    original_parallel_positions: List[int] = []
-
-    # Performance and timing
-    timing: TimingInfo
-
-    # Removal information
-    removal: Optional[RemovalInfo] = None
-    retroactive_removal: Optional[RetroactiveRemovalInfo] = None
-
-    # Model information
-    model_info: ModelInfo
-
-    # Generation settings
-    selection_threshold: float
-    max_tokens: int
-    min_steps: int
-    prompt: str
-
-    # Advanced fields
-    had_repetition_loop: bool = False
-    system_content: Optional[str] = None
-
-    # Token sets data for visualization (raw data from generator)
-    token_sets: List[Tuple[int, List[Tuple[int, float]], List[Tuple[int, float]]]] = []
+# Service singleton
+class ServiceSingleton:
+    """Singleton for the monadic generation service."""
+    service: Optional[MonadicGenerationService] = None
     
-    # Token sets with decoded text for visualization
-    token_sets_with_text: List[Tuple[int, List[Tuple[int, float, str]], List[Tuple[int, float, str]]]] = []
-
-    # Raw token information for visualization
-    tokens_by_position: Dict[str, Any] = {}
-    final_removed_sets: Dict[str, Any] = {}
-
-
-# Dependency for getting model components
-async def get_model_components():
-    """Dependency to get model components with proper error handling"""
-    try:
-        # Returns model_wrapper, tokenizer, singleton_generator, shared_token_generator
-        return ModelSingleton.get_instance()
-    except Exception as e:
-        logger.error(f"Failed to get model components: {str(e)}")
-        raise HTTPException(status_code=503, detail="Model initialization failed")
+    @classmethod
+    def get_service(cls) -> Result[MonadicGenerationService, str]:
+        """Get or create the generation service."""
+        if cls.service is None:
+            try:
+                cls.service = MonadicGenerationService()
+                logger.info("Initialized MonadicGenerationService")
+                return Ok(cls.service)
+            except Exception as e:
+                error_msg = f"Failed to initialize service: {str(e)}"
+                logger.error(error_msg)
+                return Err(error_msg)
+        return Ok(cls.service)
 
 
-# Create visualizer singletons
-token_visualizer = TokenVisualizer()
-position_visualizer = PositionVisualizer()
-
-# Cache to store recent generation results for visualization
-generation_cache = {}
-
-
-def strip_ansi_codes(text: str) -> str:
-    """Remove ANSI color codes from text."""
-    ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
-    return ansi_escape.sub('', text)
+# Dependency injection
+def get_generation_service() -> MonadicGenerationService:
+    """Dependency injection for generation service."""
+    result = ServiceSingleton.get_service()
+    if result.is_err():
+        raise HTTPException(status_code=500, detail=result.unwrap_err())
+    return result.unwrap()
 
 
-def extract_clean_text(text_with_brackets: str) -> str:
-    """Extract clean text by taking only the first token from each bracket group."""
-    if not text_with_brackets:
-        return ""
-    
-    # Remove ANSI codes first
-    text = strip_ansi_codes(text_with_brackets)
-    
-    result = []
-    i = 0
-    while i < len(text):
-        if text[i] == '[':
-            # Find the matching closing bracket
-            j = i + 1
-            bracket_depth = 1
-            while j < len(text) and bracket_depth > 0:
-                if text[j] == '[':
-                    bracket_depth += 1
-                elif text[j] == ']':
-                    bracket_depth -= 1
-                j += 1
-            
-            if bracket_depth == 0:
-                # Extract content between brackets
-                bracket_content = text[i+1:j-1]
-                # Split by '/' and take the first non-empty token
-                tokens = [t.strip() for t in bracket_content.split('/')]
-                if tokens and tokens[0]:
-                    # Add space before token if needed (unless it's punctuation)
-                    if result and result[-1] not in ' \n' and tokens[0] not in '.,;:!?"\'':
-                        result.append(' ')
-                    result.append(tokens[0])
-                i = j
-            else:
-                # Unclosed bracket, just append it
-                result.append(text[i])
-                i += 1
-        else:
-            # Regular character
-            result.append(text[i])
-            i += 1
-    
-    return ''.join(result)
+# API Models
+class HealthResponse(BaseModel):
+    """Health check response."""
+    status: str
+    version: str
+    service: str
 
 
-@api_router.get("/")
+class ErrorResponse(BaseModel):
+    """Error response model."""
+    error: str
+    details: Optional[Dict[str, Any]] = None
+    traceback: Optional[str] = None
+
+
+# Monadic endpoint handlers
+
+def handle_generation_result(
+    result: Result[GenerationResponse, str]
+) -> GenerationResponse:
+    """Convert a Result to an API response or raise an exception."""
+    return result.fold(
+        lambda err: _raise_http_error(400, err),
+        lambda resp: resp
+    )
+
+
+def _raise_http_error(status_code: int, message: str):
+    """Raise an HTTP exception with the given status code and message."""
+    logger.error(f"API Error {status_code}: {message}")
+    raise HTTPException(status_code=status_code, detail=message)
+
+
+# API Endpoints
+
+@app.get("/", response_model=HealthResponse)
 async def root():
-    return {"message": "TEMPO API is running", "status": "healthy"}
+    """Root endpoint returning API information."""
+    return HealthResponse(
+        status="healthy",
+        version="1.0.0",
+        service="TEMPO Monadic API"
+    )
 
 
-@api_router.get("/health")
+@app.get("/health", response_model=HealthResponse)
 async def health_check():
-    """Health check endpoint to verify API and model status"""
-    try:
-        # Quick check if model is initialized
-        if not ModelSingleton.initialized:
-            return {"status": "initializing", "message": "Model is not yet initialized"}
-
-        # Verify components exist
-        model_wrapper, tokenizer, generator, token_generator = (
-            ModelSingleton.get_instance()
+    """Health check endpoint."""
+    # Check if service can be initialized
+    service_result = ServiceSingleton.get_service()
+    
+    if service_result.is_err():
+        raise HTTPException(
+            status_code=503, 
+            detail=f"Service unavailable: {service_result.unwrap_err()}"
         )
-
-        return {
-            "status": "healthy",
-            "model_loaded": True,
-            "model_name": "deepcogito/cogito-v1-preview-llama-3B",
-            "device": generator.device if hasattr(generator, "device") else "unknown",
-            "token_generator_initialized": token_generator is not None,
-            "generator_has_token_generator": hasattr(generator, "token_generator")
-            and generator.token_generator is not None,
-        }
-    except Exception as e:
-        logger.error(f"Health check failed: {str(e)}")
-        return {"status": "unhealthy", "error": str(e)}
+    
+    return HealthResponse(
+        status="healthy",
+        version="1.0.0",
+        service="TEMPO Monadic API"
+    )
 
 
-@api_router.post("/generate", response_model=GenerationResponse)
+@app.post("/generate", response_model=GenerationResponse)
 async def generate_text(
     request: GenerationRequest,
-    components: Tuple = Depends(
-        get_model_components
-    ),  # components = (model_wrapper, tokenizer, generator, token_generator)
-):
+    service: MonadicGenerationService = Depends(get_generation_service)
+) -> GenerationResponse:
+    """Generate text using monadic TEMPO generation.
+    
+    This endpoint uses monadic composition for:
+    - Request validation
+    - Error handling
+    - Generation pipeline
     """
-    Generate text using TEMPO parallel generation.
+    logger.info(f"Received generation request: {request.prompt[:50]}...")
+    
+    # Build monadic pipeline
+    generation_pipeline = (
+        validate_request(request)
+        .flat_map(lambda req: service.generate_text(req))
+    )
+    
+    # Execute pipeline and handle result
+    return handle_generation_result(generation_pipeline)
+
+
+@app.post("/generate/batch", response_model=List[GenerationResponse])
+async def generate_batch(
+    requests: List[GenerationRequest],
+    service: MonadicGenerationService = Depends(get_generation_service)
+) -> List[GenerationResponse]:
+    """Generate text for multiple prompts in batch.
+    
+    Uses monadic sequencing to handle multiple generations.
     """
-    try:
-        model_wrapper, tokenizer, generator, shared_token_generator = components
-
-        # --- Propagate Debug Mode from Request ---
-        # Set on the shared TokenGenerator
-        shared_token_generator.set_debug_mode(request.debug_mode)
-        # Set on the singleton ParallelGenerator
-        if hasattr(generator, "set_debug_mode"):
-            generator.set_debug_mode(request.debug_mode)
-        # Set on the Model Wrapper
-        if hasattr(model_wrapper, "set_debug_mode"):
-            model_wrapper.set_debug_mode(request.debug_mode)
-
-        # Log the request
-        logger.info(
-            f"Received generation request: prompt={request.prompt[:50]}..., max_tokens={request.max_tokens}, debug={request.debug_mode}"
+    logger.info(f"Received batch generation request with {len(requests)} prompts")
+    
+    # Validate all requests
+    validation_results = [validate_request(req) for req in requests]
+    validated_requests = sequence_results(validation_results)
+    
+    if validated_requests.is_err():
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Validation failed: {validated_requests.unwrap_err()}"
         )
-        start_time = time.time()
+    
+    # Generate for each request
+    generation_results = []
+    for request in validated_requests.unwrap():
+        result = service.generate_text(request)
+        if result.is_err():
+            # For batch, we could either fail fast or collect errors
+            # Here we fail fast
+            raise HTTPException(
+                status_code=500,
+                detail=f"Generation failed: {result.unwrap_err()}"
+            )
+        generation_results.append(result.unwrap())
+    
+    return generation_results
 
-        # --- Remover Creation ---
-        retroactive_remover = None
-        if request.use_retroactive_removal:
+
+@app.post("/generate/stream")
+async def generate_stream(
+    request: GenerationRequest,
+    service: MonadicGenerationService = Depends(get_generation_service)
+):
+    """Stream generation results using Server-Sent Events.
+    
+    This demonstrates how to use monadic patterns with async streaming.
+    """
+    from fastapi.responses import StreamingResponse
+    import asyncio
+    import json
+    
+    async def event_generator():
+        """Generate SSE events from the generation process."""
+        try:
+            # Validate request
+            validation_result = validate_request(request)
+            if validation_result.is_err():
+                yield f"data: {json.dumps({'error': validation_result.unwrap_err()})}\n\n"
+                return
+            
+            # For now, we'll do regular generation and stream the result
+            # In a full implementation, this would stream tokens as they're generated
+            result = service.generate_text(validation_result.unwrap())
+            
+            if result.is_ok():
+                response = result.unwrap()
+                # Stream the response in chunks
+                yield f"data: {json.dumps({'status': 'started'})}\n\n"
+                await asyncio.sleep(0.1)
+                
+                # Stream tokens (simplified - in reality would stream as generated)
+                tokens = response.generated_text.split()
+                for i, token in enumerate(tokens):
+                    yield f"data: {json.dumps({'token': token, 'index': i})}\n\n"
+                    await asyncio.sleep(0.05)  # Simulate streaming delay
+                
+                yield f"data: {json.dumps({'status': 'completed', 'full_response': response.dict()})}\n\n"
+            else:
+                yield f"data: {json.dumps({'error': result.unwrap_err()})}\n\n"
+                
+        except Exception as e:
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+    
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream"
+    )
+
+
+# Error handling middleware
+
+@app.exception_handler(Exception)
+async def general_exception_handler(request, exc):
+    """Handle uncaught exceptions using monadic error types."""
+    error_message = str(exc)
+    logger.error(f"Unhandled exception: {error_message}")
+    logger.error(traceback.format_exc())
+    
+    return ErrorResponse(
+        error=error_message,
+        details={"type": type(exc).__name__},
+        traceback=traceback.format_exc() if logger.isEnabledFor(logging.DEBUG) else None
+    )
+
+
+# Monadic API utilities
+
+def with_timeout(timeout_seconds: float):
+    """Decorator to add timeout to endpoint handlers."""
+    import asyncio
+    from functools import wraps
+    
+    def decorator(func):
+        @wraps(func)
+        async def wrapper(*args, **kwargs):
             try:
-                # Create RetroactiveRemover
-                retroactive_remover = RetroactiveRemover(
-                    model=model_wrapper,
-                    tokenizer=tokenizer,
-                    device=generator.device,
-                    debug_mode=request.debug_mode,
-                    use_relative_attention=not request.no_relative_attention,
-                    relative_threshold=request.relative_threshold,
-                    use_multi_scale_attention=not request.no_multi_scale_attention,
-                    num_layers_to_use=request.num_layers_to_use,
-                    use_sigmoid_threshold=not request.no_sigmoid_threshold,
-                    sigmoid_steepness=request.sigmoid_steepness,
-                    complete_pruning_mode=request.complete_removal_mode,
+                return await asyncio.wait_for(
+                    func(*args, **kwargs), 
+                    timeout=timeout_seconds
                 )
-                # Set the SHARED token generator on the retroactive remover
-                if hasattr(retroactive_remover, "set_token_generator"):
-                    retroactive_remover.set_token_generator(shared_token_generator)
-                    logger.info(
-                        f"Set shared TokenGenerator (ID: {id(shared_token_generator)}) on RetroactiveRemover"
-                    )
-                else:
-                    logger.warning(
-                        "RetroactiveRemover does not have set_token_generator method."
-                    )
-
-                logger.info(
-                    f"Created retroactive remover with threshold: {request.attention_threshold}"
-                )
-
-            except ImportError as e:
-                logger.error(f"Failed to import removal components: {e}")
+            except asyncio.TimeoutError:
                 raise HTTPException(
-                    status_code=500,
-                    detail="Server configuration error: Removal components not available",
+                    status_code=504,
+                    detail=f"Request timeout after {timeout_seconds} seconds"
                 )
-            except Exception as e:
-                logger.error(f"Failed to initialize retroactive removal: {e}")
-                logger.error(
-                    traceback.format_exc()
-                )  # Log full traceback for init errors
-                raise HTTPException(
-                    status_code=500,
-                    detail=f"Failed to initialize retroactive removal: {str(e)}",
-                )
+        return wrapper
+    return decorator
 
-        # Configure RoPE modifier KV cache consistency if RoPE is enabled
-        if (
-            generator.use_custom_rope
-            and hasattr(generator, "rope_modifier")
-            and generator.rope_modifier is not None
-        ):
-            if hasattr(generator.rope_modifier, "enable_kv_cache_consistency"):
-                if request.disable_kv_cache_consistency:
-                    logger.info(
-                        "Note: RoPE modifier KV cache consistency setting ignored (likely deprecated)."
+
+def with_rate_limit(max_calls: int, window_seconds: float):
+    """Decorator to add rate limiting to endpoints."""
+    from collections import defaultdict
+    from datetime import datetime, timedelta
+    import asyncio
+    
+    call_times = defaultdict(list)
+    lock = asyncio.Lock()
+    
+    def decorator(func):
+        @wraps(func)
+        async def wrapper(request, *args, **kwargs):
+            client_id = request.client.host
+            now = datetime.now()
+            
+            async with lock:
+                # Clean old entries
+                call_times[client_id] = [
+                    t for t in call_times[client_id] 
+                    if now - t < timedelta(seconds=window_seconds)
+                ]
+                
+                # Check rate limit
+                if len(call_times[client_id]) >= max_calls:
+                    raise HTTPException(
+                        status_code=429,
+                        detail=f"Rate limit exceeded: {max_calls} calls per {window_seconds} seconds"
                     )
-            # Set debug mode on RoPE modifier instance
-            generator.rope_modifier.set_debug_mode(request.debug_mode)
-
-        # Prepare system content
-        system_content = request.system_content
-        if request.enable_thinking and not system_content:
-            system_content = "Enable deep thinking subroutine."
-
-        try:
-            # --- Call the SINGLETON's generator ---
-            # Pass the newly created removers for this request
-            generation_result = generator.generate(
-                prompt=request.prompt,
-                max_tokens=request.max_tokens,
-                selection_threshold=request.selection_threshold,  # Initial selection threshold
-                return_parallel_sets=True,  # Needed for visualization
-                use_retroactive_removal=request.use_retroactive_removal,  # Control whether retroactive removal is applied
-                min_steps=request.min_steps,
-                show_token_ids=request.show_token_ids,
-                # debug_mode already set on the generator instance
-                disable_kv_cache=request.disable_kv_cache,
-                system_content=system_content,
-                isolate_parallel_tokens=not request.allow_intraset_token_visibility,
-                preserve_all_isolated_tokens=(
-                    not request.no_preserve_isolated_tokens
-                    if not request.allow_intraset_token_visibility
-                    else None
-                ),
-                retroactive_remover=retroactive_remover,  # Pass the request-specific RetroactiveRemover
-                # New MCTS parameters
-                use_mcts=request.use_mcts,
-                mcts_simulations=request.mcts_simulations,
-                mcts_c_puct=request.mcts_c_puct,
-                mcts_depth=request.mcts_depth,
-                # New dynamic threshold parameters
-                dynamic_threshold=request.dynamic_threshold,
-                final_threshold=request.final_threshold,
-                bezier_p1=request.bezier_p1,
-                bezier_p2=request.bezier_p2,
-                use_relu=request.use_relu,
-                relu_activation_point=request.relu_activation_point,
-            )
-        except ValueError as e:
-            logger.error(f"Value error during generation: {e}")
-            logger.error(traceback.format_exc())
-            raise HTTPException(
-                status_code=400, detail=f"Invalid generation parameters: {str(e)}"
-            )
-        except RuntimeError as e:
-            logger.error(f"Runtime error during generation: {e}")
-            logger.error(traceback.format_exc())
-            raise HTTPException(status_code=500, detail=f"Generation failed: {str(e)}")
-        except torch.cuda.OutOfMemoryError as e:
-            logger.error(f"CUDA out of memory: {e}")
-            raise HTTPException(
-                status_code=500,
-                detail="GPU memory exceeded. Try reducing max_tokens or batch size.",
-            )
-        except Exception as e:
-            logger.error(f"Unexpected error during generation: {e}")
-            logger.error(traceback.format_exc())
-            raise HTTPException(
-                status_code=500, detail=f"Generation failed unexpectedly: {str(e)}"
-            )
-
-        elapsed_time = time.time() - start_time
-        logger.info(f"Generation completed in {elapsed_time:.2f}s")
-
-        try:
-            # Format response with proper error handling
-            generated_text_with_colors = generation_result["generated_text"]
-            raw_text = generation_result.get("raw_generated_text", "")
-            
-            # Extract clean text with fallbacks
-            clean_text = extract_clean_text(generated_text_with_colors) if generated_text_with_colors else ""
-            
-            # If clean_text is empty but we have other text, use raw_text as fallback
-            if not clean_text and raw_text:
-                clean_text = strip_ansi_codes(raw_text)
-            
-            # Final fallback: use stripped version of generated_text
-            if not clean_text and generated_text_with_colors:
-                clean_text = strip_ansi_codes(generated_text_with_colors)
-            
-            # Debug logging for clean_text generation
-            if request.debug_mode:
-                logger.debug(f"Generated text length: {len(generated_text_with_colors) if generated_text_with_colors else 0}")
-                logger.debug(f"Raw text length: {len(raw_text) if raw_text else 0}")
-                logger.debug(f"Clean text length: {len(clean_text) if clean_text else 0}")
-                logger.debug(f"Clean text preview: {repr(clean_text[:100]) if clean_text else 'None'}")
-            
-            # Always log when clean_text is empty as this might indicate an issue
-            if not clean_text:
-                logger.warning(f"Clean text is empty - generated_text: {len(generated_text_with_colors) if generated_text_with_colors else 0} chars, raw_text: {len(raw_text) if raw_text else 0} chars")
-            
-            response = GenerationResponse(
-                generated_text=generated_text_with_colors,  # Keep ANSI codes for terminal display
-                raw_generated_text=raw_text,
-                clean_text=clean_text,  # Clean text without brackets and ANSI codes
-                steps=[],  # Populated below
-                timing=TimingInfo(
-                    generation_time=generation_result.get(
-                        "generation_time", elapsed_time
-                    ),
-                    removal_time=generation_result.get("removal_time", 0.0),
-                    elapsed_time=elapsed_time,
-                ),
-                model_info=ModelInfo(
-                    model_name="deepcogito/cogito-v1-preview-llama-3B",
-                    is_qwen_model=generation_result.get("is_qwen_model", False),
-                    use_custom_rope=request.use_custom_rope,
-                    device=str(generator.device) if hasattr(generator, "device") else "unknown",
-                    model_type="llama"  # Since we're using a llama model
-                ),
-                selection_threshold=request.selection_threshold,
-                max_tokens=request.max_tokens,
-                min_steps=request.min_steps,
-                prompt=request.prompt,
-                had_repetition_loop=generation_result.get("had_repetition_loop", False),
-                system_content=system_content,
-                token_sets=[],  # Populated below
-                token_sets_with_text=[],  # Populated below
-                position_to_tokens=generation_result.get("position_to_tokens", {}),
-                original_parallel_positions=list(
-                    generation_result.get("original_parallel_positions", set())
-                ),
-                final_removed_sets=generation_result.get("final_removed_sets", {}),
-            )
-
-            # Process token sets safely
-            token_sets_data = generation_result.get("token_sets", [])
-            if token_sets_data:
-                steps_list = []
-                formatted_token_sets = []
-                for step_data in token_sets_data:
-                    try:
-                        if isinstance(step_data, tuple) and len(step_data) == 3:
-                            # Third element contains tokens that were REMOVED
-                            position, original_data, removed_data = step_data
-                            if (
-                                isinstance(original_data, tuple)
-                                and len(original_data) == 2
-                                and isinstance(removed_data, tuple)
-                                and len(removed_data) == 2
-                            ):
-
-                                original_ids, original_probs = original_data
-                                removed_ids_raw, removed_probs_raw = removed_data
-
-                                # Convert to basic types safely
-                                original_pairs = [
-                                    (int(tid), float(prob))
-                                    for tid, prob in zip(original_ids, original_probs)
-                                ]
-                                removed_pairs = [
-                                    (int(tid), float(prob))
-                                    for tid, prob in zip(
-                                        removed_ids_raw, removed_probs_raw
-                                    )
-                                ]
-
-                                # Keep original format for backward compatibility
-                                formatted_token_sets.append(
-                                    (position, original_pairs, removed_pairs)
-                                )
-
-                                # Build step info
-                                try:
-                                    parallel_tokens = [
-                                        TokenInfo(
-                                            token_text=tokenizer.decode([tid]),
-                                            token_id=tid,
-                                            probability=prob,
-                                        )
-                                        for tid, prob in original_pairs
-                                    ]
-                                    removed_tokens_info = [
-                                        TokenInfo(
-                                            token_text=tokenizer.decode([tid]),
-                                            token_id=tid,
-                                            probability=prob,
-                                        )
-                                        for tid, prob in removed_pairs
-                                    ]
-                                    steps_list.append(
-                                        StepInfo(
-                                            position=position,
-                                            parallel_tokens=parallel_tokens,
-                                            removed_tokens=removed_tokens_info,
-                                        )
-                                    )
-                                except Exception as e:
-                                    logger.warning(
-                                        f"Error processing tokens for step {position}: {e}"
-                                    )
-                                    continue
-                            else:
-                                logger.warning(
-                                    f"Skipping malformed token_set inner data: {step_data}"
-                                )
-                        else:
-                            logger.warning(
-                                f"Skipping malformed token_set step data: {step_data}"
-                            )
-                    except Exception as e:
-                        logger.warning(f"Error processing step data: {e}")
-                        continue
-
-                response.token_sets = formatted_token_sets
-                response.steps = steps_list
                 
-                # Add token sets with decoded text for visualization
-                token_sets_with_text = []
-                for step_data in token_sets_data:
-                    try:
-                        if isinstance(step_data, tuple) and len(step_data) == 3:
-                            # Third element contains tokens that were REMOVED
-                            position, original_data, removed_data = step_data
-                            if (
-                                isinstance(original_data, tuple)
-                                and len(original_data) == 2
-                                and isinstance(removed_data, tuple)
-                                and len(removed_data) == 2
-                            ):
-                                original_ids, original_probs = original_data
-                                removed_ids_raw, removed_probs_raw = removed_data
-                                
-                                # Create tuples with decoded text
-                                original_with_text = [
-                                    (int(tid), float(prob), tokenizer.decode([tid]))
-                                    for tid, prob in zip(original_ids, original_probs)
-                                ]
-                                removed_with_text = [
-                                    (int(tid), float(prob), tokenizer.decode([tid]))
-                                    for tid, prob in zip(removed_ids_raw, removed_probs_raw)
-                                ]
-                                
-                                token_sets_with_text.append(
-                                    (position, original_with_text, removed_with_text)
-                                )
-                    except Exception as e:
-                        logger.warning(f"Error creating token_sets_with_text: {e}")
-                        continue
-                
-                response.token_sets_with_text = token_sets_with_text
+                # Record this call
+                call_times[client_id].append(now)
+            
+            return await func(request, *args, **kwargs)
+        return wrapper
+    return decorator
 
-            # Add removal info safely
-            if request.use_retroactive_removal:
-                response.retroactive_removal = RetroactiveRemovalInfo(
-                    attention_threshold=request.attention_threshold,
-                    use_relative_attention=not request.no_relative_attention,
-                    relative_threshold=request.relative_threshold,
-                    use_multi_scale_attention=not request.no_multi_scale_attention,
-                    num_layers_to_use=request.num_layers_to_use,
-                    use_sigmoid_threshold=not request.no_sigmoid_threshold,
-                    sigmoid_steepness=request.sigmoid_steepness,
-                    complete_pruning_mode=request.complete_removal_mode,
-                )
 
-            return response
+# Example of using monadic patterns for complex endpoints
 
-        except Exception as e:
-            logger.error(f"Error formatting response: {e}")
-            logger.error(traceback.format_exc())
-            raise HTTPException(
-                status_code=500,
-                detail=f"Failed to format generation response: {str(e)}",
+@app.post("/analyze", response_model=Dict[str, Any])
+async def analyze_generation(
+    request: GenerationRequest,
+    service: MonadicGenerationService = Depends(get_generation_service)
+) -> Dict[str, Any]:
+    """Analyze generation parameters and provide recommendations.
+    
+    This demonstrates complex monadic composition.
+    """
+    from src.domain.monads import Maybe, some, nothing
+    
+    def analyze_threshold(threshold: float) -> Result[str, str]:
+        if threshold < 0.01:
+            return Ok("Very selective - expect focused, deterministic output")
+        elif threshold < 0.1:
+            return Ok("Selective - balanced creativity and coherence")
+        elif threshold < 0.3:
+            return Ok("Moderate - increased diversity in outputs")
+        else:
+            return Ok("High - very creative but potentially less coherent")
+    
+    def analyze_max_tokens(tokens: int) -> Result[str, str]:
+        if tokens < 50:
+            return Ok("Short generation - suitable for completions")
+        elif tokens < 200:
+            return Ok("Medium generation - suitable for paragraphs")
+        else:
+            return Ok("Long generation - suitable for extended text")
+    
+    def recommend_settings(req: GenerationRequest) -> Result[Dict[str, Any], str]:
+        # Analyze various parameters
+        threshold_analysis = analyze_threshold(req.selection_threshold)
+        tokens_analysis = analyze_max_tokens(req.max_tokens)
+        
+        recommendations = {
+            "threshold_analysis": threshold_analysis.unwrap(),
+            "tokens_analysis": tokens_analysis.unwrap(),
+            "recommendations": []
+        }
+        
+        # Add specific recommendations
+        if req.selection_threshold > 0.2 and req.use_retroactive_removal:
+            recommendations["recommendations"].append(
+                "Consider lowering selection threshold when using retroactive removal"
             )
-
-    except ValueError as e:
-        logger.error(f"Validation Error during generation: {str(e)}")
-        logger.error(traceback.format_exc())
-        raise HTTPException(
-            status_code=400, detail=f"Generation parameter error: {str(e)}"
-        )
-    except RuntimeError as e:
-        logger.error(f"Runtime Error during generation: {str(e)}")
-        logger.error(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=f"Generation failed: {str(e)}")
-    except Exception as e:
-        logger.error(f"Unexpected Error during generation: {str(e)}")
-        logger.error(traceback.format_exc())
-        raise HTTPException(
-            status_code=500, detail=f"An unexpected error occurred: {str(e)}"
-        )
+        
+        if req.max_tokens > 500 and not req.use_mcts:
+            recommendations["recommendations"].append(
+                "Consider enabling MCTS for long generations"
+            )
+        
+        return Ok(recommendations)
+    
+    # Build analysis pipeline
+    analysis_pipeline = (
+        validate_request(request)
+        .flat_map(recommend_settings)
+    )
+    
+    return handle_generation_result(analysis_pipeline)
 
 
-@v2_router.post("/generate", response_model=GenerationResponse)
-async def generate_text_v2(
-    request: GenerationRequest, components: Tuple = Depends(get_model_components)
-):
-    """
-    Generate text using TEMPO parallel generation (v2 endpoint).
-    This is a forwarding endpoint for backwards compatibility.
-    """
-    return await generate_text(request, components)
-
-
-# Include the API routers
-app.include_router(api_router)
-app.include_router(v2_router)
-
-# Run with: uvicorn api:app --host 0.0.0.0 --port 8000
 if __name__ == "__main__":
     import uvicorn
-
     uvicorn.run(app, host="0.0.0.0", port=8000)

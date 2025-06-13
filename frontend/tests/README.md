@@ -53,7 +53,15 @@ tests/
 ├── e2e/                      # End-to-end tests
 │   ├── tempo-generation.spec.ts    # Main generation flow tests
 │   ├── components.spec.ts          # UI component tests
+│   ├── simple.spec.ts              # Basic functionality tests
 │   └── visualization.spec.ts       # Chart visualization tests
+├── unit/                     # Unit/Integration tests (NEW)
+│   ├── main-page.spec.ts           # Main page interactions
+│   ├── generation-history.spec.ts  # History panel functionality
+│   ├── export-dialog.spec.ts       # Export features
+│   ├── keyboard-shortcuts.spec.ts  # Keyboard navigation
+│   ├── token-stats-dashboard.spec.ts # Statistics visualization
+│   └── interactive-output.spec.ts  # Interactive token display
 ├── fixtures/                 # Test data and fixtures
 │   └── test-data.ts         # Reusable test data
 └── helpers/                  # Test utilities
@@ -94,6 +102,50 @@ test('should handle API response', async ({ page }) => {
 });
 ```
 
+## New Unit Tests
+
+The unit test suite provides comprehensive coverage of individual components and features:
+
+### Main Page (`main-page.spec.ts`)
+- Header elements and navigation
+- Prompt input validation
+- Settings panel interactions
+- Preset applications
+- Output tab management
+
+### Generation History (`generation-history.spec.ts`)
+- History panel display and search
+- Loading previous generations
+- History management (delete, clear)
+- Local storage persistence
+- Relative time display
+
+### Export Dialog (`export-dialog.spec.ts`)
+- Export dialog functionality
+- Copy to clipboard feature
+- Multiple export formats (JSON, Markdown, CSV)
+- Export preview statistics
+- File download handling
+
+### Keyboard Shortcuts (`keyboard-shortcuts.spec.ts`)
+- All keyboard navigation features
+- Context-aware shortcut handling
+- Input field exception handling
+- Theme toggling and settings reset
+
+### Token Stats Dashboard (`token-stats-dashboard.spec.ts`)
+- Statistics visualization
+- Chart rendering (D3.js)
+- Position heatmap display
+- Token frequency analysis
+- Empty state handling
+
+### Interactive Output (`interactive-output.spec.ts`)
+- Token highlighting and hover effects
+- Alternative token popups
+- Retroactive removal indicators
+- Position badges
+
 ## Best Practices
 
 1. **Use data-testid attributes** for reliable element selection
@@ -103,6 +155,9 @@ test('should handle API response', async ({ page }) => {
 5. **Follow AAA pattern** - Arrange, Act, Assert
 6. **Wait for elements** before interacting with them
 7. **Use page objects** for complex pages (if needed)
+8. **Test user behavior** not implementation details
+9. **Handle async operations** properly with appropriate waits
+10. **Clean up after tests** (close dialogs, reset state)
 
 ## CI/CD Integration
 
