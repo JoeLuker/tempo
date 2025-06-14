@@ -12,10 +12,11 @@ import logging
 import traceback
 
 from src.domain.monads import Result, Ok, Err, IO, IOResult, Reader
-from src.domain.monads.composition import sequence_results, log_result
+from src.domain.monads.composition import sequence_results
 from src.application.services.monadic_generation_service import (
     MonadicGenerationService, 
-    validate_request
+    validate_request,
+    log_result
 )
 from src.presentation.api.models.requests import GenerationRequest
 from src.presentation.api.models.responses import GenerationResponse

@@ -18,6 +18,8 @@ U = TypeVar('U')
 E = TypeVar('E')
 R = TypeVar('R')
 S = TypeVar('S')
+L = TypeVar('L')  # Left type for Either
+V = TypeVar('V')  # Additional type variable
 
 
 # Result combinators
