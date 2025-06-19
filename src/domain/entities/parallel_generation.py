@@ -5,7 +5,7 @@ including logical layouts, token sets, and generation configurations.
 """
 
 from dataclasses import dataclass, field
-from typing import List, Dict, Tuple, Optional, Any, Callable
+from typing import Optional, Any, Callable
 import torch
 from datetime import datetime
 
@@ -36,9 +36,9 @@ class LogicalPosition:
 class ParallelTokenSet:
     """Represents a set of parallel tokens at a logical position."""
     logical_step: int
-    tokens: List[Tuple[int, float]]  # List of (token_id, probability)
-    original_tokens: Optional[List[Tuple[int, float]]] = None  # Before pruning
-    removed_tokens: Optional[List[Tuple[int, float]]] = None  # Tokens that were pruned
+    tokens: list[tuple[int, float]]  # List of (token_id, probability)
+    original_tokens: Optional[list[tuple[int, float]]] = None  # Before pruning
+    removed_tokens: Optional[list[tuple[int, float]]] = None  # Tokens that were pruned
     
     def __post_init__(self):
         """Validate parallel token set."""
@@ -55,12 +55,12 @@ class ParallelTokenSet:
                 raise ValueError(f"Token probability must be in [0, 1], got {prob}")
     
     @property
-    def token_ids(self) -> List[int]:
+    def token_ids(self) -> list[int]:
         """Get just the token IDs."""
         return [tid for tid, _ in self.tokens]
     
     @property
-    def probabilities(self) -> List[float]:
+    def probabilities(self) -> list[float]:
         """Get just the probabilities."""
         return [prob for _, prob in self.tokens]
     
@@ -165,12 +165,12 @@ class GenerationResult:
     had_repetition_loop: bool = False
     
     # Layout information
-    logical_layout: List[LogicalPosition] = field(default_factory=list)
+    logical_layout: list[LogicalPosition] = field(default_factory=list)
     
     # Token sets for visualization
-    token_sets: Optional[List[Tuple[int, Tuple[List[int], List[float]], Tuple[List[int], List[float]]]]] = None
-    all_original_token_sets: Optional[Dict[int, List[Tuple[int, float]]]] = None
-    all_surviving_token_sets: Optional[Dict[int, List[Tuple[int, float]]]] = None
+    token_sets: Optional[list[tuple[int, tuple[list[int], list[float]], tuple[list[int], list[float]]]]] = None
+    all_original_token_sets: Optional[dict[int, list[tuple[int, float]]]] = None
+    all_surviving_token_sets: Optional[dict[int, list[tuple[int, float]]]] = None
     
     def __post_init__(self):
         """Validate generation result."""
@@ -189,7 +189,7 @@ class MCTSNode:
     probability: float
     value: float = 0.0
     visits: int = 0
-    children: List['MCTSNode'] = field(default_factory=list)
+    children: list['MCTSNode'] = field(default_factory=list)
     parent: Optional['MCTSNode'] = None
     
     def __post_init__(self):

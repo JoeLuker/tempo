@@ -3,7 +3,7 @@
 This module provides helper functions and combinators for working with monads.
 """
 
-from typing import TypeVar, List, Callable, Tuple, Any
+from typing import TypeVar, Callable, Any
 from functools import reduce
 
 from .result import Result, Ok, Err
@@ -24,7 +24,7 @@ V = TypeVar('V')  # Additional type variable
 
 # Result combinators
 
-def sequence_results(results: List[Result[T, E]]) -> Result[List[T], E]:
+def sequence_results(results: list[Result[T, E]]) -> Result[list[T], E]:
     """Convert a list of Results into a Result of list.
     
     Fails fast - returns first error encountered.
@@ -37,7 +37,7 @@ def sequence_results(results: List[Result[T, E]]) -> Result[List[T], E]:
     return Ok(values)
 
 
-def parallel_results(results: List[Result[T, E]]) -> Result[List[T], List[E]]:
+def parallel_results(results: list[Result[T, E]]) -> Result[list[T], list[E]]:
     """Collect all results, accumulating errors."""
     successes = []
     errors = []
@@ -55,15 +55,15 @@ def parallel_results(results: List[Result[T, E]]) -> Result[List[T], List[E]]:
 
 def traverse_result(
     f: Callable[[T], Result[U, E]], 
-    items: List[T]
-) -> Result[List[U], E]:
+    items: list[T]
+) -> Result[list[U], E]:
     """Apply a Result-returning function to each item and collect results."""
     return sequence_results([f(item) for item in items])
 
 
 def partition_results(
-    results: List[Result[T, E]]
-) -> Tuple[List[T], List[E]]:
+    results: list[Result[T, E]]
+) -> tuple[list[T], list[E]]:
     """Partition a list of Results into successes and failures."""
     successes = []
     failures = []
@@ -79,7 +79,7 @@ def partition_results(
 
 # Maybe combinators
 
-def sequence_maybes(maybes: List[Maybe[T]]) -> Maybe[List[T]]:
+def sequence_maybes(maybes: list[Maybe[T]]) -> Maybe[list[T]]:
     """Convert a list of Maybes into a Maybe of list.
     
     Returns Nothing if any Maybe is Nothing.
@@ -92,12 +92,12 @@ def sequence_maybes(maybes: List[Maybe[T]]) -> Maybe[List[T]]:
     return some(values)
 
 
-def cat_maybes(maybes: List[Maybe[T]]) -> List[T]:
+def cat_maybes(maybes: list[Maybe[T]]) -> list[T]:
     """Extract all Some values from a list of Maybes."""
     return [m.get_or_else(None) for m in maybes if m.is_some()]  # type: ignore
 
 
-def first_some(maybes: List[Maybe[T]]) -> Maybe[T]:
+def first_some(maybes: list[Maybe[T]]) -> Maybe[T]:
     """Return the first Some value, or Nothing if all are Nothing."""
     for maybe in maybes:
         if maybe.is_some():
@@ -107,7 +107,7 @@ def first_some(maybes: List[Maybe[T]]) -> Maybe[T]:
 
 # Either combinators
 
-def sequence_eithers(eithers: List[Either[L, R]]) -> Either[L, List[R]]:
+def sequence_eithers(eithers: list[Either[L, R]]) -> Either[L, list[R]]:
     """Convert a list of Eithers into an Either of list.
     
     Returns first Left encountered.
@@ -121,8 +121,8 @@ def sequence_eithers(eithers: List[Either[L, R]]) -> Either[L, List[R]]:
 
 
 def partition_eithers(
-    eithers: List[Either[L, R]]
-) -> Tuple[List[L], List[R]]:
+    eithers: list[Either[L, R]]
+) -> tuple[list[L], list[R]]:
     """Partition a list of Eithers into lefts and rights."""
     lefts = []
     rights = []
@@ -138,17 +138,17 @@ def partition_eithers(
 
 # IO combinators
 
-def sequence_io(ios: List[IO[T]]) -> IO[List[T]]:
+def sequence_io(ios: list[IO[T]]) -> IO[list[T]]:
     """Convert a list of IO actions into an IO of list."""
     return IO.sequence(ios)
 
 
-def map_m_io(f: Callable[[T], IO[U]], items: List[T]) -> IO[List[U]]:
+def map_m_io(f: Callable[[T], IO[U]], items: list[T]) -> IO[list[U]]:
     """Map a function returning IO over a list."""
     return sequence_io([f(item) for item in items])
 
 
-def for_m_io(items: List[T], f: Callable[[T], IO[Any]]) -> IO[None]:
+def for_m_io(items: list[T], f: Callable[[T], IO[Any]]) -> IO[None]:
     """Execute IO actions for side effects, discarding results."""
     def run_all():
         for item in items:
@@ -169,18 +169,18 @@ def local_reader(
 
 def compose_readers(
     *readers: Reader[R, Any]
-) -> Reader[R, List[Any]]:
+) -> Reader[R, list[Any]]:
     """Compose multiple Readers into a single Reader."""
-    def run_all(env: R) -> List[Any]:
+    def run_all(env: R) -> list[Any]:
         return [reader.run(env) for reader in readers]
     return Reader(run_all)
 
 
 # State combinators
 
-def sequence_state(states: List[State[S, T]]) -> State[S, List[T]]:
+def sequence_state(states: list[State[S, T]]) -> State[S, list[T]]:
     """Convert a list of State actions into a State of list."""
-    def run_all(initial_state: S) -> Tuple[List[T], S]:
+    def run_all(initial_state: S) -> tuple[list[T], S]:
         results = []
         state = initial_state
         
@@ -195,8 +195,8 @@ def sequence_state(states: List[State[S, T]]) -> State[S, List[T]]:
 
 def map_m_state(
     f: Callable[[T], State[S, U]], 
-    items: List[T]
-) -> State[S, List[U]]:
+    items: list[T]
+) -> State[S, list[U]]:
     """Map a State-returning function over a list."""
     return sequence_state([f(item) for item in items])
 

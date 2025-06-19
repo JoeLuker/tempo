@@ -1,7 +1,6 @@
 """State monad for stateful computations."""
 
-from __future__ import annotations
-from typing import TypeVar, Generic, Callable, Tuple
+from typing import TypeVar, Generic, Callable
 from dataclasses import dataclass
 
 S = TypeVar('S')  # State type
@@ -15,18 +14,18 @@ class State(Generic[S, T]):
     State monad for stateful computations.
     Represents a computation that transforms state and produces a value.
     """
-    run: Callable[[S], Tuple[T, S]]
+    run: Callable[[S], tuple[T, S]]
     
     def map(self, f: Callable[[T], U]) -> State[S, U]:
         """Transform the result value."""
-        def computation(state: S) -> Tuple[U, S]:
+        def computation(state: S) -> tuple[U, S]:
             value, new_state = self.run(state)
             return f(value), new_state
         return State(computation)
     
     def flat_map(self, f: Callable[[T], State[S, U]]) -> State[S, U]:
         """Chain stateful computations (monadic bind)."""
-        def computation(state: S) -> Tuple[U, S]:
+        def computation(state: S) -> tuple[U, S]:
             value, new_state = self.run(state)
             return f(value).run(new_state)
         return State(computation)
@@ -65,7 +64,7 @@ class State(Generic[S, T]):
         _, final_state = self.run(initial_state)
         return final_state
     
-    def run_state(self, initial_state: S) -> Tuple[T, S]:
+    def run_state(self, initial_state: S) -> tuple[T, S]:
         """Run the computation and return both value and state."""
         return self.run(initial_state)
 
@@ -74,12 +73,12 @@ class State(Generic[S, T]):
 @dataclass(frozen=True)
 class StateT(Generic[S, T]):
     """State transformer for Result monad."""
-    run: Callable[[S], 'Result[Tuple[T, S], Any]']
+    run: Callable[[S], 'Result[tuple[T, S], Any]']
     
     def map(self, f: Callable[[T], U]) -> StateT[S, U]:
         """Map over successful result."""
         from .result import Result
-        def computation(state: S) -> Result[Tuple[U, S], Any]:
+        def computation(state: S) -> Result[tuple[U, S], Any]:
             result = self.run(state)
             return result.map(lambda pair: (f(pair[0]), pair[1]))
         return StateT(computation)
@@ -87,7 +86,7 @@ class StateT(Generic[S, T]):
     def flat_map(self, f: Callable[[T], StateT[S, U]]) -> StateT[S, U]:
         """Chain StateT computations."""
         from .result import Result
-        def computation(state: S) -> Result[Tuple[U, S], Any]:
+        def computation(state: S) -> Result[tuple[U, S], Any]:
             result = self.run(state)
             if result.is_ok():
                 value, new_state = result.unwrap()

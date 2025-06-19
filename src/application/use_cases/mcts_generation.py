@@ -5,7 +5,7 @@ in the parallel generation process.
 """
 
 import torch
-from typing import List, Tuple, Optional, Dict, Any
+from typing import Optional, Any
 
 from ...domain.entities.parallel_generation import MCTSNode, MCTSState, GenerationConfig
 from ...domain.entities.token import Token
@@ -39,7 +39,7 @@ class MCTSGenerationUseCase(LoggingMixin):
         state: GenerationState,
         config: GenerationConfig,
         strategy: MCTSStrategy
-    ) -> List[Tuple[int, float]]:
+    ) -> list[tuple[int, float]]:
         """Generate tokens using MCTS.
         
         Args:
@@ -93,7 +93,7 @@ class MCTSGenerationUseCase(LoggingMixin):
         depth: int,
         c_puct: float,
         threshold: float
-    ) -> List[Tuple[int, float]]:
+    ) -> list[tuple[int, float]]:
         """Run a single MCTS simulation.
         
         Args:
@@ -151,9 +151,9 @@ class MCTSGenerationUseCase(LoggingMixin):
     
     def aggregate_mcts_results(
         self,
-        all_simulations: List[List[Tuple[int, float]]],
+        all_simulations: list[list[tuple[int, float]]],
         threshold: float
-    ) -> List[Tuple[int, float]]:
+    ) -> list[tuple[int, float]]:
         """Aggregate results from multiple MCTS simulations.
         
         Args:
@@ -164,7 +164,7 @@ class MCTSGenerationUseCase(LoggingMixin):
             Aggregated list of (token_id, probability) tuples
         """
         # Count occurrences and average probabilities
-        token_stats: Dict[int, List[float]] = {}
+        token_stats: dict[int, list[float]] = {}
         
         for simulation in all_simulations:
             for token_id, prob in simulation:

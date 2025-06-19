@@ -1,5 +1,5 @@
 import torch
-from typing import Tuple, Optional, List, Dict, Any
+from typing import Optional, Any
 from src.utils.logging_utils import LoggingMixin
 
 
@@ -49,7 +49,7 @@ class AttentionManager(LoggingMixin):
         attention_mask: torch.Tensor,
         new_token_ids: list,
         isolate_tokens: bool = True,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Create updated input tensors with the new parallel token set.
 
@@ -460,7 +460,7 @@ class AttentionManager(LoggingMixin):
         attention_mask: torch.Tensor,
         new_token_ids: list,
         isolate_tokens: bool = True,
-    ) -> Tuple[torch.Tensor, torch.Tensor, None]:
+    ) -> tuple[torch.Tensor, torch.Tensor, None]:
         """
         Handle the case when KV caching is disabled.
 
@@ -544,11 +544,11 @@ class AttentionManager(LoggingMixin):
     def _handle_multiple_tokens_with_kv_cache(
         self,
         input_ids: torch.Tensor,
-        past_key_values: List[Tuple[torch.Tensor]],
+        past_key_values: list[tuple[torch.Tensor]],
         new_token_ids: list,
         past_seq_len: int,
         isolate_tokens: bool = True,
-    ) -> Tuple[torch.Tensor, torch.Tensor, List[Tuple[torch.Tensor]]]:
+    ) -> tuple[torch.Tensor, torch.Tensor, list[tuple[torch.Tensor]]]:
         """
         Handle the case of multiple tokens with KV cache enabled.
 
@@ -660,7 +660,7 @@ class AttentionManager(LoggingMixin):
         # Store all parallel token IDs for later use
         self.current_parallel_tokens = new_token_ids
 
-    def _verify_kv_cache(self, past_key_values: List[Tuple[torch.Tensor]]) -> None:
+    def _verify_kv_cache(self, past_key_values: list[tuple[torch.Tensor]]) -> None:
         """
         Verify that the KV cache has the expected structure.
 
@@ -693,7 +693,7 @@ class AttentionManager(LoggingMixin):
 
     def _handle_single_token_with_kv_cache(
         self, input_ids: torch.Tensor, new_token_ids: list, past_seq_len: int
-    ) -> Tuple[torch.Tensor, torch.Tensor, List[Tuple[torch.Tensor]]]:
+    ) -> tuple[torch.Tensor, torch.Tensor, list[tuple[torch.Tensor]]]:
         """
         Handle a single token with KV cache enabled.
 
@@ -748,7 +748,7 @@ class AttentionManager(LoggingMixin):
         new_token_ids: list,
         is_kv_cache_disabled: bool,
         isolate_tokens: bool = True,
-    ) -> Tuple[torch.Tensor, torch.Tensor, None]:
+    ) -> tuple[torch.Tensor, torch.Tensor, None]:
         """
         Handle the case when there's no KV cache (start of generation).
 
@@ -832,7 +832,7 @@ class AttentionManager(LoggingMixin):
         input_ids: torch.Tensor,
         attention_mask: torch.Tensor,
         new_tokens_tensor: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Concatenate input tensors and validate the result.
 
@@ -950,11 +950,11 @@ class AttentionManager(LoggingMixin):
         self,
         input_ids: torch.Tensor,
         attention_mask: torch.Tensor,
-        past_key_values: Optional[List[Tuple[torch.Tensor]]],
+        past_key_values: Optional[list[tuple[torch.Tensor]]],
         new_token_ids: list,
         is_kv_cache_disabled: bool = False,
         isolate_tokens: bool = True,
-    ) -> Tuple[torch.Tensor, torch.Tensor, Optional[List[Tuple[torch.Tensor]]]]:
+    ) -> tuple[torch.Tensor, torch.Tensor, Optional[list[tuple[torch.Tensor]]]]:
         """
         More efficient update for input tensors when using KV caching.
         Improved to properly handle all tokens in parallel sets.
@@ -1166,12 +1166,12 @@ class AttentionManager(LoggingMixin):
 
             self.log(f"Token history updated with ID {token_id}{token_text}")
 
-    def get_token_history(self) -> List[int]:
+    def get_token_history(self) -> list[int]:
         """
         Get the current token history.
 
         Returns:
-            List[int]: List of token IDs in the history
+            list[int]: List of token IDs in the history
         """
         # Initialize token history if it doesn't exist
         if not hasattr(self, "token_history"):
@@ -1183,7 +1183,7 @@ class AttentionManager(LoggingMixin):
         self,
         active: bool = False,
         base_position: int = 0,
-        tokens: List[int] = None,
+        tokens: list[int] = None,
         allow_visibility: bool = False,
     ):
         """

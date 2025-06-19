@@ -4,7 +4,7 @@ This module defines immutable value objects representing tokens and token sets.
 """
 
 from dataclasses import dataclass
-from typing import Optional, List
+from typing import Optional
 
 
 @dataclass(frozen=True)
@@ -29,7 +29,7 @@ class Token:
 @dataclass(frozen=True)
 class TokenSet:
     """Immutable value object representing a set of tokens at a single position."""
-    tokens: List[Token]
+    tokens: list[Token]
     position: int
     is_parallel: bool = False
     

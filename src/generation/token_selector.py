@@ -1,5 +1,5 @@
 import torch
-from typing import List, Tuple, Optional, Any, Set
+from typing import Optional, Any
 import numpy as np
 from src.utils.logging_utils import LoggingMixin
 
@@ -31,7 +31,7 @@ class TokenSelector(LoggingMixin):
 
     def select_tokens_above_threshold(
         self, next_token_logits: torch.Tensor, threshold: float, max_tokens: int = 25
-    ) -> Tuple[List[int], List[float]]:
+    ) -> tuple[list[int], list[float]]:
         """
         Select tokens with probabilities above the threshold.
         Optimized for performance with batched tensor operations.
@@ -231,9 +231,9 @@ class TokenSelector(LoggingMixin):
         self,
         next_token_logits: torch.Tensor,
         threshold: float,
-        exclude_tokens: List[int],
+        exclude_tokens: list[int],
         max_tokens: int = 25,
-    ) -> Tuple[List[int], List[float]]:
+    ) -> tuple[list[int], list[float]]:
         """
         Select tokens above threshold while excluding specific tokens.
         Useful for avoiding repetition loops.
@@ -336,8 +336,8 @@ class TokenSelector(LoggingMixin):
         self,
         next_token_logits: torch.Tensor,
         top_k: int = 5,
-        exclude_tokens: Optional[List[int]] = None,
-    ) -> Tuple[List[int], List[float]]:
+        exclude_tokens: Optional[list[int]] = None,
+    ) -> tuple[list[int], list[float]]:
         """
         Select top-k tokens by probability.
         Useful as a fallback when threshold-based selection returns nothing.
@@ -420,7 +420,7 @@ class TokenSelector(LoggingMixin):
         """
         return token_id == self.eos_token_id
 
-    def all_are_eos_tokens(self, token_ids: List[int]) -> bool:
+    def all_are_eos_tokens(self, token_ids: list[int]) -> bool:
         """
         Vectorized check if all tokens in a list are EOS tokens.
 
@@ -444,11 +444,11 @@ class TokenSelector(LoggingMixin):
 
     def filter_repetitive_tokens(
         self,
-        token_ids: List[int],
-        token_probs: List[float],
-        last_n_tokens: List[int],
+        token_ids: list[int],
+        token_probs: list[float],
+        last_n_tokens: list[int],
         repetition_penalty: float = 0.9,
-    ) -> Tuple[List[int], List[float]]:
+    ) -> tuple[list[int], list[float]]:
         """
         Filter out tokens that would create repetitive sequences.
 
@@ -505,7 +505,7 @@ class TokenSelector(LoggingMixin):
         # No repetition detected, return original arrays
         return token_ids, token_probs
 
-    def decode_tokens(self, token_ids: List[int]) -> List[str]:
+    def decode_tokens(self, token_ids: list[int]) -> list[str]:
         """
         Decode token IDs to human-readable strings.
 
@@ -513,7 +513,7 @@ class TokenSelector(LoggingMixin):
             token_ids: NumPy array or list of token IDs
 
         Returns:
-            List[str]: Decoded token texts
+            list[str]: Decoded token texts
         """
         # Ensure we're working with Python integers for tokenizer compatibility
         if isinstance(token_ids, np.ndarray):
@@ -532,7 +532,7 @@ class TokenSelector(LoggingMixin):
 
     def select_tokens(
         self, next_token_logits: torch.Tensor, threshold: float, max_tokens: int = 25
-    ) -> Tuple[List[Tuple[torch.Tensor, float]], int]:
+    ) -> tuple[list[tuple[torch.Tensor, float]], int]:
         """
         Select tokens with probabilities above the threshold.
         This is a wrapper around select_tokens_above_threshold that returns the format

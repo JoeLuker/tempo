@@ -9,7 +9,7 @@ import time
 import functools
 import traceback
 import inspect
-from typing import Dict, Any, Optional, Union, List, Callable, Type, TypeVar, Tuple
+from typing import Any, Optional, Union, Callable, TypeVar
 from contextlib import contextmanager
 
 from src.utils.error_manager import (
@@ -37,7 +37,7 @@ T = TypeVar("T")
 def handle_exceptions(
     error_message: str = "An error occurred",
     error_code: ErrorCode = ErrorCode.UNKNOWN_ERROR,
-    error_class: Type[TempoError] = TempoError,
+    error_class: type[TempoError] = TempoError,
     reraise: bool = True,
     log_level: str = "error",
     default_return: Any = None,
@@ -204,10 +204,10 @@ def retry(
     max_attempts: int = 3,
     retry_delay: float = 1.0,
     backoff_factor: float = 2.0,
-    exceptions: Union[Type[Exception], Tuple[Type[Exception], ...]] = Exception,
+    exceptions: Union[type[Exception], tuple[type[Exception], ...]] = Exception,
     error_message: str = "Operation failed after multiple retries",
     error_code: ErrorCode = ErrorCode.UNKNOWN_ERROR,
-    error_class: Type[TempoError] = TempoError,
+    error_class: type[TempoError] = TempoError,
 ) -> Callable[[Callable[..., T]], Callable[..., T]]:
     """
     Decorator for retrying a function on exception.
@@ -279,7 +279,7 @@ def exception_context(
     operation_name: str,
     error_message: Optional[str] = None,
     error_code: ErrorCode = ErrorCode.UNKNOWN_ERROR,
-    error_class: Type[TempoError] = TempoError,
+    error_class: type[TempoError] = TempoError,
 ):
     """
     Context manager for handling exceptions in a standardized way.

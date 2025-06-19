@@ -5,7 +5,6 @@ in the token generation pipeline.
 """
 
 import time
-from typing import Dict
 from src.utils.logging_utils import LoggingMixin
 from src.domain.interfaces.performance_tracker import PerformanceTrackerInterface
 

@@ -4,7 +4,7 @@ This module provides an adapter for HuggingFace tokenizers,
 implementing the TokenizerInterface from the domain layer.
 """
 
-from typing import List, Optional, Tuple
+from typing import Optional
 import torch
 import time
 from src.utils.logging_utils import LoggingMixin
@@ -123,7 +123,7 @@ class TokenizerAdapter(LoggingMixin, TokenizerInterface):
         
         return result
     
-    def decode_tokens(self, token_ids: List[int]) -> List[str]:
+    def decode_tokens(self, token_ids: list[int]) -> list[str]:
         """Decode a list of token IDs to text.
         
         Args:

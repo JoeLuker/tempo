@@ -9,7 +9,7 @@ default values, with proper validation and documentation.
 import os
 import json
 import logging
-from typing import Dict, Any, Optional, Union, List, Set, Literal
+from typing import Any, Optional, Union, Literal
 from pathlib import Path
 from dataclasses import dataclass, field, asdict
 
@@ -112,7 +112,7 @@ class ApiConfig:
 
     host: str = "0.0.0.0"
     port: int = 8000
-    cors_origins: List[str] = field(default_factory=lambda: ["*"])
+    cors_origins: list[str] = field(default_factory=lambda: ["*"])
     debug: bool = False
     enable_docs: bool = True
     api_version: str = "v2"
@@ -131,7 +131,7 @@ class DebugConfig:
     """Configuration settings for debugging."""
 
     global_debug: bool = False
-    module_debug: Dict[str, bool] = field(default_factory=dict)
+    module_debug: dict[str, bool] = field(default_factory=dict)
 
     def is_debug_enabled(self, module_name: str) -> bool:
         """
@@ -266,12 +266,12 @@ class TempoConfig:
         except Exception as e:
             raise ConfigurationError(f"Error loading configuration: {e}")
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """
         Convert configuration to a dictionary.
 
         Returns:
-            Dict[str, Any]: Configuration as a nested dictionary
+            dict[str, Any]: Configuration as a nested dictionary
         """
         return {
             "logging": asdict(self.logging),

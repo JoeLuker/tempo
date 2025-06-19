@@ -3,7 +3,7 @@
 This module defines the interface for token generation operations.
 """
 
-from typing import Protocol, Optional, Tuple
+from typing import Protocol, Optional
 import torch
 from abc import abstractmethod
 
@@ -30,7 +30,7 @@ class TokenGeneratorInterface(Protocol):
     @abstractmethod
     def generate_logits_with_cache(self, 
                                    state: GenerationState, 
-                                   custom_attention_mask: Optional[torch.Tensor] = None) -> Tuple[TokenLogits, GenerationState]:
+                                   custom_attention_mask: Optional[torch.Tensor] = None) -> tuple[TokenLogits, GenerationState]:
         """Generate logits and update the generation state with new KV cache.
         
         Args:
@@ -46,7 +46,7 @@ class TokenGeneratorInterface(Protocol):
     def generate_logits_for_isolated_parallel(self,
                                               state: GenerationState,
                                               num_parallel_tokens: int,
-                                              custom_attention_mask: Optional[torch.Tensor] = None) -> Tuple[TokenLogits, GenerationState]:
+                                              custom_attention_mask: Optional[torch.Tensor] = None) -> tuple[TokenLogits, GenerationState]:
         """Optimized logit generation for isolated parallel tokens.
         
         Since isolated tokens can't see each other, we only need to compute

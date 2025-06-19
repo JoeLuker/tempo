@@ -3,7 +3,7 @@
 This module defines the interface for caching and retrieving attention patterns.
 """
 
-from typing import Protocol, Optional, Tuple
+from typing import Protocol, Optional
 from abc import abstractmethod
 
 from ..entities.generation_state import AttentionPattern
@@ -23,7 +23,7 @@ class AttentionCacheInterface(Protocol):
         ...
     
     @abstractmethod
-    def get_cached_attention(self) -> Optional[Tuple[AttentionPattern, int]]:
+    def get_cached_attention(self) -> Optional[tuple[AttentionPattern, int]]:
         """Retrieve the most recently cached attention patterns.
         
         Returns:

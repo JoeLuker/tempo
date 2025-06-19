@@ -4,7 +4,7 @@ This module implements caching for decoded token text to avoid
 redundant decoding operations.
 """
 
-from typing import Dict, Optional, List, Tuple
+from typing import Optional
 from src.utils.logging_utils import LoggingMixin
 
 
@@ -18,7 +18,7 @@ class DecodeCache(LoggingMixin):
             max_size: Maximum number of tokens to cache
         """
         super().__init__()
-        self.cache: Dict[int, str] = {}
+        self.cache: dict[int, str] = {}
         self.max_size = max_size
         self.hits = 0
         self.misses = 0
@@ -45,7 +45,7 @@ class DecodeCache(LoggingMixin):
         self.misses += 1
         return None
     
-    def get_batch(self, token_ids: List[int]) -> Tuple[List[Optional[str]], List[int]]:
+    def get_batch(self, token_ids: list[int]) -> tuple[list[Optional[str]], list[int]]:
         """Get cached decoded text for multiple token IDs.
         
         Args:
@@ -88,7 +88,7 @@ class DecodeCache(LoggingMixin):
         
         self.cache[token_key] = text
     
-    def put_batch(self, token_ids: List[int], texts: List[str]) -> None:
+    def put_batch(self, token_ids: list[int], texts: list[str]) -> None:
         """Cache decoded text for multiple token IDs.
         
         Args:
@@ -108,7 +108,7 @@ class DecodeCache(LoggingMixin):
         if self.debug_mode:
             self.log("Cleared decode cache")
     
-    def get_stats(self) -> Dict[str, float]:
+    def get_stats(self) -> dict[str, float]:
         """Get cache statistics.
         
         Returns:

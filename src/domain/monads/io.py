@@ -1,6 +1,5 @@
 """IO monad for handling side effects functionally."""
 
-from __future__ import annotations
 from typing import TypeVar, Generic, Callable, Any
 from dataclasses import dataclass
 import logging

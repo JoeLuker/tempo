@@ -3,7 +3,7 @@
 This module defines the interface for tokenization operations.
 """
 
-from typing import Protocol, List
+from typing import Protocol
 from abc import abstractmethod
 
 from ..entities.generation_state import TokenizationResult
@@ -25,7 +25,7 @@ class TokenizerInterface(Protocol):
         ...
     
     @abstractmethod
-    def decode_tokens(self, token_ids: List[int]) -> List[str]:
+    def decode_tokens(self, token_ids: list[int]) -> list[str]:
         """Decode a list of token IDs to text.
         
         Args:

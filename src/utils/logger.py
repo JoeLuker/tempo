@@ -15,7 +15,7 @@ import traceback
 import threading
 import functools
 import inspect
-from typing import Dict, Any, Optional, Union, List, Callable, Tuple
+from typing import Any, Optional, Union, Callable
 from logging.handlers import RotatingFileHandler, QueueHandler, QueueListener
 from queue import Queue
 from pathlib import Path
@@ -554,7 +554,7 @@ def clear_global_context(keys=None):
 
 # Module-level functions
 
-_loggers: Dict[str, TempoLogger] = {}
+_loggers: dict[str, TempoLogger] = {}
 
 
 def get_logger(name: str) -> TempoLogger:

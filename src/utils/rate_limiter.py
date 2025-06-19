@@ -6,7 +6,7 @@ against excessive usage and ensure fair resource allocation.
 """
 
 import time
-from typing import Dict, List, Optional, Tuple, Union, Callable
+from typing import Optional, Union, Callable
 from datetime import datetime, timedelta
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.base import BaseHTTPMiddleware
@@ -83,7 +83,7 @@ class RateLimiter:
     def __init__(self):
         """Initialize the rate limiter."""
         # Map client identifiers to token buckets
-        self.buckets: Dict[str, TokenBucket] = {}
+        self.buckets: dict[str, TokenBucket] = {}
 
         # Default limits
         self.default_capacity = 60  # 60 requests
@@ -91,14 +91,14 @@ class RateLimiter:
         self.default_refill_time = 60  # 1 minute
 
         # Endpoint-specific limits
-        self.endpoint_limits: Dict[str, Tuple[int, float, int]] = {
+        self.endpoint_limits: dict[str, tuple[int, float, int]] = {
             # path: (capacity, refill_rate, refill_time)
             "/api/v2/generate": (10, 10, 60),  # 10 requests per minute for generation
         }
 
     def check_rate_limit(
         self, client_id: str, endpoint: str, tokens: int = 1
-    ) -> Tuple[bool, Optional[Dict]]:
+    ) -> tuple[bool, Optional[Dict]]:
         """
         Check if a client has exceeded the rate limit for an endpoint.
 

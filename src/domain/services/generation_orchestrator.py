@@ -5,7 +5,7 @@ coordinating between various components while maintaining domain logic.
 """
 
 import time
-from typing import List, Dict, Tuple, Optional, Any
+from typing import Optional, Any
 import torch
 
 from ..entities.parallel_generation import (
@@ -35,7 +35,7 @@ class GenerationOrchestrator(LoggingMixin):
         self.setup_logging("generation_orchestrator", "orchestrator.log", debug_mode)
         
         # Track logical layout of parallel tokens
-        self.logical_layout: List[LogicalPosition] = []
+        self.logical_layout: list[LogicalPosition] = []
         
         # Initialize coordinators
         self.sequence_tracker = SequenceTracker(debug_mode)
@@ -48,7 +48,7 @@ class GenerationOrchestrator(LoggingMixin):
         strategy: GenerationStrategy,
         token_generator: TokenGeneratorInterface,
         retroactive_remover: Optional[Any] = None
-    ) -> Tuple[GenerationResult, GenerationState]:
+    ) -> tuple[GenerationResult, GenerationState]:
         """Orchestrate the parallel text generation process.
         
         This method coordinates the generation process, managing state,
@@ -74,8 +74,8 @@ class GenerationOrchestrator(LoggingMixin):
         self.logical_layout = [LogicalPosition(0, 0, initial_state.sequence_length - 1)]
         
         # Track token sets for visualization
-        all_original_token_sets: Dict[int, List[Tuple[int, float]]] = {}
-        all_surviving_token_sets: Dict[int, List[Tuple[int, float]]] = {}
+        all_original_token_sets: dict[int, list[tuple[int, float]]] = {}
+        all_surviving_token_sets: dict[int, list[tuple[int, float]]] = {}
         
         # Current state
         current_state = initial_state
@@ -189,7 +189,7 @@ class GenerationOrchestrator(LoggingMixin):
         
         return result, current_state
     
-    def get_sequence_metrics(self) -> Dict[str, Any]:
+    def get_sequence_metrics(self) -> dict[str, Any]:
         """Get metrics about the generation sequence."""
         metrics = self.sequence_tracker.get_metrics()
         metrics["logical_layout_size"] = len(self.logical_layout)

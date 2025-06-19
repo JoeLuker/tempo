@@ -4,7 +4,7 @@ This module implements the TokenGeneratorInterface, coordinating
 between the model, tokenizer, caches, and other infrastructure components.
 """
 
-from typing import Optional, Tuple, List, Any
+from typing import Optional, Any
 import torch
 import time
 from src.utils.logging_utils import LoggingMixin
@@ -87,7 +87,7 @@ class TokenGeneratorImpl(LoggingMixin, TokenGeneratorInterface):
     
     def generate_logits_with_cache(self,
                                    state: GenerationState,
-                                   custom_attention_mask: Optional[torch.Tensor] = None) -> Tuple[TokenLogits, GenerationState]:
+                                   custom_attention_mask: Optional[torch.Tensor] = None) -> tuple[TokenLogits, GenerationState]:
         """Generate logits and update the generation state with new KV cache.
         
         Args:
@@ -170,7 +170,7 @@ class TokenGeneratorImpl(LoggingMixin, TokenGeneratorInterface):
     def generate_logits_for_isolated_parallel(self,
                                               state: GenerationState,
                                               num_parallel_tokens: int,
-                                              custom_attention_mask: Optional[torch.Tensor] = None) -> Tuple[TokenLogits, GenerationState]:
+                                              custom_attention_mask: Optional[torch.Tensor] = None) -> tuple[TokenLogits, GenerationState]:
         """Optimized logit generation for isolated parallel tokens.
         
         Since isolated tokens can't see each other, we only need to compute
@@ -257,7 +257,7 @@ class TokenGeneratorImpl(LoggingMixin, TokenGeneratorInterface):
         
         return token_logits, updated_state
     
-    def get_cached_attention(self) -> Optional[Tuple[AttentionPattern, int]]:
+    def get_cached_attention(self) -> Optional[tuple[AttentionPattern, int]]:
         """Get the most recently cached attention patterns.
         
         Returns:

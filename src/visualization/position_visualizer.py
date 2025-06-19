@@ -1,8 +1,11 @@
 import matplotlib.pyplot as plt
 import numpy as np
 import seaborn as sns
-from typing import Dict, List, Any
+from typing import Any
 from pathlib import Path
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class PositionVisualizer:
@@ -14,7 +17,7 @@ class PositionVisualizer:
         """Initialize the position visualizer."""
         pass
 
-    def visualize_position_tokens(self, results: Dict[str, Any], output_dir: Path):
+    def visualize_position_tokens(self, results: dict[str, Any], output_dir: Path):
         """
         Visualize tokens at each position.
 
@@ -23,7 +26,7 @@ class PositionVisualizer:
             output_dir: Directory to save visualizations
         """
         if "position_to_tokens" not in results:
-            print("Position information not found in results.")
+            logger.warning("Position information not found in results.")
             return
 
         position_to_tokens = results["position_to_tokens"]
@@ -38,7 +41,7 @@ class PositionVisualizer:
 
         # Skip visualization if no generation positions
         if not generation_positions or len(token_counts) <= prompt_len:
-            print("No generation positions to visualize.")
+            logger.warning("No generation positions to visualize.")
             return
 
         # Create figure
@@ -57,7 +60,7 @@ class PositionVisualizer:
         # Create a matrix representation
         max_tokens = max(token_counts[prompt_len:]) if token_counts[prompt_len:] else 0
         if max_tokens == 0:
-            print("No tokens to visualize in the heatmap.")
+            logger.warning("No tokens to visualize in the heatmap.")
             plt.text(0.5, 0.5, "No tokens to visualize", ha="center", va="center")
         else:
             token_matrix = np.zeros((len(generation_positions), max_tokens))
@@ -91,7 +94,7 @@ class PositionVisualizer:
         plt.savefig(output_dir / "position_tokens.png")
         plt.close()
 
-    def visualize_token_probabilities(self, results: Dict[str, Any], output_dir: Path):
+    def visualize_token_probabilities(self, results: dict[str, Any], output_dir: Path):
         """
         Visualize token probabilities across positions.
 
@@ -100,7 +103,7 @@ class PositionVisualizer:
             output_dir: Directory to save visualizations
         """
         if "parallel_sets" not in results:
-            print("Parallel sets information not found in results.")
+            logger.warning("Parallel sets information not found in results.")
             return
 
         parallel_sets = results["parallel_sets"]
@@ -146,7 +149,7 @@ class PositionVisualizer:
         plt.savefig(output_dir / "token_probabilities.png")
         plt.close()
 
-    def visualize_parallel_sets(self, results: Dict[str, Any], output_dir: Path):
+    def visualize_parallel_sets(self, results: dict[str, Any], output_dir: Path):
         """
         Visualize the parallel sets of tokens.
 
@@ -155,7 +158,7 @@ class PositionVisualizer:
             output_dir: Directory to save visualizations
         """
         if "parallel_sets" not in results:
-            print("Parallel sets information not found in results.")
+            logger.warning("Parallel sets information not found in results.")
             return
 
         parallel_sets = results["parallel_sets"]

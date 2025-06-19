@@ -1,7 +1,7 @@
 import torch
 import math
 import warnings
-from typing import List, Tuple, Optional, Dict, Any, Set
+from typing import Optional, Any
 from src.utils.logging_utils import LoggingMixin
 
 
@@ -310,7 +310,7 @@ class RoPEModifier(LoggingMixin):
 
         return custom_forward
 
-    def register_parallel_positions(self, position_mapping: Dict[int, int]):
+    def register_parallel_positions(self, position_mapping: dict[int, int]):
         """
         Register position mapping for parallel tokens.
         Maps physical token positions to their logical positions.
@@ -502,7 +502,7 @@ class RoPEModifier(LoggingMixin):
             print("RoPE modifier linked with token generator")
 
     def add_parallel_position_mappings(
-        self, position_idx: int, virtual_positions: List[int]
+        self, position_idx: int, virtual_positions: list[int]
     ):
         """
         Add mappings for parallel token positions at a specific index.

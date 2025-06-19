@@ -5,7 +5,7 @@ This module provides tools for generating comprehensive API documentation,
 including examples, use cases, and detailed explanations of parameters.
 """
 
-from typing import Dict, List, Any, Optional
+from typing import Any, Optional
 from datetime import datetime
 
 
@@ -314,7 +314,7 @@ Retry-After: 60
     }
 
     @classmethod
-    def get_section(cls, section_name: str) -> Dict[str, Any]:
+    def get_section(cls, section_name: str) -> dict[str, Any]:
         """
         Get documentation content for a specific section.
 
@@ -333,7 +333,7 @@ Retry-After: 60
         }
 
     @classmethod
-    def get_all_sections(cls) -> Dict[str, Dict[str, str]]:
+    def get_all_sections(cls) -> dict[str, dict[str, str]]:
         """
         Get all documentation sections.
 
@@ -343,7 +343,7 @@ Retry-After: 60
         return cls.docs
 
     @classmethod
-    def get_section_list(cls) -> List[Dict[str, str]]:
+    def get_section_list(cls) -> list[dict[str, str]]:
         """
         Get a list of available documentation sections.
 

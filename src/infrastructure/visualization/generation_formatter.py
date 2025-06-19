@@ -5,7 +5,7 @@ visualization and clean text extraction.
 """
 
 import re
-from typing import List, Dict, Tuple, Optional, Any
+from typing import Optional, Any
 from dataclasses import dataclass
 
 from ...domain.entities.parallel_generation import LogicalPosition
@@ -39,10 +39,10 @@ class GenerationFormatter(LoggingMixin):
     def format_using_layout(
         self,
         prompt: str,
-        input_ids: List[int],
-        logical_layout: List[LogicalPosition],
+        input_ids: list[int],
+        logical_layout: list[LogicalPosition],
         prompt_length: int,
-        all_original_token_sets: Dict[int, List[Tuple[int, float]]],
+        all_original_token_sets: dict[int, list[tuple[int, float]]],
         options: Optional[FormattingOptions] = None
     ) -> str:
         """Format text using logical layout information.
@@ -152,7 +152,7 @@ class GenerationFormatter(LoggingMixin):
     
     def format_parallel_tokens(
         self,
-        tokens: List[Tuple[int, str, float]],
+        tokens: list[tuple[int, str, float]],
         options: Optional[FormattingOptions] = None
     ) -> str:
         """Format a list of parallel tokens.
@@ -203,9 +203,9 @@ class GenerationFormatter(LoggingMixin):
     
     def format_visualization_data(
         self,
-        token_sets: List[Tuple[int, Tuple[List[int], List[float]], Tuple[List[int], List[float]]]],
+        token_sets: list[tuple[int, tuple[list[int], list[float]], tuple[list[int], list[float]]]],
         tokenizer: Any
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """Format token sets for visualization.
         
         Args:
@@ -252,9 +252,9 @@ class GenerationFormatter(LoggingMixin):
     
     def create_tree_structure(
         self,
-        logical_layout: List[LogicalPosition],
-        token_sets: Dict[int, List[Tuple[int, float]]]
-    ) -> Dict[str, Any]:
+        logical_layout: list[LogicalPosition],
+        token_sets: dict[int, list[tuple[int, float]]]
+    ) -> dict[str, Any]:
         """Create tree structure for visualization.
         
         Args:

@@ -3,7 +3,7 @@
 This module handles tracking of sequence lengths and generation progress.
 """
 
-from typing import List, Dict, Any, Optional, Callable
+from typing import Any, Optional, Callable
 from ...utils.logging_utils import LoggingMixin
 
 
@@ -22,7 +22,7 @@ class SequenceTracker(LoggingMixin):
         self.sequence_length = 0
         self.initial_prompt_length = 0
         self.step_count = 0
-        self.sequence_length_history: List[int] = []
+        self.sequence_length_history: list[int] = []
     
     def initialize(self, prompt_length: int) -> None:
         """Initialize sequence tracking with prompt length.
@@ -58,7 +58,7 @@ class SequenceTracker(LoggingMixin):
                 except Exception as e:
                     self.log(f"Error in sequence callback: {e}", "error")
     
-    def get_metrics(self) -> Dict[str, Any]:
+    def get_metrics(self) -> dict[str, Any]:
         """Get metrics about the generation sequence.
         
         Returns:

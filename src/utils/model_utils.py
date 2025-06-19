@@ -9,7 +9,7 @@ import os
 import time
 import torch
 import logging
-from typing import Dict, Any, Optional, Tuple, Union, List
+from typing import Any, Optional, Union
 from pathlib import Path
 
 from transformers import (
@@ -129,7 +129,7 @@ def load_model(
     attn_implementation: str = "eager",
     load_tokenizer: bool = True,
     **kwargs,
-) -> Union[PreTrainedModel, Tuple[PreTrainedModel, PreTrainedTokenizer]]:
+) -> Union[PreTrainedModel, tuple[PreTrainedModel, PreTrainedTokenizer]]:
     """
     Load a model and optionally its tokenizer using a consistent approach.
 
@@ -271,7 +271,7 @@ def load_tempo_components(
     load_parallel_generator: bool = True,
     debug_mode: bool = False,
     **kwargs,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Load all TEMPO components required for generation.
 
@@ -361,7 +361,7 @@ def load_tempo_components(
     error_message="Failed to check for quantization support",
     error_code=ErrorCode.MODEL_LOAD_FAILED,
 )
-def check_quantization_support() -> Dict[str, bool]:
+def check_quantization_support() -> dict[str, bool]:
     """
     Check which quantization methods are supported in the current environment.
 
@@ -424,7 +424,7 @@ def check_quantization_support() -> Dict[str, bool]:
 )
 def load_quantized_model(
     model_id: str = None, quantization: str = None, device: str = None, **kwargs
-) -> Tuple[PreTrainedModel, PreTrainedTokenizer]:
+) -> tuple[PreTrainedModel, PreTrainedTokenizer]:
     """
     Load a quantized model using the specified quantization method.
 
@@ -520,7 +520,7 @@ def load_quantized_model(
         )
 
 
-def get_model_info(model: PreTrainedModel) -> Dict[str, Any]:
+def get_model_info(model: PreTrainedModel) -> dict[str, Any]:
     """
     Get information about a loaded model.
 

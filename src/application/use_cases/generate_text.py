@@ -6,7 +6,7 @@ using the parallel token generation approach.
 
 import time
 import torch
-from typing import Dict, Any, Optional
+from typing import Any, Optional
 
 from ...domain.entities.parallel_generation import GenerationConfig, GenerationResult
 from ...domain.entities.generation_state import GenerationState, TokenizationResult
@@ -202,8 +202,8 @@ class GenerateTextUseCase(LoggingMixin):
     
     def _build_visualization_data(
         self,
-        original_sets: Dict[int, list],
-        surviving_sets: Dict[int, list]
+        original_sets: dict[int, list],
+        surviving_sets: dict[int, list]
     ) -> list:
         """Build visualization data from token sets."""
         viz_data = []

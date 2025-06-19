@@ -6,7 +6,7 @@ for exploring token selection strategies.
 
 import math
 import torch
-from typing import List, Optional, Tuple, Dict
+from typing import Optional
 import numpy as np
 
 from ...domain.entities.parallel_generation import MCTSNode
@@ -113,7 +113,7 @@ class MCTSSearchStrategy(MCTSStrategy, LoggingMixin):
         
         return current
     
-    def expand_node(self, node: MCTSNode, logits: TokenLogits) -> List[MCTSNode]:
+    def expand_node(self, node: MCTSNode, logits: TokenLogits) -> list[MCTSNode]:
         """Expand a node by adding children.
         
         Args:
@@ -202,7 +202,7 @@ class MCTSSearchStrategy(MCTSStrategy, LoggingMixin):
             current.update(value)
             current = current.parent
     
-    def get_best_tokens(self, root: MCTSNode, threshold: float) -> List[Tuple[int, float]]:
+    def get_best_tokens(self, root: MCTSNode, threshold: float) -> list[tuple[int, float]]:
         """Get best tokens from MCTS tree.
         
         Args:
@@ -269,7 +269,7 @@ class MCTSSearchStrategy(MCTSStrategy, LoggingMixin):
         
         return exploitation + exploration + prior_weight
     
-    def get_tree_statistics(self, root: MCTSNode) -> Dict[str, any]:
+    def get_tree_statistics(self, root: MCTSNode) -> dict[str, any]:
         """Get statistics about the MCTS tree.
         
         Args:

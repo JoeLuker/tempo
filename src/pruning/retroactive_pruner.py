@@ -1,7 +1,7 @@
 import torch
 import numpy as np
 import math
-from typing import Dict, List, Tuple, Optional
+from typing import Optional
 import traceback
 
 from .dynamic_threshold import DynamicThresholdManager
@@ -197,9 +197,9 @@ class RetroactiveRemover:
     def retroactively_remove(
         self,
         prompt_length: int,
-        all_parallel_tokens: Dict[int, List[Tuple[int, float]]],
+        all_parallel_tokens: dict[int, list[tuple[int, float]]],
         step: Optional[int] = None,
-    ) -> Dict[int, List[Tuple[int, float]]]:
+    ) -> dict[int, list[tuple[int, float]]]:
         """
         Retroactively remove previous parallel sets based on newest token's attention.
 
@@ -209,7 +209,7 @@ class RetroactiveRemover:
             step: Current generation step (source of truth)
 
         Returns:
-            Dict[int, List[Tuple[int, float]]]: Tokens that SURVIVED removal
+            dict[int, list[tuple[int, float]]]: Tokens that SURVIVED removal
         """
         if self.debug_mode:
             print(f"\nRetroactive removal at step {step}")

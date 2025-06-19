@@ -6,7 +6,7 @@ This module orchestrates the text generation process using clean architecture pr
 import logging
 import time
 import traceback
-from typing import Dict, Any, Optional
+from typing import Any, Optional
 
 from src.presentation.api.models.requests import GenerationRequest
 from src.presentation.api.models.responses import GenerationResponse
@@ -164,7 +164,7 @@ class GenerationService:
     def _perform_generation(
         self, request: GenerationRequest, generator, 
         retroactive_remover, system_content: Optional[str]
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Perform the actual text generation."""
         try:
             return generator.generate(

@@ -1,5 +1,5 @@
 import argparse
-from typing import Dict, Any
+from typing import Any
 
 
 class ArgumentParser:
@@ -8,12 +8,12 @@ class ArgumentParser:
     """
 
     @staticmethod
-    def parse_args() -> Dict[str, Any]:
+    def parse_args() -> dict[str, Any]:
         """
         Parse command line arguments.
 
         Returns:
-            Dict[str, Any]: Dictionary of parsed arguments
+            dict[str, Any]: Dictionary of parsed arguments
         """
         parser = argparse.ArgumentParser(
             description="Run parallel text generation with TEMPO"

@@ -4,7 +4,7 @@ This module implements the standard threshold-based token selection strategy.
 """
 
 import torch
-from typing import List, Optional, Any
+from typing import Optional, Any
 
 from ...domain.entities.token import TokenSet, Token
 from ...domain.entities.logits import TokenLogits

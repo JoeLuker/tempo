@@ -4,7 +4,7 @@ This module provides a unified interface for managing prompt, decode,
 and attention caches.
 """
 
-from typing import Optional, List, Tuple
+from typing import Optional
 import torch
 from src.utils.logging_utils import LoggingMixin
 from src.domain.entities.generation_state import TokenizationResult, AttentionPattern
@@ -88,7 +88,7 @@ class CacheManager(LoggingMixin, CacheManagerInterface):
         """
         self.decode_cache.put(token_id, text)
     
-    def get_decoded_tokens_batch(self, token_ids: List[int]) -> Tuple[List[Optional[str]], List[int]]:
+    def get_decoded_tokens_batch(self, token_ids: list[int]) -> tuple[list[Optional[str]], list[int]]:
         """Get cached decoded text for multiple token IDs.
         
         Args:
@@ -99,7 +99,7 @@ class CacheManager(LoggingMixin, CacheManagerInterface):
         """
         return self.decode_cache.get_batch(token_ids)
     
-    def cache_decoded_tokens_batch(self, token_ids: List[int], texts: List[str]) -> None:
+    def cache_decoded_tokens_batch(self, token_ids: list[int], texts: list[str]) -> None:
         """Cache decoded text for multiple token IDs.
         
         Args:
@@ -109,7 +109,7 @@ class CacheManager(LoggingMixin, CacheManagerInterface):
         self.decode_cache.put_batch(token_ids, texts)
     
     # Attention cache operations
-    def cache_attention(self, attention_layers: List[torch.Tensor], sequence_length: int) -> None:
+    def cache_attention(self, attention_layers: list[torch.Tensor], sequence_length: int) -> None:
         """Cache attention patterns from a forward pass.
         
         Args:
@@ -118,7 +118,7 @@ class CacheManager(LoggingMixin, CacheManagerInterface):
         """
         self.attention_cache.cache(attention_layers, sequence_length)
     
-    def get_cached_attention(self) -> Optional[Tuple[AttentionPattern, int]]:
+    def get_cached_attention(self) -> Optional[tuple[AttentionPattern, int]]:
         """Get cached attention patterns.
         
         Returns:

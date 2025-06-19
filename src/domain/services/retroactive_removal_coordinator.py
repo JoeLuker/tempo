@@ -4,7 +4,7 @@ This module handles coordination of retroactive removal of tokens
 based on attention patterns.
 """
 
-from typing import Dict, List, Tuple, Any, Optional
+from typing import Any, Optional
 from ...utils.logging_utils import LoggingMixin
 
 
@@ -24,9 +24,9 @@ class RetroactiveRemovalCoordinator(LoggingMixin):
         self,
         remover: Any,
         prompt_length: int,
-        all_token_sets: Dict[int, List[Tuple[int, float]]],
+        all_token_sets: dict[int, list[tuple[int, float]]],
         current_step: int
-    ) -> Dict[int, List[Tuple[int, float]]]:
+    ) -> dict[int, list[tuple[int, float]]]:
         """Apply retroactive removal to historical token sets.
         
         Args:
@@ -74,8 +74,8 @@ class RetroactiveRemovalCoordinator(LoggingMixin):
     
     def _count_removed_tokens(
         self,
-        original_sets: Dict[int, List[Tuple[int, float]]],
-        surviving_sets: Dict[int, List[Tuple[int, float]]],
+        original_sets: dict[int, list[tuple[int, float]]],
+        surviving_sets: dict[int, list[tuple[int, float]]],
         up_to_step: int
     ) -> int:
         """Count the number of tokens removed.

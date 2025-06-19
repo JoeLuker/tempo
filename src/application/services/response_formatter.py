@@ -4,7 +4,7 @@ This module handles the formatting of generation results into API responses.
 """
 
 import logging
-from typing import Dict, Any, List, Tuple
+from typing import Any
 from src.presentation.api.models.responses import (
     TokenInfo, StepInfo, RetroactiveRemovalInfo, 
     TimingInfo, ModelInfo, GenerationResponse
@@ -25,7 +25,7 @@ class ResponseFormatter:
     def format_response(
         self,
         request: GenerationRequest,
-        generation_result: Dict[str, Any],
+        generation_result: dict[str, Any],
         elapsed_time: float,
         system_content: str,
         tokenizer: Any,
@@ -74,7 +74,7 @@ class ResponseFormatter:
             logger.error(f"Error formatting response: {e}")
             raise Exception(f"Failed to format generation response: {str(e)}")
     
-    def _log_debug_info(self, text_outputs: Dict[str, str]) -> None:
+    def _log_debug_info(self, text_outputs: dict[str, str]) -> None:
         """Log debug information about text outputs."""
         logger.debug(f"Generated text length: {len(text_outputs.get('generated_text', ''))}")
         logger.debug(f"Raw text length: {len(text_outputs.get('raw_generated_text', ''))}")
@@ -84,8 +84,8 @@ class ResponseFormatter:
     def _create_base_response(
         self,
         request: GenerationRequest,
-        generation_result: Dict[str, Any],
-        text_outputs: Dict[str, str],
+        generation_result: dict[str, Any],
+        text_outputs: dict[str, str],
         elapsed_time: float,
         system_content: str,
         device: str
@@ -139,7 +139,7 @@ class ResponseFormatter:
     def _process_token_sets(
         self,
         response: GenerationResponse,
-        generation_result: Dict[str, Any],
+        generation_result: dict[str, Any],
         tokenizer: Any
     ) -> None:
         """Process token sets data for the response."""
@@ -171,7 +171,7 @@ class ResponseFormatter:
         self,
         step_data: Any,
         tokenizer: Any
-    ) -> Tuple[StepInfo, Tuple, Tuple]:
+    ) -> tuple[StepInfo, Tuple, Tuple]:
         """Process a single step's token data."""
         if not isinstance(step_data, tuple) or len(step_data) != 3:
             logger.warning(f"Invalid step data format: {step_data}")

@@ -1,5 +1,5 @@
 import numpy as np
-from typing import List, Optional, Tuple, Dict, Any
+from typing import Optional, Any
 
 
 class DynamicThresholdManager:
@@ -28,7 +28,7 @@ class DynamicThresholdManager:
         self,
         base_threshold: float = 0.3,
         max_steps: Optional[int] = None,
-        bezier_points: Optional[List[float]] = None,
+        bezier_points: Optional[list[float]] = None,
         final_threshold: float = 1.0,
         use_relu: bool = False,
         relu_activation_point: float = 0.5,

@@ -4,7 +4,7 @@ This service manages sequence length tracking, callbacks, and
 generation metrics throughout the generation process.
 """
 
-from typing import List, Optional, Callable, Dict, Any
+from typing import Optional, Callable, Any
 from dataclasses import dataclass, field
 
 from ...utils.logging_utils import LoggingMixin
@@ -16,7 +16,7 @@ class SequenceMetrics:
     sequence_length: int = 0
     initial_prompt_length: int = 0
     step_count: int = 0
-    sequence_length_history: List[int] = field(default_factory=list)
+    sequence_length_history: list[int] = field(default_factory=list)
     
     @property
     def total_length(self) -> int:
@@ -30,7 +30,7 @@ class SequenceMetrics:
             return 0.0
         return self.sequence_length / self.step_count
     
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert metrics to dictionary."""
         return {
             "sequence_length": self.sequence_length,
@@ -55,7 +55,7 @@ class SequenceManager(LoggingMixin):
         self.setup_logging("sequence_manager", "sequence.log", debug_mode)
         
         self.metrics = SequenceMetrics()
-        self.callbacks: List[Callable[[int, int, int], None]] = []
+        self.callbacks: list[Callable[[int, int, int], None]] = []
     
     def initialize(self, prompt_length: int) -> None:
         """Initialize sequence tracking with prompt length.

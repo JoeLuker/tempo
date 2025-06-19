@@ -8,22 +8,28 @@ from typing import Any, Optional
 import torch
 from src.utils.logging_utils import LoggingMixin
 from src.domain.interfaces.model import ModelInterface
+from src.utils.model_utils import detect_device
 
 
 class ModelAdapter(LoggingMixin, ModelInterface):
     """Adapter for the underlying language model."""
     
-    def __init__(self, model: Any, device: str = "mps"):
+    def __init__(self, model: Any, device: Optional[str] = None):
         """Initialize the model adapter.
         
         Args:
             model: The underlying language model
-            device: Device to use for computation
+            device: Device to use for computation (None for auto-detection)
         """
         super().__init__()
         
         # Validate inputs
         assert model is not None, "Model cannot be None"
+        
+        # Auto-detect device if not specified
+        if device is None:
+            device = detect_device()
+        
         assert device in ["cpu", "cuda", "mps"], f"Unsupported device: {device}"
         
         self.model = model

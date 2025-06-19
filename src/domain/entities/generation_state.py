@@ -5,7 +5,7 @@ including sequences, attention masks, and KV caches.
 """
 
 from dataclasses import dataclass, field
-from typing import List, Optional, Tuple, Any
+from typing import Optional, Any
 import torch
 from datetime import datetime
 
@@ -17,7 +17,7 @@ class GenerationState:
     attention_mask: torch.Tensor
     past_key_values: Optional[Any] = None  # Can be list of tuples or DynamicCache
     sequence_length: int = 0
-    generated_tokens: List[int] = field(default_factory=list)
+    generated_tokens: list[int] = field(default_factory=list)
     timestamp: datetime = field(default_factory=datetime.now)
     
     def __post_init__(self):
@@ -75,7 +75,7 @@ class GenerationState:
 @dataclass
 class AttentionPattern:
     """Entity representing attention patterns from model layers."""
-    layers: List[torch.Tensor]
+    layers: list[torch.Tensor]
     sequence_length: int
     num_heads: int
     num_layers: int

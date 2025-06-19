@@ -1,17 +1,33 @@
-torch
-transformers
-accelerate
-datasets
-numpy
-tqdm
-matplotlib
-sentencepiece
-protobuf
-colorama
-seaborn
-scikit-learn
-fastapi
-uvicorn
-pydantic
-python-multipart
-cors
+# Core ML dependencies
+torch>=2.0.0,<3.0.0
+transformers>=4.30.0,<5.0.0
+accelerate>=0.20.0,<1.0.0
+datasets>=2.10.0,<3.0.0
+
+# Numerical and scientific
+numpy>=1.24.0,<2.0.0
+scikit-learn>=1.3.0,<2.0.0
+
+# Visualization
+matplotlib>=3.7.0,<4.0.0
+seaborn>=0.12.0,<1.0.0
+
+# Progress and logging
+tqdm>=4.65.0,<5.0.0
+colorama>=0.4.6,<1.0.0
+
+# NLP utilities
+sentencepiece>=0.1.99,<1.0.0
+protobuf>=3.20.0,<5.0.0
+
+# API dependencies
+fastapi>=0.100.0,<1.0.0
+uvicorn[standard]>=0.23.0,<1.0.0
+pydantic>=2.0.0,<3.0.0
+python-multipart>=0.0.6,<1.0.0
+
+# Additional utilities
+huggingface-hub>=0.16.0,<1.0.0
+python-dotenv>=1.0.0,<2.0.0
+pyyaml>=6.0,<7.0
+aiofiles>=23.0.0,<24.0.0

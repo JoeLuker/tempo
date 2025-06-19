@@ -7,7 +7,7 @@ API while delegating to the new domain-driven architecture components.
 import torch
 import time
 import traceback
-from typing import List, Dict, Tuple, Any, Optional, Callable
+from typing import Any, Optional, Callable
 from tqdm import tqdm
 
 # Import necessary components
@@ -269,7 +269,7 @@ class ParallelGenerator(LoggingMixin):
         bezier_p2: float = 0.8,
         use_relu: bool = False,
         relu_activation_point: float = 0.5,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Generate text from prompt with parallel token generation using Sequential Layout approach.
 

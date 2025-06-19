@@ -1,7 +1,6 @@
 """Result monad for error handling without exceptions."""
 
-from __future__ import annotations
-from typing import TypeVar, Generic, Callable, Union, Optional, Any, Type
+from typing import TypeVar, Generic, Callable, Union, Optional, Any
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 import logging
@@ -214,7 +213,7 @@ def collect_results(results: list[Result[T, E]]) -> Result[list[T], E]:
 
 
 def try_result(f: Callable[[], T], 
-               error_type: Type[E] = Exception) -> Result[T, E]:
+               error_type: type[E] = Exception) -> Result[T, E]:
     """
     Execute a function and wrap the result in Result.
     Catches exceptions of specified type.

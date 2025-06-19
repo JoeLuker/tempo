@@ -3,7 +3,7 @@
 This module defines interfaces for token selection strategies.
 """
 
-from typing import Protocol, List, Tuple, Optional
+from typing import Protocol, Optional
 import torch
 from abc import abstractmethod
 
@@ -17,7 +17,7 @@ class TokenSelectorInterface(Protocol):
         logits: torch.Tensor,
         threshold: float,
         max_tokens: Optional[int] = None
-    ) -> Tuple[List[Tuple[torch.Tensor, float]], int]:
+    ) -> tuple[list[tuple[torch.Tensor, float]], int]:
         """Select tokens based on a probability threshold.
         
         Args:

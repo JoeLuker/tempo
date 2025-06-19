@@ -10,7 +10,7 @@ import inspect
 import logging
 import sys
 from enum import Enum
-from typing import Dict, List, Any, Optional, Type, Union, Callable
+from typing import Any, Optional, Union, Callable
 from dataclasses import dataclass
 
 from src.utils.config_manager import config
@@ -123,9 +123,9 @@ class ErrorContext:
     function: str
     line_number: int
     file_path: str
-    call_stack: List[str]
-    args: Dict[str, Any] = None
-    additional_info: Dict[str, Any] = None
+    call_stack: list[str]
+    args: dict[str, Any] = None
+    additional_info: dict[str, Any] = None
 
     @classmethod
     def current(
@@ -289,7 +289,7 @@ class TempoError(Exception):
 
         return "\n".join(parts)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert the error to a dictionary for serialization."""
         result = {
             "code": self.code.value,
@@ -393,7 +393,7 @@ def safe_execute(
     func,
     error_message: str = "Function execution failed",
     error_code: ErrorCode = ErrorCode.UNKNOWN_ERROR,
-    error_class: Type[TempoError] = TempoError,
+    error_class: type[TempoError] = TempoError,
     log_args: bool = False,
     raise_on_error: bool = True,
     default_return=None,

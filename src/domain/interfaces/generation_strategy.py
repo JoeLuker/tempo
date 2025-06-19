@@ -4,7 +4,7 @@ This module defines the strategy pattern interfaces for different
 generation approaches (standard, MCTS, etc.).
 """
 
-from typing import Protocol, Optional, List, Tuple, Any
+from typing import Protocol, Optional, Any
 from abc import abstractmethod
 
 from ..entities.token import TokenSet
@@ -101,7 +101,7 @@ class MCTSStrategy(Protocol):
         ...
     
     @abstractmethod
-    def expand_node(self, node: MCTSNode, logits: TokenLogits) -> List[MCTSNode]:
+    def expand_node(self, node: MCTSNode, logits: TokenLogits) -> list[MCTSNode]:
         """Expand a node by adding children.
         
         Args:
@@ -147,7 +147,7 @@ class MCTSStrategy(Protocol):
         self,
         root: MCTSNode,
         threshold: float
-    ) -> List[Tuple[int, float]]:
+    ) -> list[tuple[int, float]]:
         """Get best tokens from MCTS tree.
         
         Args:
@@ -188,7 +188,7 @@ class PruningStrategy(Protocol):
     def prune_token_set(
         self,
         token_set: TokenSet,
-        attention_scores: List[float],
+        attention_scores: list[float],
         step: int
     ) -> TokenSet:
         """Prune a token set based on attention scores.

@@ -1,5 +1,5 @@
 import torch
-from typing import Dict, List, Tuple, Optional, Any
+from typing import Optional, Any
 import time
 import torch.nn.functional as F
 import math
@@ -103,7 +103,7 @@ class TokenGenerator(LoggingMixin):
 
     def prepare_input_from_prompt(
         self, prompt: str
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Convert prompt string to input tensors.
         Uses caching for repeated prompts.
@@ -555,9 +555,9 @@ class TokenGenerator(LoggingMixin):
         self,
         input_ids: torch.Tensor,
         attention_mask: torch.Tensor,
-        past_key_values: Optional[List[Tuple[torch.Tensor]]] = None,
+        past_key_values: Optional[list[tuple[torch.Tensor]]] = None,
         custom_attention_mask: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, Optional[List[Tuple[torch.Tensor]]]]:
+    ) -> tuple[torch.Tensor, Optional[list[tuple[torch.Tensor]]]]:
         """
         Get logits for next token using the model with KV caching.
         Improved to properly handle parallel token sets.
@@ -874,7 +874,7 @@ class TokenGenerator(LoggingMixin):
 
         return next_token_logits, return_kvs
 
-    def batch_decode_tokens(self, token_ids: List[int]) -> List[str]:
+    def batch_decode_tokens(self, token_ids: list[int]) -> list[str]:
         """
         Efficiently decode multiple tokens in a single call.
         Uses caching to avoid redundant decoding operations.
@@ -883,7 +883,7 @@ class TokenGenerator(LoggingMixin):
             token_ids: List of token IDs
 
         Returns:
-            List[str]: Decoded tokens
+            list[str]: Decoded tokens
         """
         # Performance tracking
         start_time = time.time()
@@ -1044,10 +1044,10 @@ class TokenGenerator(LoggingMixin):
         self,
         input_ids: torch.Tensor,
         attention_mask: torch.Tensor,
-        past_key_values: Optional[List[Tuple[torch.Tensor]]] = None,
+        past_key_values: Optional[list[tuple[torch.Tensor]]] = None,
         custom_attention_mask: Optional[torch.Tensor] = None,
         num_parallel_tokens: int = 1,
-    ) -> Tuple[torch.Tensor, Optional[List[Tuple[torch.Tensor]]]]:
+    ) -> tuple[torch.Tensor, Optional[list[tuple[torch.Tensor]]]]:
         """
         Optimized method for getting logits for isolated parallel tokens.
         Since isolated tokens can't see each other, we only need to compute
@@ -1312,7 +1312,7 @@ class TokenGenerator(LoggingMixin):
         input_ids: torch.Tensor,
         attention_mask: torch.Tensor,
         disable_kv_cache: bool = False,
-        input_identifiers: Optional[List[int]] = None,
+        input_identifiers: Optional[list[int]] = None,
     ):
         """
         Generate the next token logits for the given input.
@@ -1382,11 +1382,11 @@ class TokenGenerator(LoggingMixin):
         self,
         input_ids: torch.Tensor,
         attention_mask: torch.Tensor,
-        past_key_values: Optional[List[Tuple[torch.Tensor]]] = None,
+        past_key_values: Optional[list[tuple[torch.Tensor]]] = None,
         custom_attention_mask: Optional[torch.Tensor] = None,
         disable_kv_cache: bool = False,
-        input_identifiers: Optional[List[int]] = None,
-    ) -> Tuple[torch.Tensor, Optional[List[Tuple[torch.Tensor]]]]:
+        input_identifiers: Optional[list[int]] = None,
+    ) -> tuple[torch.Tensor, Optional[list[tuple[torch.Tensor]]]]:
         """
         Generate the next token using the model with explicit KV cache management.
 

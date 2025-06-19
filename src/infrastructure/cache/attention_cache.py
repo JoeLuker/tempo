@@ -4,7 +4,7 @@ This module implements caching for attention patterns from model forward passes
 to support retroactive pruning and analysis.
 """
 
-from typing import Optional, Tuple, List
+from typing import Optional
 import torch
 from src.utils.logging_utils import LoggingMixin
 from src.domain.entities.generation_state import AttentionPattern
@@ -16,14 +16,14 @@ class AttentionCache(LoggingMixin):
     def __init__(self):
         """Initialize the attention cache."""
         super().__init__()
-        self.cached_attention: Optional[List[torch.Tensor]] = None
+        self.cached_attention: Optional[list[torch.Tensor]] = None
         self.cached_sequence_length: Optional[int] = None
         self.cache_updates = 0
         
         # Setup logging
         self.setup_logging("attention_cache", "attention_cache_debug.log")
     
-    def cache(self, attention_layers: List[torch.Tensor], sequence_length: int) -> None:
+    def cache(self, attention_layers: list[torch.Tensor], sequence_length: int) -> None:
         """Cache attention patterns from a forward pass.
         
         Args:
@@ -53,7 +53,7 @@ class AttentionCache(LoggingMixin):
                 first_shape = attention_layers[0].shape
                 self.log(f"First layer shape: {first_shape}")
     
-    def get(self) -> Optional[Tuple[AttentionPattern, int]]:
+    def get(self) -> Optional[tuple[AttentionPattern, int]]:
         """Get cached attention patterns.
         
         Returns:

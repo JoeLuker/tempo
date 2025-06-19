@@ -253,17 +253,53 @@ async def generate_stream(
 
 # Error handling middleware
 
+@app.exception_handler(ValueError)
+async def value_error_handler(request, exc):
+    """Handle validation errors."""
+    logger.warning(f"Validation error: {str(exc)}")
+    return ErrorResponse(
+        error=f"Invalid input: {str(exc)}",
+        details={"type": "ValidationError", "field": "input"},
+        traceback=None
+    )
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request, exc):
+    """Handle HTTP exceptions."""
+    logger.warning(f"HTTP exception: {exc.status_code} - {exc.detail}")
+    return ErrorResponse(
+        error=exc.detail,
+        details={"type": "HTTPException", "status_code": exc.status_code},
+        traceback=None
+    )
+
+@app.exception_handler(RuntimeError)
+async def runtime_error_handler(request, exc):
+    """Handle runtime errors from model operations."""
+    logger.error(f"Runtime error: {str(exc)}")
+    return ErrorResponse(
+        error=f"Processing error: {str(exc)}",
+        details={"type": "RuntimeError", "operation": "generation"},
+        traceback=traceback.format_exc() if logger.isEnabledFor(logging.DEBUG) else None
+    )
+
 @app.exception_handler(Exception)
 async def general_exception_handler(request, exc):
-    """Handle uncaught exceptions using monadic error types."""
+    """Handle uncaught exceptions as last resort."""
     error_message = str(exc)
     logger.error(f"Unhandled exception: {error_message}")
     logger.error(traceback.format_exc())
     
+    # Log to file for debugging
+    import os
+    os.makedirs("logs", exist_ok=True)
+    with open("logs/api_errors.log", "a", encoding="utf-8") as f:
+        f.write(f"\n[{traceback.format_exc()}]\n")
+    
     return ErrorResponse(
-        error=error_message,
-        details={"type": type(exc).__name__},
-        traceback=traceback.format_exc() if logger.isEnabledFor(logging.DEBUG) else None
+        error="An unexpected error occurred. Please try again later.",
+        details={"type": type(exc).__name__, "request_id": str(id(request))},
+        traceback=None  # Don't expose internal errors to users
     )
 
 

@@ -4,7 +4,7 @@ This module implements caching for tokenized prompts to avoid
 redundant tokenization operations.
 """
 
-from typing import Dict, Optional, Tuple
+from typing import Optional
 import torch
 from src.utils.logging_utils import LoggingMixin
 from src.domain.entities.generation_state import TokenizationResult
@@ -20,7 +20,7 @@ class PromptCache(LoggingMixin):
             max_size: Maximum number of prompts to cache
         """
         super().__init__()
-        self.cache: Dict[str, Tuple[torch.Tensor, torch.Tensor]] = {}
+        self.cache: dict[str, tuple[torch.Tensor, torch.Tensor]] = {}
         self.max_size = max_size
         self.hits = 0
         self.misses = 0
@@ -28,7 +28,7 @@ class PromptCache(LoggingMixin):
         # Setup logging
         self.setup_logging("prompt_cache", "prompt_cache_debug.log")
     
-    def get(self, prompt: str) -> Optional[Tuple[torch.Tensor, torch.Tensor]]:
+    def get(self, prompt: str) -> Optional[tuple[torch.Tensor, torch.Tensor]]:
         """Get cached tokenization for a prompt.
         
         Args:
@@ -84,7 +84,7 @@ class PromptCache(LoggingMixin):
         if self.debug_mode:
             self.log("Cleared prompt cache")
     
-    def get_stats(self) -> Dict[str, int]:
+    def get_stats(self) -> dict[str, int]:
         """Get cache statistics.
         
         Returns:

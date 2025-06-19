@@ -1,5 +1,5 @@
 import re
-from typing import Dict, List, Set, Tuple, Any, Optional
+from typing import Any, Optional
 import numpy as np
 
 
@@ -20,10 +20,10 @@ class TextFormatter:
     def format_generated_text(
         self,
         prompt: str,
-        position_to_tokens: Dict[int, List[int]],
-        original_parallel_positions: Set[int],
+        position_to_tokens: dict[int, list[int]],
+        original_parallel_positions: set[int],
         prompt_length: int,
-        token_indices: Dict[Tuple[int, int], int],
+        token_indices: dict[tuple[int, int], int],
         show_token_ids: bool = False,
     ) -> str:
         """
@@ -60,10 +60,10 @@ class TextFormatter:
     def _format_text(
         self,
         prompt_text: str,
-        position_to_tokens: Dict[int, List[int]],
-        original_parallel_positions: Set[int],
+        position_to_tokens: dict[int, list[int]],
+        original_parallel_positions: set[int],
         prompt_length: int,
-        token_original_indices: Dict[Tuple[int, int], int],
+        token_original_indices: dict[tuple[int, int], int],
     ) -> str:
         """
         Format generated text using colored brackets for parallel tokens.
@@ -274,10 +274,10 @@ class TextFormatter:
     def _format_text_with_ids(
         self,
         prompt_text: str,
-        position_to_tokens: Dict[int, List[int]],
-        original_parallel_positions: Set[int],
+        position_to_tokens: dict[int, list[int]],
+        original_parallel_positions: set[int],
         prompt_length: int,
-        token_original_indices: Dict[Tuple[int, int], int],
+        token_original_indices: dict[tuple[int, int], int],
     ) -> str:
         """
         Format generated text with token IDs using colored brackets for parallel tokens.
@@ -320,10 +320,10 @@ class TextFormatter:
     def format_with_token_ids(
         self,
         prompt: str,
-        position_to_tokens: Dict[int, List[int]],
-        parallel_positions: Set[int],
+        position_to_tokens: dict[int, list[int]],
+        parallel_positions: set[int],
         prompt_length: int,
-        token_indices: Dict[Tuple[int, int], int],
+        token_indices: dict[tuple[int, int], int],
     ) -> str:
         """
         Format the generated text with token IDs.
@@ -368,11 +368,11 @@ class TextFormatter:
     def format_generated_text_with_pruning(
         self,
         prompt: str,
-        position_to_tokens: Dict[int, List[int]],
-        original_parallel_positions: Set[int],
+        position_to_tokens: dict[int, list[int]],
+        original_parallel_positions: set[int],
         prompt_length: int,
-        all_parallel_tokens: Dict[int, List[Tuple[int, float]]],
-        token_indices: Dict[Tuple[int, int], int] = None,
+        all_parallel_tokens: dict[int, list[tuple[int, float]]],
+        token_indices: dict[tuple[int, int], int] = None,
     ) -> str:
         """
         Format the generated text with colored annotations for parallel tokens,
@@ -481,11 +481,11 @@ class TextFormatter:
     def format_with_token_ids_and_pruning(
         self,
         prompt: str,
-        position_to_tokens: Dict[int, List[int]],
-        parallel_positions: Set[int],
+        position_to_tokens: dict[int, list[int]],
+        parallel_positions: set[int],
         prompt_length: int,
-        all_parallel_tokens: Dict[int, List[Tuple[int, float]]],
-        token_indices: Dict[Tuple[int, int], int] = None,
+        all_parallel_tokens: dict[int, list[tuple[int, float]]],
+        token_indices: dict[tuple[int, int], int] = None,
     ) -> str:
         """
         Format the generated text with token IDs, taking into account retroactively pruned tokens.
@@ -545,10 +545,10 @@ class TextFormatter:
     def format_using_layout(
         self,
         prompt: str,
-        input_ids: List[int],
-        logical_layout: List[Tuple[int, int, int]],
+        input_ids: list[int],
+        logical_layout: list[tuple[int, int, int]],
         prompt_length: int,
-        all_original_token_sets: Dict[int, List[Tuple[int, float]]],
+        all_original_token_sets: dict[int, list[tuple[int, float]]],
         tokenizer=None,
         show_token_ids: bool = False,
     ) -> str:

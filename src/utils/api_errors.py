@@ -5,7 +5,7 @@ This module provides standardized error handling for the TEMPO API, including
 custom exception classes, error formatting, and response generation.
 """
 
-from typing import Optional, Dict, Any, List, Type
+from typing import Optional, Any
 from enum import Enum
 from datetime import datetime
 from fastapi import HTTPException, status
@@ -47,7 +47,7 @@ class ErrorResponse(BaseModel):
     message: str = Field(..., description="Error message")
     timestamp: str = Field(..., description="Error timestamp")
     path: Optional[str] = Field(None, description="Request path")
-    details: Optional[List[ErrorDetail]] = Field(
+    details: Optional[list[ErrorDetail]] = Field(
         None, description="Detailed error information"
     )
     request_id: Optional[str] = Field(None, description="Request ID for tracking")
@@ -86,7 +86,7 @@ class APIError(Exception):
     def __init__(
         self,
         message: Optional[str] = None,
-        details: Optional[List[Dict[str, Any]]] = None,
+        details: Optional[list[dict[str, Any]]] = None,
         status_code: Optional[int] = None,
         error_type: Optional[ErrorType] = None,
     ):

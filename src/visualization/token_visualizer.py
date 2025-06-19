@@ -1,6 +1,9 @@
 import matplotlib.pyplot as plt
 import numpy as np
-from typing import Dict, List, Tuple, Optional, Any
+from typing import Optional, Any
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class TokenVisualizer:
@@ -12,7 +15,7 @@ class TokenVisualizer:
         """Initialize the token visualizer."""
         pass
 
-    def visualize_token_sets(self, results: Dict[str, Any], output_path: str):
+    def visualize_token_sets(self, results: dict[str, Any], output_path: str):
         """
         Visualize the parallel token sets.
 
@@ -181,7 +184,7 @@ class TokenVisualizer:
         plt.savefig(output_path)
         plt.close()
 
-    def print_statistics(self, results: Dict[str, Any]):
+    def print_statistics(self, results: dict[str, Any]):
         """
         Print statistics about the generation.
 
@@ -194,25 +197,25 @@ class TokenVisualizer:
         token_sets = results["parallel_sets"]
         token_counts = [len(s) for s in token_sets]
 
-        print("\nParallel Generation Statistics:")
-        print(f"Total steps: {len(token_sets)}")
-        print(f"Average tokens per step: {np.mean(token_counts):.2f}")
-        print(f"Max tokens in a step: {max(token_counts)}")
+        logger.info("\nParallel Generation Statistics:")
+        logger.info(f"Total steps: {len(token_sets)}")
+        logger.info(f"Average tokens per step: {np.mean(token_counts):.2f}")
+        logger.info(f"Max tokens in a step: {max(token_counts)}")
 
         if results.get("use_retroactive_removal") and "pruned_sets" in results:
             removed_sets = results["pruned_sets"]
             removed_counts = [len(s) for s in removed_sets]
             removal_strategy = results.get("pruning_strategy", "coherence")
 
-            print(f"\nRemoval Statistics ({removal_strategy} strategy):")
+            logger.info(f"\nRemoval Statistics ({removal_strategy} strategy):")
             if removal_strategy == "hybrid":
-                print(
+                logger.info(
                     f"Strategy: Diversity for {results.get('diversity_steps', 0)} steps, then Coherence"
                 )
-            print(f"Average tokens before removal: {np.mean(token_counts):.2f}")
-            print(f"Average tokens after removal: {np.mean(removed_counts):.2f}")
-            print(f"Max tokens before removal: {max(token_counts)}")
-            print(f"Max tokens after removal: {max(removed_counts)}")
+            logger.info(f"Average tokens before removal: {np.mean(token_counts):.2f}")
+            logger.info(f"Average tokens after removal: {np.mean(removed_counts):.2f}")
+            logger.info(f"Max tokens before removal: {max(token_counts)}")
+            logger.info(f"Max tokens after removal: {max(removed_counts)}")
 
             # Calculate the average reduction percentage
             # Avoid division by zero
@@ -224,7 +227,7 @@ class TokenVisualizer:
 
             if reductions:
                 avg_reduction = np.mean(reductions)
-                print(f"Average reduction: {avg_reduction:.1f}%")
+                logger.info(f"Average reduction: {avg_reduction:.1f}%")
 
                 # Count how many sets had any removal applied
                 sets_with_removals = sum(
@@ -232,8 +235,8 @@ class TokenVisualizer:
                     for orig, removed in zip(token_counts, removed_counts)
                     if orig > removed
                 )
-                print(
+                logger.info(
                     f"Sets with removals applied: {sets_with_removals}/{len(token_sets)} ({(sets_with_removals/len(token_sets))*100:.1f}%)"
                 )
             else:
-                print("No reduction data available")
+                logger.info("No reduction data available")

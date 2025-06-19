@@ -2,7 +2,7 @@ import torch
 import os
 import json
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Any, Optional
 from ..generation.parallel_generator import ParallelGenerator
 from ..generation.token_generator import TokenGenerator
 from ..visualization.token_visualizer import TokenVisualizer
@@ -48,7 +48,7 @@ class ExperimentRunner:
         # Debug mode flag
         self.debug_mode = False
 
-    def run_experiment(self, args: Dict[str, Any]) -> Dict[str, Any]:
+    def run_experiment(self, args: dict[str, Any]) -> dict[str, Any]:
         """
         Run a generation experiment with the given parameters.
 
@@ -56,7 +56,7 @@ class ExperimentRunner:
             args: Dictionary of experiment parameters
 
         Returns:
-            Dict[str, Any]: Results dictionary
+            dict[str, Any]: Results dictionary
         """
         # Extract parameters from args
         prompt = args.get("prompt", "")
@@ -136,7 +136,7 @@ class ExperimentRunner:
 
             # Log debug mode to file
             os.makedirs("logs", exist_ok=True)
-            with open("logs/experiment_debug.log", "a") as f:
+            with open("logs/experiment_debug.log", "a", encoding='utf-8') as f:
                 f.write(
                     f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Experiment started with debug mode ENABLED\n"
                 )
@@ -398,7 +398,7 @@ class ExperimentRunner:
             print(f"Average tokens/second: {max_tokens/generation_time:.2f}")
 
         # Save results to JSON - invariant: results must be savable
-        with open(output_path / "results.json", "w") as f:
+        with open(output_path / "results.json", 'w', encoding='utf-8') as f:
             # Create a copy of results with only serializable data
             serializable_results = {
                 "generated_text": results["generated_text"],

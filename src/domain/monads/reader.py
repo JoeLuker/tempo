@@ -1,6 +1,5 @@
 """Reader monad for dependency injection."""
 
-from __future__ import annotations
 from typing import TypeVar, Generic, Callable
 from dataclasses import dataclass
 

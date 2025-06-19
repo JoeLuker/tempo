@@ -1,0 +1,73 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv
+venv/
+ENV/
+env/
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+*.egg-info/
+dist/
+build/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Project specific
+output/
+logs/
+*.log
+.env
+config.json
+*.prof
+tempo_profile.prof
+
+# Model cache (will be mounted as volume)
+.cache/
+models/
+
+# Documentation
+docs/build/
+site/
+
+# Testing
+test_outputs/
+coverage.xml
+*.cover
+
+# Frontend
+frontend/node_modules/
+frontend/build/
+frontend/dist/
+frontend/.svelte-kit/
+frontend/.env.local
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+
+# OS files
+Thumbs.db
+.Spotlight-V100
+.Trashes
+
+# Docker
+Dockerfile
+docker-compose*.yml
+.dockerignore

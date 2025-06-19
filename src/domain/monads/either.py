@@ -1,6 +1,5 @@
 """Either monad for representing values with two possible types."""
 
-from __future__ import annotations
 from typing import TypeVar, Generic, Callable, Union
 from abc import ABC, abstractmethod
 from dataclasses import dataclass

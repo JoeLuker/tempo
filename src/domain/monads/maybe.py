@@ -1,6 +1,5 @@
 """Maybe monad for handling optional values functionally."""
 
-from __future__ import annotations
 from typing import TypeVar, Generic, Callable, Optional, Union
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
