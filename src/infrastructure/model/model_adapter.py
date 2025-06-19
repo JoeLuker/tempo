@@ -8,7 +8,7 @@ from typing import Any, Optional
 import torch
 from src.utils.logging_utils import LoggingMixin
 from src.domain.interfaces.model import ModelInterface
-from src.utils.model_utils import detect_device
+from src.utils.model_utils import get_best_device
 
 
 class ModelAdapter(LoggingMixin, ModelInterface):
@@ -28,7 +28,7 @@ class ModelAdapter(LoggingMixin, ModelInterface):
         
         # Auto-detect device if not specified
         if device is None:
-            device = detect_device()
+            device = get_best_device()
         
         assert device in ["cpu", "cuda", "mps"], f"Unsupported device: {device}"
         

@@ -75,7 +75,7 @@ class PerformanceTracker(LoggingMixin, PerformanceTrackerInterface):
         self.stats["decode_tokens"] += num_tokens
         self.stats["decode_cache_hits"] += cache_hits
     
-    def get_stats(self) -> Dict:
+    def get_stats(self) -> dict:
         """Get performance statistics.
         
         Returns:
