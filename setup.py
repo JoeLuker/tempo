@@ -42,10 +42,7 @@ extras_require = {
         "black>=23.3.0",
         "isort>=5.12.0",
     ],
-    "visualization": [
-        "matplotlib>=3.7.1",
-        "plotly>=5.14.1",
-    ],
+    # Visualization removed - not helpful for ML portfolio
     "web": [
         "uvicorn>=0.22.0",
         "fastapi>=0.100.0",

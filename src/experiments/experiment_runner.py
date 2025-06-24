@@ -6,8 +6,7 @@ from typing import Any, Optional
 # Legacy import removed - using new architecture
 # from src.generation.parallel_generator import ParallelGenerator
 from src.generation.token_generator import TokenGenerator
-from ..visualization.token_visualizer import TokenVisualizer
-from ..visualization.position_visualizer import PositionVisualizer
+# Visualization removed - not helpful for ML portfolio
 from ..modeling.model_wrapper import TEMPOModelWrapper
 import time
 from tqdm import tqdm
@@ -42,9 +41,7 @@ class ExperimentRunner:
         self.tokenizer = tokenizer
         self.device = device
 
-        # Initialize visualizers
-        self.token_visualizer = TokenVisualizer()
-        self.position_visualizer = PositionVisualizer()
+        # Visualization removed - not helpful for ML portfolio
 
         # Debug mode flag
         self.debug_mode = False
@@ -64,7 +61,7 @@ class ExperimentRunner:
         max_tokens = args.get("max_tokens", 100)
         selection_threshold = args.get("selection_threshold", 0.1)
         use_retroactive_removal = args.get("use_retroactive_removal", False)
-        save_visualization = args.get("save_visualization", True)
+        # Visualization removed - not helpful for ML portfolio
         output_dir = args.get("output_dir", "./output")
         bezier_points = args.get("bezier_points", [0.2, 0.8])
         min_steps = args.get("min_steps", 0)
@@ -321,7 +318,7 @@ class ExperimentRunner:
                 prompt=prompt,
                 max_tokens=max_tokens,
                 selection_threshold=selection_threshold,
-                return_parallel_sets=save_visualization,
+                return_parallel_sets=False,  # Visualization removed
                 use_retroactive_removal=use_retroactive_removal,
                 min_steps=min_steps,
                 show_token_ids=show_token_ids,
@@ -374,16 +371,7 @@ class ExperimentRunner:
             intermediate_values = getattr(self.model, "intermediate_values", {})
             results["captured_intermediate_values"] = list(intermediate_values.keys())
 
-        # Save visualizations if requested and if not using MCTS
-        if save_visualization and not use_mcts and "parallel_sets" in results:
-            # Visualize token sets
-            visualization_path = output_path / "token_sets.png"
-            self.token_visualizer.visualize_token_sets(results, visualization_path)
-
-            # Visualize positions
-            self.position_visualizer.visualize_position_tokens(results, output_path)
-            self.position_visualizer.visualize_token_probabilities(results, output_path)
-            self.position_visualizer.visualize_parallel_sets(results, output_path)
+        # Visualization removed - not helpful for ML portfolio
 
         # Print generated text and statistics
         print("\nGenerated Text:")
@@ -391,11 +379,9 @@ class ExperimentRunner:
         print(results["generated_text"])
         print("-" * 50)
 
-        # Print statistics if not using MCTS
-        if not use_mcts:
-            self.token_visualizer.print_statistics(results)
-        else:
-            print(f"Generation completed in {generation_time:.2f} seconds")
+        # Print basic statistics
+        print(f"Generation completed in {generation_time:.2f} seconds")
+        if max_tokens > 0:
             print(f"Average tokens/second: {max_tokens/generation_time:.2f}")
 
         # Save results to JSON - invariant: results must be savable

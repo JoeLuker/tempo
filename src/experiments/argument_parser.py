@@ -148,12 +148,7 @@ class ArgumentParser:
         )
 
         # Other parameters
-        parser.add_argument(
-            "--save-visualization",
-            action="store_true",
-            default=True,
-            help="Save visualization of token sets",
-        )
+        # Visualization removed - not helpful for ML portfolio
         parser.add_argument(
             "--seed", type=int, default=42, help="Random seed for reproducibility"
         )

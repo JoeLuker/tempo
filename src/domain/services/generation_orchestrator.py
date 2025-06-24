@@ -73,7 +73,7 @@ class GenerationOrchestrator(LoggingMixin):
         self.sequence_tracker.initialize(initial_state.sequence_length)
         self.logical_layout = [LogicalPosition(0, 0, initial_state.sequence_length - 1)]
         
-        # Track token sets for visualization
+        # Track token sets for processing
         all_original_token_sets: dict[int, list[tuple[int, float]]] = {}
         all_surviving_token_sets: dict[int, list[tuple[int, float]]] = {}
         
