@@ -322,7 +322,7 @@ def load_tempo_components(
                 code=ErrorCode.INIT_COMPONENT_MISSING,
             )
 
-        logger.info("Creating TokenGenerator")
+        logger.info("Creating TokenGenerator (legacy)")
         from src.generation.token_generator import TokenGenerator
 
         token_generator = TokenGenerator(
@@ -333,26 +333,42 @@ def load_tempo_components(
     else:
         token_generator = None
 
-    # Create ParallelGenerator if requested
+    # Create GenerateTextUseCase if requested (new clean architecture)
     if load_parallel_generator:
         if not model_wrapper and load_model_wrapper:
             raise ModelError(
-                message="ModelWrapper is required for ParallelGenerator",
+                message="ModelWrapper is required for GenerateTextUseCase",
                 code=ErrorCode.INIT_COMPONENT_MISSING,
             )
 
-        logger.info("Creating ParallelGenerator")
-        from src.generation.parallel_generator import ParallelGenerator
+        logger.info("Creating GenerateTextUseCase with clean architecture")
+        from src.application.use_cases.generate_text import GenerateTextUseCase
+        from src.infrastructure.generation.token_generator_impl import TokenGeneratorImpl
+        from src.infrastructure.tokenization.tokenizer_adapter import TokenizerAdapter
+        from src.infrastructure.generation.standard_generation_strategy import StandardGenerationStrategy
+        from src.application.services.sequence_manager import SequenceManager
+        from src.application.adapters.generation_adapter import GenerationAdapter
 
-        parallel_generator = ParallelGenerator(
-            model=model_wrapper or model,
-            tokenizer=tokenizer,
-            device=device,
-            use_custom_rope=kwargs.get("use_custom_rope", True),
-            debug_mode=debug_mode,
-            token_generator=token_generator,
+        # Create implementations
+        from src.infrastructure.model.model_adapter import ModelAdapter
+        
+        model_adapter = ModelAdapter(model_wrapper.model if model_wrapper else model)
+        token_generator_impl = TokenGeneratorImpl(model_adapter)
+        tokenizer_adapter = TokenizerAdapter(tokenizer)
+        generation_strategy = StandardGenerationStrategy()
+        sequence_manager = SequenceManager()
+
+        generate_text_use_case = GenerateTextUseCase(
+            token_generator=token_generator_impl,
+            tokenizer=tokenizer_adapter,
+            generation_strategy=generation_strategy,
+            sequence_manager=sequence_manager,
+            debug_mode=debug_mode
         )
-        result["parallel_generator"] = parallel_generator
+        
+        # Wrap use case in adapter for legacy compatibility
+        generation_adapter = GenerationAdapter(generate_text_use_case)
+        result["generate_text_use_case"] = generation_adapter
 
     return result
 

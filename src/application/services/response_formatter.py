@@ -4,7 +4,7 @@ This module handles the formatting of generation results into API responses.
 """
 
 import logging
-from typing import Any
+from typing import Any, Tuple
 from src.presentation.api.models.responses import (
     TokenInfo, StepInfo, RetroactiveRemovalInfo, 
     TimingInfo, ModelInfo, GenerationResponse

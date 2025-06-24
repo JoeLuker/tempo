@@ -3,8 +3,9 @@ import os
 import json
 from pathlib import Path
 from typing import Any, Optional
-from ..generation.parallel_generator import ParallelGenerator
-from ..generation.token_generator import TokenGenerator
+# Legacy import removed - using new architecture
+# from src.generation.parallel_generator import ParallelGenerator
+from src.generation.token_generator import TokenGenerator
 from ..visualization.token_visualizer import TokenVisualizer
 from ..visualization.position_visualizer import PositionVisualizer
 from ..modeling.model_wrapper import TEMPOModelWrapper
