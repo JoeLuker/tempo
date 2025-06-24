@@ -4,10 +4,15 @@ import torch
 import torch.nn as nn
 from typing import Dict, Set, Callable, Any, Optional
 from functools import wraps
+from contextlib import contextmanager
 
 
 class ModelPatcher:
-    """Patches model methods to use modified RoPE embeddings."""
+    """Patches model methods to use modified RoPE embeddings.
+    
+    This class provides a cleaner interface for temporarily modifying
+    model behavior during TEMPO generation.
+    """
     
     def __init__(self, device: str = "cuda"):
         self.device = device
@@ -52,81 +57,98 @@ class ModelPatcher:
         return True
     
     def unpatch_module(self, module_name: str, module: nn.Module) -> bool:
-        """Restore original forward method."""
+        """
+        Restore a module's original forward method.
+        
+        Args:
+            module_name: Name/path of the module
+            module: The module to unpatch
+            
+        Returns:
+            True if unpatched successfully
+        """
         if module_name not in self.patched_modules:
             return False
             
-        if module_name in self.original_methods:
-            module.forward = self.original_methods[module_name]
-            self.patched_modules.remove(module_name)
-            del self.original_methods[module_name]
-            return True
+        if module_name not in self.original_methods:
+            return False
             
-        return False
-    
-    def unpatch_all(self, model: nn.Module):
-        """Unpatch all modules in the model."""
-        for name, module in model.named_modules():
-            if name in self.patched_modules:
-                self.unpatch_module(name, module)
-    
-    def find_rope_modules(self, model: nn.Module) -> Dict[str, nn.Module]:
-        """Find all RoPE-related modules in the model."""
-        rope_modules = {}
+        # Restore original method
+        module.forward = self.original_methods[module_name]
         
-        # Common RoPE module names across different architectures
-        rope_keywords = [
-            'rotary', 'rope', 'position', 'embedding',
-            'mistral_rotary', 'llama_rotary', 'qwen_rotary'
-        ]
+        # Clean up tracking
+        del self.original_methods[module_name]
+        self.patched_modules.remove(module_name)
         
-        for name, module in model.named_modules():
-            module_type = type(module).__name__.lower()
-            module_name = name.lower()
-            
-            # Check if this might be a RoPE module
-            if any(keyword in module_type or keyword in module_name 
-                   for keyword in rope_keywords):
-                rope_modules[name] = module
-                
-        return rope_modules
+        return True
     
-    def create_attention_patcher(
-        self, 
-        position_mapper,
-        embedding_cache
-    ) -> Callable:
+    def unpatch_all(self, model: nn.Module) -> int:
         """
-        Create a forward modifier for attention modules.
+        Restore all patched methods in the model.
         
         Args:
-            position_mapper: PositionMapper instance
-            embedding_cache: RoPECache instance
+            model: The model to restore
             
         Returns:
-            Forward modifier function
+            Number of modules unpatched
         """
-        def attention_forward_modifier(module, *args, **kwargs):
-            # Extract position_ids if present
-            position_ids = kwargs.get('position_ids', None)
-            
-            if position_ids is not None and position_mapper.position_map:
-                # Modify positions for parallel tokens
-                logical_positions = position_mapper.get_logical_positions(position_ids)
-                kwargs['position_ids'] = logical_positions
-            
-            # Call original forward
-            if hasattr(module, '__wrapped_forward__'):
-                return module.__wrapped_forward__(*args, **kwargs)
-            else:
-                # Fallback to original method from storage
-                module_name = next(
-                    (name for name, mod in self.patched_modules.items() if mod is module),
-                    None
-                )
-                if module_name and module_name in self.original_methods:
-                    return self.original_methods[module_name](*args, **kwargs)
-                    
-            raise RuntimeError("Could not find original forward method")
+        unpatched_count = 0
+        modules_to_unpatch = list(self.patched_modules)  # Copy to avoid modification during iteration
         
-        return attention_forward_modifier
+        for module_name in modules_to_unpatch:
+            # Navigate to module
+            parts = module_name.split('.')
+            module = model
+            for part in parts:
+                module = getattr(module, part, None)
+                if module is None:
+                    break
+            
+            if module is not None and self.unpatch_module(module_name, module):
+                unpatched_count += 1
+                
+        return unpatched_count
+    
+    @contextmanager
+    def temporary_patch(self, model: nn.Module, patches: Dict[str, Callable]):
+        """
+        Context manager for temporary model patching.
+        
+        Args:
+            model: The model to patch
+            patches: Dictionary mapping module paths to forward modifiers
+            
+        Example:
+            with patcher.temporary_patch(model, {
+                'model.layers.0.self_attn': modified_attention_forward,
+                'model.layers.1.self_attn': modified_attention_forward,
+            }):
+                # Model is patched here
+                output = model.generate(...)
+            # Model is automatically restored here
+        """
+        # Apply patches
+        for module_path, forward_modifier in patches.items():
+            parts = module_path.split('.')
+            module = model
+            for part in parts:
+                module = getattr(module, part, None)
+                if module is None:
+                    break
+            
+            if module is not None:
+                self.patch_module(module_path, module, forward_modifier)
+        
+        try:
+            yield
+        finally:
+            # Always restore, even if an exception occurs
+            self.unpatch_all(model)
+    
+    def get_patched_modules(self) -> Set[str]:
+        """Get set of currently patched module names."""
+        return self.patched_modules.copy()
+    
+    def is_patched(self, module_name: str) -> bool:
+        """Check if a module is currently patched."""
+        return module_name in self.patched_modules

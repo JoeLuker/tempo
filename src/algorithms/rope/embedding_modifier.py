@@ -4,6 +4,11 @@ import torch
 import math
 from typing import Optional, Tuple
 
+# Standard RoPE configuration constants
+# These values are commonly used in LLaMA-style models
+DEFAULT_ROPE_BASE = 10000.0  # Base frequency for RoPE
+DEFAULT_MAX_POSITION = 8192  # Maximum sequence length
+
 
 def rotate_half(x: torch.Tensor) -> torch.Tensor:
     """Rotate half the hidden dims of the input for RoPE."""
@@ -50,7 +55,7 @@ def apply_rotary_pos_emb(
 class RoPECache:
     """Cache for rotary position embeddings to avoid recomputation."""
     
-    def __init__(self, dim: int, max_position: int = 8192, base: float = 10000):
+    def __init__(self, dim: int, max_position: int = DEFAULT_MAX_POSITION, base: float = DEFAULT_ROPE_BASE):
         self.dim = dim
         self.max_position = max_position
         self.base = base

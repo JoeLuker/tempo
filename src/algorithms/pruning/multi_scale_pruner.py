@@ -3,6 +3,10 @@
 import torch
 from typing import List, Dict, Optional, Tuple
 
+# Pruning configuration constants
+DEFAULT_SIGMOID_STEEPNESS = 10.0  # Controls sharpness of sigmoid decision boundary
+DEFAULT_ATTENTION_WINDOW = 5  # Local attention window size in tokens
+
 
 class MultiScaleAttentionPruner:
     """Analyzes attention at multiple scales for pruning decisions."""
@@ -12,7 +16,7 @@ class MultiScaleAttentionPruner:
         num_layers_to_use: Optional[int] = None,
         layer_weights: Optional[List[float]] = None,
         use_sigmoid_decision: bool = True,
-        sigmoid_steepness: float = 10.0
+        sigmoid_steepness: float = DEFAULT_SIGMOID_STEEPNESS
     ):
         self.num_layers_to_use = num_layers_to_use
         self.layer_weights = layer_weights
@@ -82,7 +86,7 @@ class MultiScaleAttentionPruner:
         attention_weights: torch.Tensor,
         target_positions: List[int],
         source_positions: List[int],
-        window_size: int = 5
+        window_size: int = DEFAULT_ATTENTION_WINDOW
     ) -> torch.Tensor:
         """Compute local attention patterns within a window."""
         num_targets = len(target_positions)

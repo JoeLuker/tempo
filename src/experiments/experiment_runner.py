@@ -3,8 +3,6 @@ import os
 import json
 from pathlib import Path
 from typing import Any, Optional
-# Legacy import removed - using new architecture
-# from src.generation.parallel_generator import ParallelGenerator
 from src.generation.token_generator import TokenGenerator
 # Visualization removed - not helpful for ML portfolio
 from ..modeling.model_wrapper import TEMPOModelWrapper
@@ -12,6 +10,9 @@ import time
 from tqdm import tqdm
 from src.pruning import RetroactiveRemover
 from src.pruning.dynamic_threshold import DynamicThresholdManager
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class ExperimentRunner:
@@ -33,7 +34,7 @@ class ExperimentRunner:
         """
         # Ensure model is wrapped in TEMPOModelWrapper if not skipping wrapping
         if not skip_wrapping and not isinstance(model, TEMPOModelWrapper):
-            print("Warning: Model not wrapped with TEMPOModelWrapper. Wrapping now...")
+            logger.warning("Model not wrapped with TEMPOModelWrapper. Wrapping now...")
             self.model = TEMPOModelWrapper(model)
         else:
             self.model = model
@@ -125,12 +126,12 @@ class ExperimentRunner:
         # Set debug mode
         self.debug_mode = debug_mode
         if debug_mode:
-            print("Debug mode enabled for experiment runner")
+            logger.info("Debug mode enabled for experiment runner")
 
             # Set debug mode in the model
             if hasattr(self.model, "set_debug_mode"):
                 self.model.set_debug_mode(True)
-                print("Model debug mode ENABLED")
+                logger.info("Model debug mode ENABLED")
 
             # Log debug mode to file
             os.makedirs("logs", exist_ok=True)
@@ -158,7 +159,7 @@ class ExperimentRunner:
         # Set debug mode on the shared token generator
         if debug_mode:
             shared_token_generator.set_debug_mode(True)
-            print("Shared TokenGenerator debug mode ENABLED")
+            logger.info("Shared TokenGenerator debug mode ENABLED")
 
         # Modify removal setup
         remover = None
@@ -189,7 +190,7 @@ class ExperimentRunner:
             if hasattr(retroactive_remover, "set_token_generator"):
                 retroactive_remover.set_token_generator(shared_token_generator)
                 retroactive_remover.set_debug_mode(debug_mode)
-                print("Set shared TokenGenerator on RetroactiveRemover")
+                logger.debug("Set shared TokenGenerator on RetroactiveRemover")
 
             print(
                 f"Using retroactive removal with attention threshold: {attention_threshold}"
@@ -237,7 +238,7 @@ class ExperimentRunner:
         # Configure generator (for ParallelGenerator)
         if not use_mcts:
             if use_custom_rope:
-                print("Using custom RoPE modifications for parallel token positioning")
+                logger.info("Using custom RoPE modifications for parallel token positioning")
 
             # Configure RoPE modifier if available and debug options are set
             if (
@@ -247,10 +248,10 @@ class ExperimentRunner:
             ):
                 if disable_kv_cache_consistency:
                     generator.rope_modifier.enable_kv_cache_consistency(False)
-                    print("RoPE modifier KV cache consistency disabled")
+                    logger.info("RoPE modifier KV cache consistency disabled")
 
             if disable_kv_cache:
-                print("KV caching disabled for more consistent attention patterns")
+                logger.info("KV caching disabled for more consistent attention patterns")
 
             if allow_intraset_token_visibility:
                 print(
@@ -277,7 +278,7 @@ class ExperimentRunner:
         # Prepare messages format for Cogito model if thinking is enabled
         system_content = None
         if enable_thinking:
-            print("Enabling Cogito's deep thinking mode")
+            logger.info("Enabling Cogito's deep thinking mode")
             system_content = "Enable deep thinking subroutine."
 
         setup_progress.update(1)  # Setup complete, starting generation
@@ -285,9 +286,7 @@ class ExperimentRunner:
 
         # Run generation with timing
         generation_start = time.time()
-        print(
-            f"Starting token generation with selection_threshold={selection_threshold}..."
-        )
+        logger.info(f"Starting token generation with selection_threshold={selection_threshold}...")
 
         if use_mcts:
             # Generate with MCTS generator
@@ -373,16 +372,13 @@ class ExperimentRunner:
 
         # Visualization removed - not helpful for ML portfolio
 
-        # Print generated text and statistics
-        print("\nGenerated Text:")
-        print("-" * 50)
-        print(results["generated_text"])
-        print("-" * 50)
+        # Log generated text
+        logger.info(f"\nGenerated Text:\n{'-' * 50}\n{results['generated_text']}\n{'-' * 50}")
 
-        # Print basic statistics
-        print(f"Generation completed in {generation_time:.2f} seconds")
+        # Log basic statistics
+        logger.info(f"Generation completed in {generation_time:.2f} seconds")
         if max_tokens > 0:
-            print(f"Average tokens/second: {max_tokens/generation_time:.2f}")
+            logger.info(f"Average tokens/second: {max_tokens/generation_time:.2f}")
 
         # Save results to JSON - invariant: results must be savable
         with open(output_path / "results.json", 'w', encoding='utf-8') as f:
