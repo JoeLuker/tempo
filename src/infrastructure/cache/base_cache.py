@@ -42,11 +42,11 @@ class BaseCache(Generic[K, V], LoggingMixin, ABC):
         """
         if key in self.cache:
             self.hits += 1
-            self.log_debug(f"Cache hit for key: {key}")
+            self.log(f"Cache hit for key: {key}", level="debug")
             return self.cache[key]
         
         self.misses += 1
-        self.log_debug(f"Cache miss for key: {key}")
+        self.log(f"Cache miss for key: {key}", level="debug")
         return None
     
     def put(self, key: K, value: V) -> None:
@@ -61,21 +61,21 @@ class BaseCache(Generic[K, V], LoggingMixin, ABC):
             self._evict_oldest()
         
         self.cache[key] = value
-        self.log_debug(f"Cached value for key: {key}")
+        self.log(f"Cached value for key: {key}", level="debug")
     
     def _evict_oldest(self) -> None:
         """Evict the oldest entry from the cache (FIFO)."""
         if self.cache:
             oldest_key = next(iter(self.cache))
             del self.cache[oldest_key]
-            self.log_debug(f"Evicted oldest key: {oldest_key}")
+            self.log(f"Evicted oldest key: {oldest_key}", level="debug")
     
     def clear(self) -> None:
         """Clear all entries from the cache."""
         self.cache.clear()
         self.hits = 0
         self.misses = 0
-        self.log_info(f"{self.cache_name} cache cleared")
+        self.log(f"{self.cache_name} cache cleared", level="info")
     
     def get_stats(self) -> Dict[str, int]:
         """Get cache statistics.

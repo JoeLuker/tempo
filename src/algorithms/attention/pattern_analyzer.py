@@ -2,7 +2,7 @@
 
 import torch
 import torch.nn.functional as F
-from typing import List, Tuple, Optional, Dict
+from typing import List, Tuple, Optional, Dict, Any
 
 
 class AttentionPatternAnalyzer:

@@ -3,13 +3,13 @@ import os
 import json
 from pathlib import Path
 from typing import Any, Optional
-from src.generation.token_generator import TokenGenerator
+from src.infrastructure.generation.token_generator_impl import TokenGeneratorImpl as TokenGenerator
 # Visualization removed - not helpful for ML portfolio
 from ..modeling.model_wrapper import TEMPOModelWrapper
 import time
 from tqdm import tqdm
-from src.pruning import RetroactiveRemover
-from src.pruning.dynamic_threshold import DynamicThresholdManager
+from src.algorithms.pruning.attention_pruner import AttentionBasedPruner
+from src.algorithms.pruning.threshold_manager import DynamicThresholdManager
 import logging
 
 logger = logging.getLogger(__name__)
