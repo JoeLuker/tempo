@@ -182,22 +182,26 @@ class GenerateTextUseCase(LoggingMixin):
             self.log(f"Raw generated text: '{result.raw_generated_text[:200]}'")  # Show first 200 chars
         
         # Format with layout if formatter available
-        if self.formatter and hasattr(self.formatter, 'format_using_layout'):
-            result.generated_text = self.formatter.format_using_layout(
-                prompt=prompt,
-                input_ids=final_state.input_ids[0].tolist(),
+        if self.formatter:
+            # Use colored bracket formatting
+            all_token_ids = final_state.input_ids[0].tolist()
+            result.generated_text = self.formatter.format_with_parallel_indicators(
+                token_ids=all_token_ids,
                 logical_layout=result.logical_layout,
                 prompt_length=prompt_length,
                 all_original_token_sets=result.all_original_token_sets,
-                tokenizer=self.tokenizer,
-                show_token_ids=config.show_token_ids
+                all_surviving_token_sets=result.all_surviving_token_sets
+            )
+
+            # Extract clean text
+            result.clean_text = self.formatter.extract_clean_text(
+                token_ids=all_token_ids,
+                logical_layout=result.logical_layout,
+                prompt_length=prompt_length
             )
         else:
             result.generated_text = prompt + result.raw_generated_text
-        
-        # Extract clean text if formatter supports it
-        if self.formatter and hasattr(self.formatter, 'extract_clean_text'):
-            result.clean_text = self.formatter.extract_clean_text(result.generated_text)
+            result.clean_text = result.raw_generated_text
         
         # Build visualization data if requested
         if config.return_parallel_sets:

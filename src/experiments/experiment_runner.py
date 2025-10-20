@@ -169,6 +169,10 @@ class ExperimentRunner:
             )
             logger.info(f"Retroactive pruning enabled with attention threshold: {attention_threshold}")
 
+        # 12. Text Formatter (for beautiful output with colored brackets)
+        from src.application.services.text_formatter import TextFormatter
+        formatter = TextFormatter(tokenizer=tokenizer_adapter, debug_mode=debug_mode)
+
         # Create generation config
         system_content = "Enable deep thinking subroutine." if enable_thinking else None
 
@@ -192,7 +196,7 @@ class ExperimentRunner:
             sequence_manager=sequence_manager,
             rope_modifier=rope_service,
             attention_manager=attention_service,
-            formatter=None,  # Will implement later
+            formatter=formatter,
             debug_mode=debug_mode
         )
 
@@ -234,7 +238,7 @@ class ExperimentRunner:
             print(f"\n{'='*60}")
             print(f"Generation Results")
             print(f"{'='*60}")
-            print(f"Generated Text:\n{result.raw_generated_text}")
+            print(f"Generated Text:\n{result.generated_text}")
             print(f"{'='*60}")
             print(f"Generation Time: {generation_time:.2f}s")
             if max_tokens > 0:
