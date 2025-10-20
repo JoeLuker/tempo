@@ -168,10 +168,18 @@ class GenerateTextUseCase(LoggingMixin):
         """Format the generation output."""
         # Extract generated tokens
         generated_token_ids = final_state.input_ids[0][prompt_length:].tolist()
-        
-        # Decode raw text
-        result.raw_generated_text = self.tokenizer.decode_tokens(generated_token_ids)[0]
+
+        if self.debug_mode:
+            self.log(f"Prompt length: {prompt_length}, Final sequence length: {final_state.input_ids.size(1)}")
+            self.log(f"Generated {len(generated_token_ids)} token IDs: {generated_token_ids[:20]}")  # Show first 20
+
+        # Decode raw text - join all decoded tokens
+        decoded_tokens = self.tokenizer.decode_tokens(generated_token_ids)
+        result.raw_generated_text = "".join(decoded_tokens) if isinstance(decoded_tokens, list) else decoded_tokens
         result.prompt = prompt
+
+        if self.debug_mode:
+            self.log(f"Raw generated text: '{result.raw_generated_text[:200]}'")  # Show first 200 chars
         
         # Format with layout if formatter available
         if self.formatter and hasattr(self.formatter, 'format_using_layout'):

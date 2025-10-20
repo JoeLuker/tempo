@@ -1,30 +1,48 @@
+"""Experiment runner for TEMPO text generation.
+
+This module provides a simplified runner that uses the new domain-driven architecture.
+"""
+
 import torch
 import os
 import json
+import time
+import logging
 from pathlib import Path
 from typing import Any, Optional
-from src.infrastructure.generation.token_generator_impl import TokenGeneratorImpl as TokenGenerator
-# Visualization removed - not helpful for ML portfolio
-from ..modeling.model_wrapper import TEMPOModelWrapper
-import time
 from tqdm import tqdm
-from src.algorithms.pruning.attention_pruner import AttentionBasedPruner
-from src.algorithms.pruning.threshold_manager import DynamicThresholdManager
-import logging
+
+# Domain imports
+from src.domain.entities.parallel_generation import GenerationConfig
+from src.domain.services.generation_orchestrator import GenerationOrchestrator
+
+# Infrastructure imports
+from src.infrastructure.model import ModelAdapter
+from src.infrastructure.cache import CacheManager
+from src.infrastructure.generation.token_generator_impl import TokenGeneratorImpl
+from src.infrastructure.generation.standard_generation_strategy import StandardGenerationStrategy
+from src.infrastructure.tokenization import TokenizerAdapter
+from src.infrastructure.performance import PerformanceTracker
+from src.infrastructure.selection import ThresholdTokenSelector
+
+# Application imports
+from src.application.use_cases.generate_text import GenerateTextUseCase
+from src.application.services.sequence_manager import SequenceManager
+from src.application.services.rope_service import RoPEService
+from src.application.services.attention_service import AttentionService
+from src.application.services.pruning_service import PruningService
+
+# Model imports
+from src.modeling.model_wrapper import TEMPOModelWrapper
 
 logger = logging.getLogger(__name__)
 
 
 class ExperimentRunner:
-    """
-    Responsible for running experiments with the parallel generator.
-    """
+    """Responsible for running text generation experiments using TEMPO."""
 
-    def __init__(
-        self, model, tokenizer, device: str = "mps", skip_wrapping: bool = False
-    ):
-        """
-        Initialize the experiment runner.
+    def __init__(self, model, tokenizer, device: str = "mps", skip_wrapping: bool = False):
+        """Initialize the experiment runner.
 
         Args:
             model: The language model (wrapped or unwrapped)
@@ -41,15 +59,10 @@ class ExperimentRunner:
 
         self.tokenizer = tokenizer
         self.device = device
-
-        # Visualization removed - not helpful for ML portfolio
-
-        # Debug mode flag
         self.debug_mode = False
 
     def run_experiment(self, args: dict[str, Any]) -> dict[str, Any]:
-        """
-        Run a generation experiment with the given parameters.
+        """Run a generation experiment with the given parameters.
 
         Args:
             args: Dictionary of experiment parameters
@@ -57,382 +70,184 @@ class ExperimentRunner:
         Returns:
             dict[str, Any]: Results dictionary
         """
-        # Extract parameters from args
+        # Extract parameters
         prompt = args.get("prompt", "")
         max_tokens = args.get("max_tokens", 100)
         selection_threshold = args.get("selection_threshold", 0.1)
         use_retroactive_removal = args.get("use_retroactive_removal", False)
-        # Visualization removed - not helpful for ML portfolio
         output_dir = args.get("output_dir", "./output")
-        bezier_points = args.get("bezier_points", [0.2, 0.8])
         min_steps = args.get("min_steps", 0)
         show_token_ids = args.get("show_token_ids", False)
-        use_custom_rope = args.get("use_custom_rope", True)
         debug_mode = args.get("debug_mode", False)
-        disable_kv_cache_consistency = args.get("disable_kv_cache_consistency", False)
         disable_kv_cache = args.get("disable_kv_cache", False)
         enable_thinking = args.get("enable_thinking", False)
-        allow_intraset_token_visibility = args.get(
-            "allow_intraset_token_visibility", False
-        )
-        no_preserve_isolated_tokens = args.get("no_preserve_isolated_tokens", False)
+        isolate_parallel_tokens = not args.get("allow_intraset_token_visibility", False)
         use_mcts = args.get("use_mcts", False)
-
-        # Process dynamic thresholding parameters
-        if args.get("dynamic_threshold", False):
-            # Process bezier points if they were supplied as individual p1, p2 values
-            if "bezier_p1" in args and "bezier_p2" in args:
-                bezier_p1 = args.get("bezier_p1", 0.2)
-                bezier_p2 = args.get("bezier_p2", 0.8)
-                bezier_points = [bezier_p1, bezier_p2]
-                args["bezier_points"] = bezier_points
-
-            # Add ReLU configuration to results if enabled
-            use_relu = args.get("use_relu", False)
-            if use_relu:
-                relu_activation = args.get("relu_activation_point", 0.5)
-                print(
-                    f"Using dynamic thresholding with ReLU transition (activation point: {relu_activation})"
-                )
-            elif args.get("dynamic_threshold", False):
-                print(
-                    f"Using dynamic thresholding with Bezier curve (control points: {bezier_points[0]}, {bezier_points[1]})"
-                )
-
-        # Convert flags for backward compatibility
-        isolate_parallel_tokens = not allow_intraset_token_visibility
-
-        # Only preserve isolated tokens by default if the user didn't explicitly request pruning
-        if (
-            use_retroactive_removal and no_preserve_isolated_tokens is False
-        ):  # If removal is requested and preservation wasn't explicitly disabled
-            # Don't automatically preserve - user wants removal
-            preserve_all_isolated_tokens = False
-        else:
-            # Use default behavior - preserve isolated tokens
-            preserve_all_isolated_tokens = (
-                not no_preserve_isolated_tokens if isolate_parallel_tokens else None
-            )
-
-        # Print initialization progress
-        setup_steps = [
-            "Setting up experiment",
-            "Configuring removal",
-            "Creating generator",
-            "Starting generation",
-        ]
-        setup_progress = tqdm(setup_steps, desc="Experiment setup", unit="step")
 
         # Set debug mode
         self.debug_mode = debug_mode
         if debug_mode:
             logger.info("Debug mode enabled for experiment runner")
-
-            # Set debug mode in the model
             if hasattr(self.model, "set_debug_mode"):
                 self.model.set_debug_mode(True)
                 logger.info("Model debug mode ENABLED")
 
-            # Log debug mode to file
-            os.makedirs("logs", exist_ok=True)
-            with open("logs/experiment_debug.log", "a", encoding='utf-8') as f:
-                f.write(
-                    f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Experiment started with debug mode ENABLED\n"
-                )
-                f.write(f"Prompt: {prompt[:100]}{'...' if len(prompt) > 100 else ''}\n")
-                f.write(
-                    f"Parameters: selection_threshold={selection_threshold}, max_tokens={max_tokens}\n"
-                )
-                f.write("----------------------------------------\n")
-
-        # Create output directory if needed
+        # Create output directory
         output_path = Path(output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
 
-        setup_progress.update(1)  # First step complete
+        # Setup progress tracking
+        print(f"\n{'='*60}")
+        print(f"TEMPO Text Generation")
+        print(f"{'='*60}")
+        print(f"Prompt: {prompt[:50]}...")
+        print(f"Selection Threshold: {selection_threshold}")
+        print(f"Max Tokens: {max_tokens}")
+        print(f"Debug Mode: {debug_mode}")
+        print(f"{'='*60}\n")
 
-        # Create a SINGLE token generator to be shared by all components
-        shared_token_generator = TokenGenerator(
-            model=self.model, tokenizer=self.tokenizer, device=self.device
+        # Create infrastructure components
+        logger.info("Initializing components...")
+
+        # 1. Model Adapter
+        model_adapter = ModelAdapter(model=self.model, device=self.device)
+
+        # 2. Cache Manager
+        cache_manager = CacheManager()
+
+        # 3. Performance Tracker
+        performance_tracker = PerformanceTracker()
+
+        # 4. Token Generator
+        token_generator = TokenGeneratorImpl(
+            model_adapter=model_adapter,
+            cache_manager=cache_manager,
+            performance_tracker=performance_tracker,
+            debug_mode=debug_mode
         )
 
-        # Set debug mode on the shared token generator
-        if debug_mode:
-            shared_token_generator.set_debug_mode(True)
-            logger.info("Shared TokenGenerator debug mode ENABLED")
+        # 5. Tokenizer Adapter
+        tokenizer_adapter = TokenizerAdapter(tokenizer=self.tokenizer)
 
-        # Modify removal setup
-        remover = None
-        retroactive_remover = None
+        # 6. Token Selector
+        token_selector = ThresholdTokenSelector(debug_mode=debug_mode)
 
+        # 7. Generation Strategy
+        generation_strategy = StandardGenerationStrategy(
+            token_selector=token_selector,
+            threshold_strategy=None,  # TODO: Wire up dynamic thresholding
+            tokenizer=tokenizer_adapter,
+            debug_mode=debug_mode
+        )
+
+        # 8. Sequence Manager
+        sequence_manager = SequenceManager(debug_mode=debug_mode)
+
+        # 9. RoPE Service (for parallel token positioning)
+        rope_service = RoPEService(device=self.device, debug_mode=debug_mode)
+
+        # 10. Attention Service (for controlling parallel token visibility)
+        attention_service = AttentionService(
+            isolate_parallel_tokens=isolate_parallel_tokens,
+            device=self.device,
+            debug_mode=debug_mode
+        )
+
+        # 11. Pruning Service (for retroactive pruning)
+        pruning_service = None
         if use_retroactive_removal:
             attention_threshold = args.get("attention_threshold", 0.01)
-
-            # Create retroactive remover
-            retroactive_remover = RetroactiveRemover(
-                model=self.model,
-                tokenizer=self.tokenizer,
+            pruning_service = PruningService(
                 attention_threshold=attention_threshold,
-                device=self.device,
-                debug_mode=debug_mode,  # Use the debug_mode from args instead of hardcoding True
                 use_relative_attention=not args.get("no_relative_attention", False),
                 relative_threshold=args.get("relative_threshold", 0.5),
-                use_multi_scale_attention=not args.get(
-                    "no_multi_scale_attention", False
-                ),
+                use_multi_scale=not args.get("no_multi_scale_attention", False),
                 num_layers_to_use=args.get("num_layers_to_use", None),
                 use_sigmoid_threshold=not args.get("no_sigmoid_threshold", False),
                 sigmoid_steepness=args.get("sigmoid_steepness", 10.0),
-                complete_pruning_mode=args.get("complete_removal_mode", "keep_token"),
+                debug_mode=debug_mode
             )
+            logger.info(f"Retroactive pruning enabled with attention threshold: {attention_threshold}")
 
-            # Set the shared TokenGenerator instance on the retroactive remover
-            if hasattr(retroactive_remover, "set_token_generator"):
-                retroactive_remover.set_token_generator(shared_token_generator)
-                retroactive_remover.set_debug_mode(debug_mode)
-                logger.debug("Set shared TokenGenerator on RetroactiveRemover")
+        # Create generation config
+        system_content = "Enable deep thinking subroutine." if enable_thinking else None
 
-            print(
-                f"Using retroactive removal with attention threshold: {attention_threshold}"
-            )
+        config = GenerationConfig(
+            max_tokens=max_tokens,
+            selection_threshold=selection_threshold,
+            min_steps=min_steps,
+            use_retroactive_removal=use_retroactive_removal,
+            disable_kv_cache=disable_kv_cache,
+            isolate_parallel_tokens=isolate_parallel_tokens,
+            show_token_ids=show_token_ids,
+            system_content=system_content,
+            return_parallel_sets=False
+        )
 
-        setup_progress.update(1)  # Removal setup complete
+        # Create use case
+        use_case = GenerateTextUseCase(
+            token_generator=token_generator,
+            tokenizer=tokenizer_adapter,
+            generation_strategy=generation_strategy,
+            sequence_manager=sequence_manager,
+            rope_modifier=rope_service,
+            attention_manager=attention_service,
+            formatter=None,  # Will implement later
+            debug_mode=debug_mode
+        )
 
-        # Create the appropriate generator based on the mode
+        # Handle MCTS if requested
         if use_mcts:
-            # Import specialized components for MCTS
-            mcts_c_puct = args.get("mcts_c_puct", 1.0)
-            mcts_simulations = args.get("mcts_simulations", 10)
-            mcts_attention_threshold = args.get(
-                "mcts_attention_threshold", attention_threshold
-            )
+            logger.warning("MCTS mode requested but not yet integrated with new architecture. Using standard generation.")
 
-            from src.search import MCTSGenerator
-
-            # Use the standard MCTS generator with shared token generator
-            generator = MCTSGenerator(
-                model=self.model,
-                tokenizer=self.tokenizer,
-                token_generator=shared_token_generator,
-                retroactive_remover=retroactive_remover,
-                c_puct=mcts_c_puct,
-                num_simulations=mcts_simulations,
-                attention_threshold=mcts_attention_threshold,
-                device=self.device,
-                debug_mode=debug_mode,
-            )
-        else:
-            # Use the standard ParallelGenerator
-            generator = ParallelGenerator(
-                model=self.model,
-                tokenizer=self.tokenizer,
-                device=self.device,
-                has_custom_attention=True,
-                use_custom_rope=use_custom_rope,
-                debug_mode=debug_mode,
-                token_generator=shared_token_generator,  # Pass the shared instance
-            )
-
-        setup_progress.update(1)  # Generator created
-
-        # Configure generator (for ParallelGenerator)
-        if not use_mcts:
-            if use_custom_rope:
-                logger.info("Using custom RoPE modifications for parallel token positioning")
-
-            # Configure RoPE modifier if available and debug options are set
-            if (
-                use_custom_rope
-                and hasattr(generator, "rope_modifier")
-                and generator.rope_modifier is not None
-            ):
-                if disable_kv_cache_consistency:
-                    generator.rope_modifier.enable_kv_cache_consistency(False)
-                    logger.info("RoPE modifier KV cache consistency disabled")
-
-            if disable_kv_cache:
-                logger.info("KV caching disabled for more consistent attention patterns")
-
-            if allow_intraset_token_visibility:
-                print(
-                    f"Parallel tokens visibility mode enabled (tokens can see each other within the same set)"
-                )
-            else:
-                print("Parallel tokens are isolated (default: can't see each other)")
-
-                # Indicate pruning status based on use_retroactive_removal and preserve_all_isolated_tokens
-                if use_retroactive_removal:
-                    if not preserve_all_isolated_tokens:
-                        print(
-                            "Retroactive pruning will evaluate isolated tokens (explicitly requested)"
-                        )
-                    else:
-                        print(
-                            "Isolated tokens will be preserved (retroactive pruning only evaluates non-isolated tokens)"
-                        )
-                elif no_preserve_isolated_tokens:
-                    print(
-                        "Warning: No-preserve flag set but retroactive pruning is disabled, has no effect"
-                    )
-
-        # Prepare messages format for Cogito model if thinking is enabled
-        system_content = None
-        if enable_thinking:
-            logger.info("Enabling Cogito's deep thinking mode")
-            system_content = "Enable deep thinking subroutine."
-
-        setup_progress.update(1)  # Setup complete, starting generation
-        setup_progress.close()
-
-        # Run generation with timing
+        # Run generation
+        logger.info(f"Starting generation...")
         generation_start = time.time()
-        logger.info(f"Starting token generation with selection_threshold={selection_threshold}...")
 
-        if use_mcts:
-            # Generate with MCTS generator
-            generated_text = generator.generate(
+        try:
+            result = use_case.execute(
                 prompt=prompt,
-                max_tokens=max_tokens,
-                temperature=1.0,
-                top_p=0.9,
-                debug_mode=debug_mode,
+                config=config,
+                retroactive_remover=pruning_service
             )
 
-            # Create results structure similar to ParallelGenerator
+            generation_time = time.time() - generation_start
+
+            # Build results dictionary
             results = {
-                "generated_text": generated_text,
-                "raw_generated_text": generated_text,
+                "generated_text": result.generated_text,
+                "raw_generated_text": result.raw_generated_text,
+                "clean_text": getattr(result, "clean_text", result.raw_generated_text),
                 "prompt": prompt,
                 "selection_threshold": selection_threshold,
                 "use_retroactive_removal": use_retroactive_removal,
                 "min_steps": min_steps,
-                "generation_time": time.time() - generation_start,
-                "use_mcts": True,
-                "mcts_simulations": mcts_simulations,
-                "mcts_c_puct": mcts_c_puct,
-            }
-        else:
-            # Generate with ParallelGenerator
-            results = generator.generate(
-                prompt=prompt,
-                max_tokens=max_tokens,
-                selection_threshold=selection_threshold,
-                return_parallel_sets=False,  # Visualization removed
-                use_retroactive_removal=use_retroactive_removal,
-                min_steps=min_steps,
-                show_token_ids=show_token_ids,
-                debug_mode=debug_mode,
-                disable_kv_cache=disable_kv_cache,
-                system_content=system_content,
-                isolate_parallel_tokens=isolate_parallel_tokens,
-                preserve_all_isolated_tokens=preserve_all_isolated_tokens,
-                retroactive_remover=retroactive_remover,
-            )
-
-        generation_time = time.time() - generation_start
-
-        # Add experiment parameters to results
-        if use_retroactive_removal:
-            results["attention_threshold"] = attention_threshold
-            results["use_relative_attention"] = not args.get(
-                "no_relative_attention", False
-            )
-            results["relative_threshold"] = args.get("relative_threshold", 0.5)
-            results["use_multi_scale_attention"] = not args.get(
-                "no_multi_scale_attention", False
-            )
-            results["num_layers_to_use"] = args.get("num_layers_to_use", None)
-            results["use_sigmoid_threshold"] = not args.get(
-                "no_sigmoid_threshold", False
-            )
-            results["sigmoid_steepness"] = args.get("sigmoid_steepness", 10.0)
-            results["complete_removal_mode"] = args.get(
-                "complete_removal_mode", "keep_token"
-            )
-
-        # Add Cogito-specific parameters
-        if enable_thinking:
-            results["enable_thinking"] = True
-
-        # Add isolation mode to results
-        if not use_mcts and isolate_parallel_tokens:
-            results["isolate_parallel_tokens"] = True
-
-        # Add MCTS parameters to results
-        if use_mcts:
-            results["use_mcts"] = True
-            results["mcts_simulations"] = mcts_simulations
-            results["mcts_c_puct"] = mcts_c_puct
-            results["mcts_attention_threshold"] = mcts_attention_threshold
-
-        # Add model wrapper information if debug mode is enabled
-        if debug_mode:
-            intermediate_values = getattr(self.model, "intermediate_values", {})
-            results["captured_intermediate_values"] = list(intermediate_values.keys())
-
-        # Visualization removed - not helpful for ML portfolio
-
-        # Log generated text
-        logger.info(f"\nGenerated Text:\n{'-' * 50}\n{results['generated_text']}\n{'-' * 50}")
-
-        # Log basic statistics
-        logger.info(f"Generation completed in {generation_time:.2f} seconds")
-        if max_tokens > 0:
-            logger.info(f"Average tokens/second: {max_tokens/generation_time:.2f}")
-
-        # Save results to JSON - invariant: results must be savable
-        with open(output_path / "results.json", 'w', encoding='utf-8') as f:
-            # Create a copy of results with only serializable data
-            serializable_results = {
-                "generated_text": results["generated_text"],
-                "raw_generated_text": results.get(
-                    "raw_generated_text", results["generated_text"]
-                ),
-                "prompt": results["prompt"],
-                "selection_threshold": results["selection_threshold"],
-                "use_retroactive_removal": results["use_retroactive_removal"],
+                "generation_time": result.generation_time,
+                "removal_time": result.removal_time,
+                "removal_steps": result.removal_steps,
+                "isolate_parallel_tokens": isolate_parallel_tokens,
                 "enable_thinking": enable_thinking,
                 "use_mcts": use_mcts,
             }
 
-            # Add MCTS params if available
-            if use_mcts:
-                serializable_results["mcts_simulations"] = mcts_simulations
-                serializable_results["mcts_c_puct"] = mcts_c_puct
-                serializable_results["mcts_attention_threshold"] = (
-                    mcts_attention_threshold
-                )
+            # Print results
+            print(f"\n{'='*60}")
+            print(f"Generation Results")
+            print(f"{'='*60}")
+            print(f"Generated Text:\n{result.raw_generated_text}")
+            print(f"{'='*60}")
+            print(f"Generation Time: {generation_time:.2f}s")
+            if max_tokens > 0:
+                print(f"Tokens/Second: {max_tokens/generation_time:.2f}")
+            print(f"{'='*60}\n")
 
-            # Add removal params if available
-            if "attention_threshold" in results:
-                serializable_results["attention_threshold"] = results[
-                    "attention_threshold"
-                ]
-            if "use_relative_attention" in results:
-                serializable_results["use_relative_attention"] = results[
-                    "use_relative_attention"
-                ]
-            if "relative_threshold" in results:
-                serializable_results["relative_threshold"] = results[
-                    "relative_threshold"
-                ]
-            if "use_multi_scale_attention" in results:
-                serializable_results["use_multi_scale_attention"] = results[
-                    "use_multi_scale_attention"
-                ]
-            if "num_layers_to_use" in results:
-                serializable_results["num_layers_to_use"] = results["num_layers_to_use"]
-            if "use_sigmoid_threshold" in results:
-                serializable_results["use_sigmoid_threshold"] = results[
-                    "use_sigmoid_threshold"
-                ]
-            if "sigmoid_steepness" in results:
-                serializable_results["sigmoid_steepness"] = results["sigmoid_steepness"]
-            if "complete_removal_mode" in results:
-                serializable_results["complete_removal_mode"] = results[
-                    "complete_removal_mode"
-                ]
+            # Save results
+            logger.info(f"Saving results to {output_path / 'results.json'}")
+            with open(output_path / "results.json", 'w', encoding='utf-8') as f:
+                json.dump(results, f, indent=2)
 
-            json.dump(serializable_results, f, indent=2)
+            return results
 
-        return results
+        except Exception as e:
+            logger.error(f"Generation failed: {e}", exc_info=True)
+            raise
