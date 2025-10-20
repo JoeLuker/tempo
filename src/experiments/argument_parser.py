@@ -1,4 +1,6 @@
 import argparse
+import json
+from pathlib import Path
 from typing import Any
 
 
@@ -17,6 +19,23 @@ class ArgumentParser:
         """
         parser = argparse.ArgumentParser(
             description="Run parallel text generation with TEMPO"
+        )
+
+        # JSON configuration
+        parser.add_argument(
+            "--config",
+            type=str,
+            help="Path to JSON configuration file (overrides all other arguments)",
+        )
+        parser.add_argument(
+            "--output-json",
+            action="store_true",
+            help="Output results in JSON format instead of formatted text",
+        )
+        parser.add_argument(
+            "--json-output-file",
+            type=str,
+            help="Path to save JSON output (if not specified, prints to stdout)",
         )
 
         # Basic generation parameters
@@ -284,10 +303,33 @@ class ArgumentParser:
         # Convert arguments to dictionary
         args_dict = vars(args)
 
-        # Combine bezier points
-        args_dict["bezier_points"] = [
-            args_dict.pop("bezier_p1"),
-            args_dict.pop("bezier_p2"),
-        ]
+        # Check if config file is provided
+        config_file = args_dict.get("config")
+        if config_file:
+            # Load configuration from JSON file
+            config_path = Path(config_file)
+            if not config_path.exists():
+                raise FileNotFoundError(f"Config file not found: {config_file}")
+
+            with open(config_path, 'r') as f:
+                json_config = json.load(f)
+
+            # JSON config overrides all CLI arguments except output options
+            output_json = args_dict.get("output_json", False)
+            json_output_file = args_dict.get("json_output_file")
+
+            args_dict = json_config
+            args_dict["output_json"] = output_json
+            args_dict["json_output_file"] = json_output_file
+
+        # Combine bezier points if they exist as separate values
+        if "bezier_p1" in args_dict and "bezier_p2" in args_dict:
+            args_dict["bezier_points"] = [
+                args_dict.pop("bezier_p1"),
+                args_dict.pop("bezier_p2"),
+            ]
+        elif "bezier_points" not in args_dict:
+            # Use defaults if not specified
+            args_dict["bezier_points"] = [0.2, 0.8]
 
         return args_dict

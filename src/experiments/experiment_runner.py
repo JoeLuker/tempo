@@ -234,18 +234,57 @@ class ExperimentRunner:
                 "use_mcts": use_mcts,
             }
 
-            # Print results
-            print(f"\n{'='*60}")
-            print(f"Generation Results")
-            print(f"{'='*60}")
-            print(f"Generated Text:\n{result.generated_text}")
-            print(f"{'='*60}")
-            print(f"Generation Time: {generation_time:.2f}s")
-            if max_tokens > 0:
-                print(f"Tokens/Second: {max_tokens/generation_time:.2f}")
-            print(f"{'='*60}\n")
+            # Handle output format
+            output_json = args.get("output_json", False)
+            json_output_file = args.get("json_output_file")
 
-            # Save results
+            if output_json:
+                # Prepare JSON output
+                json_output = {
+                    "prompt": prompt,
+                    "generated_text": result.generated_text,
+                    "clean_text": getattr(result, "clean_text", result.raw_generated_text),
+                    "raw_generated_text": result.raw_generated_text,
+                    "generation_time": generation_time,
+                    "tokens_per_second": max_tokens / generation_time if max_tokens > 0 else 0,
+                    "config": {
+                        "selection_threshold": selection_threshold,
+                        "max_tokens": max_tokens,
+                        "use_retroactive_removal": use_retroactive_removal,
+                        "attention_threshold": args.get("attention_threshold") if use_retroactive_removal else None,
+                        "use_mcts": use_mcts,
+                        "isolate_parallel_tokens": isolate_parallel_tokens,
+                        "enable_thinking": enable_thinking,
+                        "seed": args.get("seed", 42),
+                    },
+                    "metrics": {
+                        "generation_time": result.generation_time,
+                        "removal_time": result.removal_time,
+                        "removal_steps": result.removal_steps,
+                    }
+                }
+
+                # Output JSON
+                if json_output_file:
+                    json_path = output_path / json_output_file
+                    with open(json_path, 'w', encoding='utf-8') as f:
+                        json.dump(json_output, f, indent=2, ensure_ascii=False)
+                    print(f"JSON output saved to: {json_path}")
+                else:
+                    print(json.dumps(json_output, indent=2, ensure_ascii=False))
+            else:
+                # Print formatted results
+                print(f"\n{'='*60}")
+                print(f"Generation Results")
+                print(f"{'='*60}")
+                print(f"Generated Text:\n{result.generated_text}")
+                print(f"{'='*60}")
+                print(f"Generation Time: {generation_time:.2f}s")
+                if max_tokens > 0:
+                    print(f"Tokens/Second: {max_tokens/generation_time:.2f}")
+                print(f"{'='*60}\n")
+
+            # Always save results to results.json for internal tracking
             logger.info(f"Saving results to {output_path / 'results.json'}")
             with open(output_path / "results.json", 'w', encoding='utf-8') as f:
                 json.dump(results, f, indent=2)
