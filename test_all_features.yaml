@@ -1,0 +1,20 @@
+# Test all TEMPO features together
+prompt: "Once upon a time"
+max_tokens: 25
+selection_threshold: 0.08
+seed: 42
+
+# Enable retroactive pruning
+use_retroactive_removal: true
+attention_threshold: 0.015
+use_relative_attention: true
+relative_threshold: 0.5
+
+# Enable dynamic thresholding
+dynamic_threshold: true
+final_threshold: 0.3
+bezier_points: [0.2, 0.8]
+
+# RoPE and attention
+use_custom_rope: true
+allow_intraset_token_visibility: false

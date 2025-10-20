@@ -1,0 +1,10 @@
+# Test dynamic thresholding with Bezier curve
+prompt: "The cat sat on the"
+max_tokens: 20
+selection_threshold: 0.05  # Start low
+seed: 42
+
+# Enable dynamic thresholding
+dynamic_threshold: true
+final_threshold: 0.5  # End high
+bezier_points: [0.3, 0.7]  # Control points for smooth transition
