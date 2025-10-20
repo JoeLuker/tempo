@@ -1,5 +1,6 @@
 import argparse
 import json
+import yaml
 from pathlib import Path
 from typing import Any
 
@@ -21,11 +22,11 @@ class ArgumentParser:
             description="Run parallel text generation with TEMPO"
         )
 
-        # JSON configuration
+        # Configuration file support
         parser.add_argument(
             "--config",
             type=str,
-            help="Path to JSON configuration file (overrides all other arguments)",
+            help="Path to YAML or JSON configuration file (overrides all other arguments)",
         )
         parser.add_argument(
             "--output-json",
@@ -306,19 +307,26 @@ class ArgumentParser:
         # Check if config file is provided
         config_file = args_dict.get("config")
         if config_file:
-            # Load configuration from JSON file
+            # Load configuration from YAML or JSON file
             config_path = Path(config_file)
             if not config_path.exists():
                 raise FileNotFoundError(f"Config file not found: {config_file}")
 
+            # Determine file format from extension
+            suffix = config_path.suffix.lower()
             with open(config_path, 'r') as f:
-                json_config = json.load(f)
+                if suffix in ['.yaml', '.yml']:
+                    file_config = yaml.safe_load(f)
+                elif suffix == '.json':
+                    file_config = json.load(f)
+                else:
+                    raise ValueError(f"Unsupported config file format: {suffix}. Use .yaml, .yml, or .json")
 
-            # JSON config overrides all CLI arguments except output options
+            # Config file overrides all CLI arguments except output options
             output_json = args_dict.get("output_json", False)
             json_output_file = args_dict.get("json_output_file")
 
-            args_dict = json_config
+            args_dict = file_config
             args_dict["output_json"] = output_json
             args_dict["json_output_file"] = json_output_file
 

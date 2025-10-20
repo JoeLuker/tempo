@@ -1,0 +1,15 @@
+# TEMPO Configuration - With Retroactive Pruning
+# Example showing pruning configuration
+
+prompt: "The cat sat on the"
+max_tokens: 20
+selection_threshold: 0.1
+seed: 42
+
+# Enable retroactive pruning
+use_retroactive_removal: true
+attention_threshold: 0.02
+
+# Optional: Use relative attention for better pruning
+use_relative_attention: true
+relative_threshold: 0.5

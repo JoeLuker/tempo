@@ -1,0 +1,68 @@
+# TEMPO Configuration Example - Complete
+# This shows all available configuration options with their defaults
+
+# Basic Generation Parameters
+prompt: "The cat sat on the"
+max_tokens: 30
+selection_threshold: 0.1
+min_steps: 0
+seed: 42
+
+# Model Selection
+model: "deepcogito/cogito-v1-preview-llama-3B"
+output_dir: "./output"
+
+# Retroactive Pruning
+use_retroactive_removal: false
+attention_threshold: 0.01
+use_relative_attention: false
+no_relative_attention: false
+relative_threshold: 0.5
+
+# Multi-Scale Attention
+use_multi_scale_attention: false
+no_multi_scale_attention: false
+num_layers_to_use: null
+
+# Dynamic Thresholding
+dynamic_threshold: false
+final_threshold: 1.0
+bezier_points: [0.2, 0.8]
+use_relu: false
+relu_activation_point: 0.5
+
+# LCI & Sigmoid Thresholding
+use_lci_dynamic_threshold: false
+no_lci_dynamic_threshold: false
+use_sigmoid_threshold: false
+no_sigmoid_threshold: false
+sigmoid_steepness: 10.0
+
+# MCTS Parameters
+use_mcts: false
+mcts_simulations: 10
+mcts_c_puct: 1.0
+mcts_depth: 5
+
+# Cogito Features
+enable_thinking: false
+
+# System Behavior
+default_mode: false
+show_token_ids: false
+use_custom_rope: true
+debug_mode: false
+
+# KV Cache Options
+disable_kv_cache_consistency: false
+disable_kv_cache: false
+
+# Parallel Token Behavior
+allow_intraset_token_visibility: false
+no_preserve_isolated_tokens: false
+complete_removal_mode: "keep_token"  # Options: keep_token, keep_unattended, remove_position
+
+# Profiling
+profile: false
+use_cprofile: false
+profile_output: "tempo_profile.prof"

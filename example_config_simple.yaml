@@ -1,0 +1,7 @@
+# TEMPO Configuration - Simple Example
+# Minimal configuration for basic usage
+
+prompt: "Hello world! This is"
+max_tokens: 25
+selection_threshold: 0.08
+seed: 42
