@@ -1,0 +1,32 @@
+# Experiment 4: KV Cache Inspection
+# Goal: Verify RoPE positions and examine what's stored for parallel tokens
+
+experiment_name: "kv_cache_inspection"
+description: "Inspect KV cache to verify RoPE position sharing and storage"
+
+# Generation config
+prompt: "The cat sat on the"
+max_tokens: 10
+selection_threshold: 0.1
+seed: 42
+
+# TEMPO settings
+use_retroactive_removal: false
+allow_intraset_token_visibility: false
+use_custom_rope: true
+debug_mode: true  # Enable for detailed logging
+
+# Output settings
+output_dir: "./experiments/results/exp4_kv_cache"
+
+# Capture settings
+capture_kv_cache: true
+capture_rope_positions: true
+kv_cache_output_file: "kv_cache_states.pkl"
+rope_positions_file: "rope_positions.json"
+
+# What to inspect:
+# - RoPE position map: physical_position -> logical_position
+# - KV cache structure at each step
+# - Verify parallel tokens share same logical position
+# - Examine how next token queries the cache

@@ -1,0 +1,36 @@
+# Experiment 3: Cross-Parallel Attention Measurement
+# Goal: Measure attention between parallel tokens at same position
+
+experiment_name: "cross_parallel_attention"
+description: "Measure how much parallel tokens attend to each other in visible mode"
+
+# Generation config
+prompt: "The cat sat on the"
+max_tokens: 15
+selection_threshold: 0.08  # Lower threshold for more parallel tokens
+seed: 42
+
+# TEMPO settings
+use_retroactive_removal: false
+allow_intraset_token_visibility: true  # VISIBLE - we want to measure this
+use_custom_rope: true
+debug_mode: false
+
+# Output settings
+output_dir: "./experiments/results/exp3_cross_parallel"
+
+# Capture settings
+capture_attention: true
+capture_logits: false
+save_attention_matrices: true
+attention_output_file: "attention_weights.npz"
+
+# Analysis settings
+analyze_cross_parallel: true
+cross_parallel_output_file: "cross_parallel_scores.json"
+
+# What to measure:
+# - For each logical step with parallel tokens [t1, t2, t3, ...]
+# - Extract attention submatrix: attention[ti, tj] for all i,j
+# - Compute statistics: mean, max, variance of cross-parallel attention
+# - Compare to attention to prior context

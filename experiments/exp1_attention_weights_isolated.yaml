@@ -1,0 +1,26 @@
+# Experiment 1a: Capture Attention Weights - Isolated Mode
+# Goal: Capture full attention matrices to analyze what tokens attend to
+
+experiment_name: "attention_weights_isolated"
+description: "Capture attention weights with isolated parallel tokens"
+
+# Generation config
+prompt: "The cat sat on the"
+max_tokens: 10
+selection_threshold: 0.1
+seed: 42
+
+# TEMPO settings
+use_retroactive_removal: false
+allow_intraset_token_visibility: false  # ISOLATED
+use_custom_rope: true
+debug_mode: false
+
+# Output settings
+output_dir: "./experiments/results/exp1_isolated"
+
+# Capture settings
+capture_attention: true
+capture_logits: false
+save_attention_matrices: true
+attention_output_file: "attention_weights.npz"

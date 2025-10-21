@@ -1,0 +1,33 @@
+# Experiment 2: Logits Distribution Comparison
+# Goal: Compare full probability distributions between modes
+
+experiment_name: "logits_comparison"
+description: "Capture and compare logit distributions between isolated and visible modes"
+
+# Generation config
+prompt: "The cat sat on the"
+max_tokens: 10
+selection_threshold: 0.1
+seed: 42
+
+# Run both modes for comparison
+run_both_modes: true
+
+# TEMPO settings
+use_retroactive_removal: false
+use_custom_rope: true
+debug_mode: false
+
+# Output settings
+output_dir: "./experiments/results/exp2_logits"
+
+# Capture settings
+capture_attention: false
+capture_logits: true
+save_full_distributions: true  # Save entire vocab distribution, not just top-k
+logits_output_file: "logits_distributions.npz"
+
+# Analysis settings
+compute_kl_divergence: true
+compute_cosine_similarity: true
+top_k_analysis: [1, 5, 10, 20]
