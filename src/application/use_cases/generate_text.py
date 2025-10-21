@@ -6,7 +6,8 @@ using the parallel token generation approach.
 
 import time
 import torch
-from typing import Any, Optional
+from typing import Any, Optional, Dict
+from pathlib import Path
 
 from ...domain.entities.parallel_generation import GenerationConfig, GenerationResult
 from ...domain.entities.generation_state import GenerationState, TokenizationResult
@@ -16,6 +17,7 @@ from ...domain.interfaces.tokenizer import TokenizerInterface
 from ...domain.interfaces.generation_strategy import GenerationStrategy
 from ..services.sequence_manager import SequenceManager
 from ...utils.logging_utils import LoggingMixin
+from ...experiments.data_capture import ExperimentDataCapture
 
 
 class GenerateTextUseCase(LoggingMixin):
@@ -62,46 +64,56 @@ class GenerateTextUseCase(LoggingMixin):
         self,
         prompt: str,
         config: GenerationConfig,
-        retroactive_remover: Optional[Any] = None
+        retroactive_remover: Optional[Any] = None,
+        experiment_config: Optional[Dict] = None
     ) -> GenerationResult:
         """Execute the text generation use case.
-        
+
         Args:
             prompt: Text prompt to generate from
             config: Generation configuration
             retroactive_remover: Optional retroactive pruning component
-            
+            experiment_config: Optional experiment configuration for data capture
+
         Returns:
             GenerationResult with generated text and metadata
         """
         try:
+            # Initialize experiment data capture if config provided
+            data_capture = None
+            if experiment_config:
+                output_dir = Path(experiment_config.get('output_dir', './experiments/output'))
+                data_capture = ExperimentDataCapture(experiment_config, output_dir)
+                self.log(f"Experiment data capture enabled: {experiment_config.get('experiment_name', 'unnamed')}")
+
             # 1. Prepare the prompt
             formatted_prompt = self._prepare_prompt(prompt, config.system_content)
-            
+
             # 2. Tokenize the prompt
             tokenization_result = self.tokenizer.tokenize_prompt(formatted_prompt)
-            
+
             # 3. Initialize generation state
             initial_state = GenerationState(
                 input_ids=tokenization_result.input_ids,
                 attention_mask=tokenization_result.attention_mask,
                 sequence_length=tokenization_result.token_count
             )
-            
+
             # 4. Prime KV cache if not disabled
             if not config.disable_kv_cache:
                 initial_state = self._prime_kv_cache(initial_state)
-            
+
             # 5. Configure components
             self._configure_components(config, tokenization_result.token_count)
-            
+
             # 6. Orchestrate generation
             result, final_state = self.orchestrator.orchestrate_generation(
                 initial_state=initial_state,
                 config=config,
                 strategy=self.generation_strategy,
                 token_generator=self.token_generator,
-                retroactive_remover=retroactive_remover
+                retroactive_remover=retroactive_remover,
+                data_capture=data_capture
             )
             
             # 7. Format the output
@@ -116,11 +128,17 @@ class GenerateTextUseCase(LoggingMixin):
             # 8. Check for repetition
             result.had_repetition_loop = self._check_repetition(result.raw_generated_text)
             
-            # 9. Clean up
+            # 9. Save experiment data if capture was enabled
+            if data_capture:
+                self.log("Saving experiment data...")
+                data_capture.save_all()
+                self.log(f"Experiment data saved to: {data_capture.output_dir}")
+
+            # 10. Clean up
             self._cleanup()
-            
+
             return result
-            
+
         except Exception as e:
             self.log(f"Error in text generation: {e}", "error")
             raise

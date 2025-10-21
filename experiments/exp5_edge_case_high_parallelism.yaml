@@ -1,0 +1,34 @@
+# Experiment 5: Edge Case - High Parallelism
+# Goal: Test with very low threshold to create many parallel tokens
+
+experiment_name: "edge_case_high_parallelism"
+description: "Test behavior with maximum parallel token width"
+
+# Generation config
+prompt: "The quick brown"
+max_tokens: 8
+selection_threshold: 0.03  # Very low = many parallel tokens
+seed: 42
+
+# Run both modes
+run_both_modes: true
+
+# TEMPO settings
+use_retroactive_removal: false
+use_custom_rope: true
+debug_mode: false
+
+# Output settings
+output_dir: "./experiments/results/exp5_high_parallelism"
+
+# Capture settings
+capture_attention: true
+capture_logits: true
+save_attention_matrices: true
+save_full_distributions: true
+
+# Expected observations:
+# - Steps with 10+ parallel tokens
+# - Test if model still produces same results in both modes
+# - Higher computational load on attention masking
+# - Potential numerical issues with many same-position tokens

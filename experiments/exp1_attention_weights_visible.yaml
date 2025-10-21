@@ -1,0 +1,26 @@
+# Experiment 1b: Capture Attention Weights - Visible Mode
+# Goal: Capture full attention matrices with visible parallel tokens
+
+experiment_name: "attention_weights_visible"
+description: "Capture attention weights with visible parallel tokens"
+
+# Generation config
+prompt: "The cat sat on the"
+max_tokens: 10
+selection_threshold: 0.1
+seed: 42
+
+# TEMPO settings
+use_retroactive_removal: false
+allow_intraset_token_visibility: true  # VISIBLE
+use_custom_rope: true
+debug_mode: false
+
+# Output settings
+output_dir: "./experiments/results/exp1_visible"
+
+# Capture settings
+capture_attention: true
+capture_logits: false
+save_attention_matrices: true
+attention_output_file: "attention_weights.npz"

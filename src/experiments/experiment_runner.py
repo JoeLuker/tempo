@@ -204,6 +204,27 @@ class ExperimentRunner:
         if use_mcts:
             logger.warning("MCTS mode requested but not yet integrated with new architecture. Using standard generation.")
 
+        # Prepare experiment config for data capture if any capture flags are set
+        experiment_config = None
+        if any([
+            args.get('capture_attention', False),
+            args.get('capture_logits', False),
+            args.get('capture_kv_cache', False),
+            args.get('capture_rope_positions', False)
+        ]):
+            experiment_config = {
+                'experiment_name': args.get('experiment_name', 'unnamed'),
+                'output_dir': output_dir,
+                'capture_attention': args.get('capture_attention', False),
+                'capture_logits': args.get('capture_logits', False),
+                'capture_kv_cache': args.get('capture_kv_cache', False),
+                'capture_rope_positions': args.get('capture_rope_positions', False),
+                'attention_output_file': args.get('attention_output_file', 'attention_weights.npz'),
+                'logits_output_file': args.get('logits_output_file', 'logits_distributions.npz'),
+                'rope_positions_file': args.get('rope_positions_file', 'rope_positions.json'),
+            }
+            logger.info(f"Experiment data capture enabled for: {experiment_config['experiment_name']}")
+
         # Run generation
         logger.info(f"Starting generation...")
         generation_start = time.time()
@@ -212,7 +233,8 @@ class ExperimentRunner:
             result = use_case.execute(
                 prompt=prompt,
                 config=config,
-                retroactive_remover=pruning_service
+                retroactive_remover=pruning_service,
+                experiment_config=experiment_config
             )
 
             generation_time = time.time() - generation_start
