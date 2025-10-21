@@ -14,6 +14,7 @@ seed: 42
 use_retroactive_removal: false
 allow_intraset_token_visibility: false  # ISOLATED
 use_custom_rope: true
+disable_kv_cache: true  # Required to test attention masking
 debug_mode: false
 
 # Output settings

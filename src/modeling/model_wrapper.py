@@ -120,6 +120,19 @@ class TEMPOModelWrapper(nn.Module, LoggingMixin):
         """
         Forward pass through the model with device management.
         """
+        # Handle custom_attention_mask if provided
+        if 'custom_attention_mask' in kwargs:
+            custom_mask = kwargs.pop('custom_attention_mask')
+            if custom_mask is not None:
+                # Convert 2D custom mask [seq_len, seq_len] to 4D [batch, 1, seq_len, seq_len]
+                # HuggingFace adds this as bias to attention scores
+                if custom_mask.dim() == 2:
+                    custom_mask = custom_mask.unsqueeze(0).unsqueeze(0)  # [1, 1, seq_len, seq_len]
+
+                # Replace the attention_mask with our custom 4D mask
+                # This gets added directly to attention scores before softmax
+                kwargs['attention_mask'] = custom_mask
+
         # Ensure inputs are on the correct device
         args = tuple(self._ensure_device(arg) for arg in args)
         kwargs = {k: self._ensure_device(v) for k, v in kwargs.items()}

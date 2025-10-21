@@ -48,7 +48,8 @@ class GenerationOrchestrator(LoggingMixin):
         strategy: GenerationStrategy,
         token_generator: TokenGeneratorInterface,
         retroactive_remover: Optional[Any] = None,
-        data_capture: Optional[Any] = None
+        data_capture: Optional[Any] = None,
+        attention_manager: Optional[Any] = None
     ) -> tuple[GenerationResult, GenerationState]:
         """Orchestrate the parallel text generation process.
 
@@ -62,6 +63,7 @@ class GenerationOrchestrator(LoggingMixin):
             token_generator: Interface for generating token logits
             retroactive_remover: Optional retroactive pruning component
             data_capture: Optional experiment data capture instance
+            attention_manager: Optional attention service for controlling parallel token visibility
 
         Returns:
             GenerationResult with generated text and metadata
@@ -89,12 +91,25 @@ class GenerationOrchestrator(LoggingMixin):
         # Main generation loop
         for logical_step in range(config.max_tokens):
             self.log(f"\n--- Logical Step {logical_step} ---")
-            
-            # 1. Generate logits for next tokens
-            logits, new_state = token_generator.generate_logits_with_cache(current_state)
+
+            # 1. Build custom attention mask if attention manager is available
+            custom_attention_mask = None
+            if attention_manager and config.isolate_parallel_tokens:
+                custom_attention_mask = attention_manager.build_attention_mask(
+                    seq_length=current_state.sequence_length,
+                    dtype=torch.float32
+                )
+                if self.debug_mode:
+                    self.log(f"Built custom attention mask: {custom_attention_mask.shape}")
+
+            # 2. Generate logits for next tokens
+            logits, new_state = token_generator.generate_logits_with_cache(
+                current_state,
+                custom_attention_mask=custom_attention_mask
+            )
             current_state = new_state
             
-            # 2. Apply generation strategy to select tokens
+            # 3. Apply generation strategy to select tokens
             token_set = strategy.select_tokens(
                 logits=logits,
                 step=logical_step,
@@ -111,7 +126,7 @@ class GenerationOrchestrator(LoggingMixin):
                 (t.id, t.probability) for t in token_set.tokens
             ]
             
-            # 3. Apply retroactive removal if enabled
+            # 4. Apply retroactive removal if enabled
             if config.use_retroactive_removal and logical_step > 0 and retroactive_remover:
                 removal_start = time.time()
                 
@@ -130,7 +145,7 @@ class GenerationOrchestrator(LoggingMixin):
             # Get final token IDs
             token_ids = [t.id for t in token_set.tokens]
 
-            # 4. Capture experimental data if enabled
+            # 5. Capture experimental data if enabled
             if data_capture:
                 # Get physical positions for this step
                 physical_start_idx = current_state.input_ids.size(1)
@@ -155,7 +170,7 @@ class GenerationOrchestrator(LoggingMixin):
                     kv_cache=current_state.past_key_values if data_capture.capture_kv_cache else None
                 )
 
-            # 5. Update state with new tokens
+            # 6. Update state with new tokens
             physical_start_idx = current_state.input_ids.size(1)
             new_tokens_tensor = torch.tensor([token_ids], device=current_state.input_ids.device)
 
@@ -180,14 +195,20 @@ class GenerationOrchestrator(LoggingMixin):
             self.logical_layout.append(
                 LogicalPosition(logical_step, physical_start_idx, physical_end_idx)
             )
-            
+
+            # Register parallel token set with attention manager
+            if attention_manager and len(token_ids) > 1:
+                attention_manager.register_parallel_set(physical_start_idx, physical_end_idx)
+                if self.debug_mode:
+                    self.log(f"Registered parallel set: {physical_start_idx}-{physical_end_idx} ({len(token_ids)} tokens)")
+
             # Update sequence tracking
             self.sequence_tracker.update_sequence_length(
                 current_state.sequence_length - initial_state.sequence_length,
                 config.sequence_callback
             )
             
-            # 6. Check termination conditions
+            # 7. Check termination conditions
             if logical_step >= config.min_steps:
                 if strategy.should_terminate(token_set, current_state):
                     self.log(f"Termination condition met at step {logical_step}")
