@@ -10,6 +10,9 @@ from .attention_cache import AttentionCacheInterface
 from .model import ModelInterface
 from .cache_manager import CacheManagerInterface
 from .performance_tracker import PerformanceTrackerInterface
+from .attention_manager import AttentionManagerInterface
+from .data_capture import DataCaptureInterface
+from .retroactive_remover import RetroactiveRemoverInterface
 
 __all__ = [
     "TokenGeneratorInterface",
@@ -17,5 +20,8 @@ __all__ = [
     "AttentionCacheInterface",
     "ModelInterface",
     "CacheManagerInterface",
-    "PerformanceTrackerInterface"
+    "PerformanceTrackerInterface",
+    "AttentionManagerInterface",
+    "DataCaptureInterface",
+    "RetroactiveRemoverInterface"
 ]

@@ -5,7 +5,7 @@ coordinating between various components while maintaining domain logic.
 """
 
 import time
-from typing import Optional, Any
+from typing import Optional
 import torch
 
 from ..entities.parallel_generation import (
@@ -17,6 +17,9 @@ from ..entities.token import TokenSet
 from ..entities.logits import TokenLogits
 from ..interfaces.token_generation import TokenGeneratorInterface
 from ..interfaces.generation_strategy import GenerationStrategy
+from ..interfaces.attention_manager import AttentionManagerInterface
+from ..interfaces.data_capture import DataCaptureInterface
+from ..interfaces.retroactive_remover import RetroactiveRemoverInterface
 from .sequence_tracker import SequenceTracker
 from .retroactive_removal_coordinator import RetroactiveRemovalCoordinator
 from ...utils.logging_utils import LoggingMixin
@@ -47,9 +50,9 @@ class GenerationOrchestrator(LoggingMixin):
         config: GenerationConfig,
         strategy: GenerationStrategy,
         token_generator: TokenGeneratorInterface,
-        retroactive_remover: Optional[Any] = None,
-        data_capture: Optional[Any] = None,
-        attention_manager: Optional[Any] = None
+        retroactive_remover: Optional[RetroactiveRemoverInterface] = None,
+        data_capture: Optional[DataCaptureInterface] = None,
+        attention_manager: Optional[AttentionManagerInterface] = None
     ) -> tuple[GenerationResult, GenerationState]:
         """Orchestrate the parallel text generation process.
 
@@ -237,7 +240,7 @@ class GenerationOrchestrator(LoggingMixin):
         
         return result, current_state
     
-    def get_sequence_metrics(self) -> dict[str, Any]:
+    def get_sequence_metrics(self) -> dict:
         """Get metrics about the generation sequence."""
         metrics = self.sequence_tracker.get_metrics()
         metrics["logical_layout_size"] = len(self.logical_layout)

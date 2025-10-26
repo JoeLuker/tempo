@@ -6,7 +6,7 @@ using the parallel token generation approach.
 
 import time
 import torch
-from typing import Any, Optional, Dict
+from typing import Optional, Dict
 from pathlib import Path
 
 from ...domain.entities.parallel_generation import GenerationConfig, GenerationResult
@@ -15,6 +15,8 @@ from ...domain.services.generation_orchestrator import GenerationOrchestrator
 from ...domain.interfaces.token_generation import TokenGeneratorInterface
 from ...domain.interfaces.tokenizer import TokenizerInterface
 from ...domain.interfaces.generation_strategy import GenerationStrategy
+from ...domain.interfaces.attention_manager import AttentionManagerInterface
+from ...domain.interfaces.retroactive_remover import RetroactiveRemoverInterface
 from ..services.sequence_manager import SequenceManager
 from ...utils.logging_utils import LoggingMixin
 from ...experiments.data_capture import ExperimentDataCapture
@@ -29,9 +31,9 @@ class GenerateTextUseCase(LoggingMixin):
         tokenizer: TokenizerInterface,
         generation_strategy: GenerationStrategy,
         sequence_manager: SequenceManager,
-        rope_modifier: Optional[Any] = None,
-        attention_manager: Optional[Any] = None,
-        formatter: Optional[Any] = None,
+        rope_modifier: Optional['RoPEModifier'] = None,  # Forward reference to avoid circular import
+        attention_manager: Optional[AttentionManagerInterface] = None,
+        formatter: Optional['TextFormatter'] = None,  # Forward reference
         debug_mode: bool = False
     ):
         """Initialize the generate text use case.
@@ -64,7 +66,7 @@ class GenerateTextUseCase(LoggingMixin):
         self,
         prompt: str,
         config: GenerationConfig,
-        retroactive_remover: Optional[Any] = None,
+        retroactive_remover: Optional[RetroactiveRemoverInterface] = None,
         experiment_config: Optional[Dict] = None
     ) -> GenerationResult:
         """Execute the text generation use case.
