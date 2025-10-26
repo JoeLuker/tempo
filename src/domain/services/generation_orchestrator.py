@@ -19,7 +19,6 @@ from ..interfaces.token_generation import TokenGeneratorInterface
 from ..interfaces.generation_strategy import GenerationStrategy
 from .sequence_tracker import SequenceTracker
 from .retroactive_removal_coordinator import RetroactiveRemovalCoordinator
-from .parallel_token_strategy import ParallelTokenStrategySelector
 from ...utils.logging_utils import LoggingMixin
 
 
@@ -127,17 +126,6 @@ class GenerationOrchestrator(LoggingMixin):
                 (t.id, t.probability) for t in token_set.tokens
             ]
 
-            # 3a. Select optimal processing strategy based on isolation mode and token count
-            num_parallel = len(token_set.tokens)
-            processing_strategy = ParallelTokenStrategySelector.select_strategy(
-                isolate_parallel_tokens=config.isolate_parallel_tokens,
-                num_parallel_tokens=num_parallel,
-                disable_kv_cache_override=config.disable_kv_cache
-            )
-
-            if self.debug_mode and num_parallel > 1:
-                self.log(f"Parallel processing strategy: {processing_strategy}")
-            
             # 4. Apply retroactive removal if enabled
             if config.use_retroactive_removal and logical_step > 0 and retroactive_remover:
                 removal_start = time.time()

@@ -30,33 +30,44 @@ class AttentionMaskBuilder:
         device: torch.device,
         dtype: torch.dtype = torch.float32
     ) -> torch.Tensor:
-        """
-        Create mask for parallel token sets.
-        
+        """Create attention mask that controls visibility of parallel token sets.
+
+        In TEMPO, parallel tokens are selected from the same logit distribution and
+        appended to the sequence together. The "isolation" question is about whether
+        FUTURE tokens can attend back to the parallel set.
+
+        Isolated mode: Future tokens cannot attend to ANY tokens in a parallel set
+        Visible mode: Future tokens can attend to ALL tokens in a parallel set
+
+        This is implemented by masking within-set attention when building the mask
+        for the NEXT generation step.
+
         Args:
-            seq_length: Total sequence length
-            parallel_sets: List of (start, end) positions for parallel sets
+            seq_length: Total sequence length including all parallel tokens
+            parallel_sets: List of (start, end) positions for previously registered parallel sets
             device: Computation device
             dtype: Data type for mask
-            
+
         Returns:
-            Attention mask tensor
+            Attention mask [seq_len, seq_len] where -10000.0 = masked, 0.0 = visible
         """
-        # Start with causal mask
+        # Start with causal mask (prevents attending to future positions)
         mask = self.create_causal_mask(seq_length, device, dtype)
-        
+
         if not self.isolate_parallel_tokens:
+            # Visible mode: standard causal mask (future can attend to all past)
             return mask
-            
-        # Modify mask for parallel sets
+
+        # Isolated mode: prevent cross-parallel attention within each set
         for start, end in parallel_sets:
-            if end > start + 1:  # Multiple tokens in set
-                # Prevent tokens in same set from attending to each other
+            if end > start + 1:  # Multiple tokens in parallel set
+                # Mask all cross-attention within the set
+                # This makes the entire parallel set "invisible" to future tokens
                 for i in range(start, end):
                     for j in range(start, end):
                         if i != j:
                             mask[i, j] = -10000.0
-        
+
         return mask
     
     def create_cross_attention_mask(
