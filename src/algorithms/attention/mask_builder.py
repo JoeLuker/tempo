@@ -58,15 +58,21 @@ class AttentionMaskBuilder:
             # Visible mode: standard causal mask (future can attend to all past)
             return mask
 
-        # Isolated mode: prevent cross-parallel attention within each set
+        # Isolated mode: make parallel sets invisible to future tokens
         for start, end in parallel_sets:
             if end > start + 1:  # Multiple tokens in parallel set
-                # Mask all cross-attention within the set
-                # This makes the entire parallel set "invisible" to future tokens
+                # 1. Mask cross-attention within the parallel set
+                # (tokens in the set can't attend to each other)
                 for i in range(start, end):
                     for j in range(start, end):
                         if i != j:
                             mask[i, j] = -10000.0
+
+                # 2. Mask future tokens from attending to the parallel set
+                # (tokens after the set can't attend to any token in the set)
+                for future_pos in range(end, seq_length):
+                    for parallel_pos in range(start, end):
+                        mask[future_pos, parallel_pos] = -10000.0
 
         return mask
     
