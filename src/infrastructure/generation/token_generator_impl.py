@@ -98,20 +98,14 @@ class TokenGeneratorImpl(LoggingMixin, TokenGeneratorInterface):
             Tuple of (TokenLogits, updated GenerationState with new KV cache)
         """
         start_time = time.time()
-        
+
         # Prepare inputs for KV cached generation
         input_ids = state.input_ids
         attention_mask = state.attention_mask
         
-        # If we have KV cache, only process the last token
+        # If we have KV cache, only process new tokens not yet in cache
         if state.past_key_values is not None:
-            # Store original shape for validation
-            original_shape = input_ids.shape
-            
-            # Only use the last token
-            input_ids = input_ids[:, -1].unsqueeze(-1)
-            
-            # Adjust attention mask for KV cache
+            # Determine how many tokens are already in KV cache
             if hasattr(state.past_key_values, 'get_seq_length'):
                 # DynamicCache format
                 past_seq_len = state.past_key_values.get_seq_length() or 0
@@ -120,9 +114,19 @@ class TokenGeneratorImpl(LoggingMixin, TokenGeneratorInterface):
                 past_seq_len = state.past_key_values[0][0].size(2) if state.past_key_values[0][0].dim() >= 3 else 0
             else:
                 past_seq_len = 0
-            
+
+            # Process only the NEW tokens that aren't in the KV cache yet
+            # This handles parallel tokens correctly - if we appended 2 tokens, process both
+            num_new_tokens = input_ids.size(1) - past_seq_len
+
+            if num_new_tokens > 0:
+                input_ids = input_ids[:, -num_new_tokens:]
+            else:
+                # Shouldn't happen, but fallback to last token
+                input_ids = input_ids[:, -1].unsqueeze(-1)
+
             # Create attention mask for the full sequence length
-            attention_mask = torch.ones((1, past_seq_len + 1), device=state.input_ids.device)
+            attention_mask = torch.ones((1, past_seq_len + num_new_tokens), device=state.input_ids.device)
         
         # Run model forward pass with KV cache
         with torch.inference_mode():
@@ -194,19 +198,24 @@ class TokenGeneratorImpl(LoggingMixin, TokenGeneratorInterface):
         input_ids = state.input_ids
         attention_mask = state.attention_mask
         
-        # If we have KV cache, only process the last token
+        # If we have KV cache, only process new tokens not yet in cache
         if state.past_key_values is not None:
-            input_ids = input_ids[:, -1].unsqueeze(-1)
-            
-            # Adjust attention mask for KV cache
+            # Determine how many tokens are already in KV cache
             if hasattr(state.past_key_values, 'get_seq_length'):
                 past_seq_len = state.past_key_values.get_seq_length() or 0
             elif isinstance(state.past_key_values, list) and len(state.past_key_values) > 0:
                 past_seq_len = state.past_key_values[0][0].size(2) if state.past_key_values[0][0].dim() >= 3 else 0
             else:
                 past_seq_len = 0
-            
-            attention_mask = torch.ones((1, past_seq_len + 1), device=state.input_ids.device)
+
+            # Process only the NEW tokens that aren't in the KV cache yet
+            num_new_tokens = input_ids.size(1) - past_seq_len
+            if num_new_tokens > 0:
+                input_ids = input_ids[:, -num_new_tokens:]
+            else:
+                input_ids = input_ids[:, -1].unsqueeze(-1)
+
+            attention_mask = torch.ones((1, past_seq_len + num_new_tokens), device=state.input_ids.device)
         
         # Run model forward pass just once
         with torch.inference_mode():

@@ -95,20 +95,13 @@ class GenerationOrchestrator(LoggingMixin):
         for logical_step in range(config.max_tokens):
             self.log(f"\n--- Logical Step {logical_step} ---")
 
-            # 1. Build custom attention mask if attention manager is available
-            custom_attention_mask = None
-            if attention_manager and config.isolate_parallel_tokens:
-                custom_attention_mask = attention_manager.build_attention_mask(
-                    seq_length=current_state.sequence_length,
-                    dtype=torch.float32
-                )
-                if self.debug_mode:
-                    self.log(f"Built custom attention mask: {custom_attention_mask.shape}")
-
-            # 2. Generate logits for next tokens
+            # 1. Generate logits for next tokens
+            # Note: We don't pass custom attention mask here because:
+            # - Parallel tokens are selected from ONE logit distribution (can't see each other)
+            # - Future token isolation is handled by registering parallel sets after append
             logits, new_state = token_generator.generate_logits_with_cache(
                 current_state,
-                custom_attention_mask=custom_attention_mask
+                custom_attention_mask=None
             )
             current_state = new_state
             
@@ -193,7 +186,7 @@ class GenerationOrchestrator(LoggingMixin):
                 sequence_length=new_input_ids.size(1),
                 generated_tokens=current_state.generated_tokens + token_ids
             )
-            
+
             # Update logical layout
             self.logical_layout.append(
                 LogicalPosition(logical_step, physical_start_idx, physical_end_idx)
