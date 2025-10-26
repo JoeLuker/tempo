@@ -20,8 +20,6 @@ class TestGenerationFlow:
     @pytest.fixture
     def mock_model(self):
         """Create a mock model that returns reasonable outputs."""
-        model = MagicMock()
-
         def forward_impl(*args, **kwargs):
             # Get input shape
             input_ids = kwargs.get('input_ids')
@@ -29,8 +27,8 @@ class TestGenerationFlow:
             seq_len = input_ids.shape[1] if input_ids is not None else 1
             vocab_size = 1000
 
-            # Create output
-            output = MagicMock()
+            # Create output - use Mock instead of MagicMock to avoid auto-mocking attributes
+            output = Mock()
             # Return logits with predictable high-probability tokens
             logits = torch.randn(batch_size, seq_len, vocab_size)
             # Make token 42 consistently high probability
@@ -41,7 +39,18 @@ class TestGenerationFlow:
 
             return output
 
-        model.forward = forward_impl
+        # Create model mock with proper method and call setup
+        model = Mock()
+        model.forward = Mock(side_effect=forward_impl)
+        # MagicMock's __call__ needs to be set as side_effect
+        model.side_effect = forward_impl
+
+        # Add config
+        config = Mock()
+        config.model_type = "test"
+        config.vocab_size = 1000
+        model.config = config
+
         return model
 
     @pytest.fixture
@@ -56,6 +65,7 @@ class TestGenerationFlow:
             return TokenizationResult(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
+                prompt=prompt,
                 token_count=4
             )
 
@@ -85,16 +95,26 @@ class TestGenerationFlow:
         )
 
     @pytest.fixture
-    def generation_strategy(self):
-        """Create standard generation strategy."""
-        return StandardGenerationStrategy()
+    def mock_token_selector(self):
+        """Create mock token selector."""
+        selector = MagicMock()
+        # Mock select_tokens to return a simple token distribution
+        selector.select_tokens.return_value = ([(42, 0.9)], 1)
+        return selector
 
     @pytest.fixture
-    def sequence_manager(self, mock_tokenizer_adapter):
-        """Create sequence manager."""
-        return SequenceManager(
-            tokenizer=mock_tokenizer_adapter
+    def generation_strategy(self, mock_token_selector, mock_tokenizer_adapter):
+        """Create standard generation strategy."""
+        return StandardGenerationStrategy(
+            token_selector=mock_token_selector,
+            tokenizer=mock_tokenizer_adapter,
+            debug_mode=False
         )
+
+    @pytest.fixture
+    def sequence_manager(self):
+        """Create sequence manager."""
+        return SequenceManager(debug_mode=False)
 
     @pytest.fixture
     def use_case(
