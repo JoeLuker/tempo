@@ -45,16 +45,19 @@ python3 run_tempo.py --prompt "Your prompt here" --selection-threshold 0.1 --max
 
 ```bash
 # Run all tests
-python3 run_tests.py
+pytest tests/
 
 # Run unit tests only
-python3 run_tests.py --unit-only
+pytest tests/unit/
 
 # Run integration tests only
-python3 run_tests.py --integration-only
+pytest tests/integration/
 
 # Run tests with coverage report
-python3 run_tests.py --cov
+pytest tests/ --cov=src --cov-report=html
+
+# Run tests in quiet mode
+pytest tests/ -q
 ```
 
 ### Running the Web Interface
@@ -105,16 +108,26 @@ TEMPO's architecture is centered around several key components:
 
 ## Key Code Components
 
-### Backend
-- `src/modeling/model_wrapper.py`: Wraps the underlying LLM model for TEMPO's requirements.
-- `src/generation/parallel_generator.py`: Core implementation of TEMPO's parallel generation approach.
-- `src/generation/rope_modifier.py`: Handles modifications to the model's Rotary Position Embeddings.
-- `src/generation/token_generator.py`: Manages token generation and state tracking.
-- `src/pruning/retroactive_pruner.py`: Implements attention-based pruning of parallel token sets.
-- `src/generation/attention_manager.py`: Controls attention visibility between parallel tokens.
-- `src/visualization/`: Contains tools for visualizing token probabilities and positions.
-- `api.py`: FastAPI implementation with clean text extraction for web interface.
-- `run_tempo.py`: Command-line interface for experiments.
+### Domain Layer (Business Logic)
+- `src/domain/entities/`: Core value objects (Token, TokenSet, GenerationState, GenerationConfig)
+- `src/domain/interfaces/`: Protocol definitions for infrastructure implementations
+- `src/domain/services/`: Domain services (GenerationOrchestrator, SequenceTracker)
+
+### Application Layer (Use Cases)
+- `src/application/use_cases/generate_text.py`: Main text generation use case
+- `src/application/services/`: Application services (AttentionService, SequenceManager)
+
+### Infrastructure Layer (Implementation Details)
+- `src/infrastructure/generation/`: Token generation implementations
+- `src/infrastructure/model/`: Model adapters and wrappers
+- `src/infrastructure/tokenization/`: Tokenizer adapters
+- `src/algorithms/`: Reusable algorithms (attention, RoPE, pruning)
+- `src/modeling/model_wrapper.py`: TEMPO model wrapper with hooks
+- `src/experiments/`: Experiment running and data capture
+
+### Entry Points
+- `run_tempo.py`: Command-line interface for text generation
+- `api.py`: FastAPI backend for web interface
 
 ### Frontend
 - `frontend/src/routes/+page.svelte`: Main UI with tabbed interface and settings
@@ -134,21 +147,25 @@ TEMPO's architecture is centered around several key components:
 
 ## Recent Updates
 
-### Frontend Improvements (Latest)
-- Fixed Melt UI preprocessor configuration issue that was preventing all interactions
+### Architecture & Testing (Latest)
+- **Test Infrastructure**: Added pytest with 18 passing unit tests covering domain and application layers
+- **Type Safety**: Replaced `Optional[Any]` with proper Protocol interfaces throughout
+- **Code Cleanup**: Removed 2,810 lines of obsolete code (Option C artifacts, debug scripts, orphaned dirs)
+- **DDD Validation**: Confirmed proper dependency inversion (domain has zero infrastructure dependencies)
+
+### Implementation Simplification
+- **Key Realization**: Parallel tokens are simpler than initially thought - generate ONE set of logits, select N tokens, append all, share same RoPE position
+- **Attention Masking**: Isolation is about FUTURE token attention, not parallel token generation
+- **Performance**: Both isolated and visible modes use full KV cache benefits with no trade-offs
+
+### Frontend Improvements
+- Fixed Melt UI preprocessor configuration issue
 - Simplified UI to expert-only mode with comprehensive tooltips
 - Added tree visualization for token branching
 - Implemented clean text display without CLI formatting
-- Added interactive token hover effects to show alternatives
+- Interactive token hover effects showing alternatives
 
-### API Improvements
-- Added `extract_clean_text` function to properly clean output
-- API now returns three text formats:
-  - `clean_text`: Readable text without brackets
-  - `generated_text`: Full output with brackets for visualization
-  - `raw_generated_text`: Raw token sequence
-
-### Configuration Changes
-- Frontend port changed from 5173 to 5174
-- Removed Docker-related files
-- Cleaned up duplicate API implementations
+### Known Issues
+- Some application service files reference deprecated `src.pruning` module (used only by benchmarks)
+- Integration test has circular import (experiment_runner ↔ generate_text_use_case)
+- Need to add more tests to reach 70% domain layer coverage target
