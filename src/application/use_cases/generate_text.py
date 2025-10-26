@@ -19,7 +19,6 @@ from ...domain.interfaces.attention_manager import AttentionManagerInterface
 from ...domain.interfaces.retroactive_remover import RetroactiveRemoverInterface
 from ..services.sequence_manager import SequenceManager
 from ...utils.logging_utils import LoggingMixin
-from ...experiments.data_capture import ExperimentDataCapture
 
 
 class GenerateTextUseCase(LoggingMixin):
@@ -84,6 +83,8 @@ class GenerateTextUseCase(LoggingMixin):
             # Initialize experiment data capture if config provided
             data_capture = None
             if experiment_config:
+                # Import here to avoid circular dependency with experiment_runner
+                from ...experiments.data_capture import ExperimentDataCapture
                 output_dir = Path(experiment_config.get('output_dir', './experiments/output'))
                 data_capture = ExperimentDataCapture(experiment_config, output_dir)
                 self.log(f"Experiment data capture enabled: {experiment_config.get('experiment_name', 'unnamed')}")

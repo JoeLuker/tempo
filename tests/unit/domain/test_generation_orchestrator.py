@@ -84,7 +84,7 @@ class TestGenerationOrchestrator:
         assert mock_strategy.select_tokens.called
         # Verify result contains generated tokens
         assert result is not None
-        assert hasattr(result, 'parallel_token_sets')
+        assert hasattr(result, 'token_sets')
 
     def test_multiple_step_generation(
         self,
