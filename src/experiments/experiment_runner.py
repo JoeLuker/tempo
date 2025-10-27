@@ -173,6 +173,17 @@ class ExperimentRunner:
         from src.application.services.text_formatter import TextFormatter
         formatter = TextFormatter(tokenizer=tokenizer_adapter, debug_mode=debug_mode)
 
+        # 13. Experiment Data Capture (if requested in config)
+        data_capture = None
+        if args.get('capture_attention') or args.get('capture_logits') or args.get('capture_kv_cache'):
+            from src.experiments.data_capture import ExperimentDataCapture
+
+            data_capture = ExperimentDataCapture(
+                experiment_config=args,
+                output_dir=output_path
+            )
+            logger.info(f"Experiment data capture enabled - output to: {output_path}")
+
         # Create generation config
         system_content = "Enable deep thinking subroutine." if enable_thinking else None
 
@@ -197,6 +208,7 @@ class ExperimentRunner:
             rope_modifier=rope_service,
             attention_manager=attention_service,
             formatter=formatter,
+            data_capture=data_capture,
             debug_mode=debug_mode
         )
 
