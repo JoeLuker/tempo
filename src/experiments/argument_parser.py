@@ -55,8 +55,8 @@ class ArgumentParser:
         parser.add_argument(
             "--selection-threshold",
             type=float,
-            default=0.1,
-            help="Probability threshold for initial token candidate selection",
+            default=0.25,
+            help="Probability threshold for initial token candidate selection (default: 0.25 for best quality)",
         )
         parser.add_argument(
             "--min-steps",
