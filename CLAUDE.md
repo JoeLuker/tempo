@@ -96,21 +96,42 @@ The web interface provides:
 
 ## Architecture Overview
 
-TEMPO's architecture is centered around several key components:
+TEMPO follows a clean Domain-Driven Design (DDD) architecture with clear separation of concerns.
 
-1. **Selection Threshold:** Uses a probability threshold to determine which token candidates to consider at each step.
+### Core Concept: Parallel Token Processing
 
-2. **RoPE Modification (`RoPEModifier`):** Patches the model's Rotary Position Embedding calculation to assign the same positional embedding to tokens belonging to the same logical step.
+TEMPO enables parallel token processing by:
+1. **Generate ONE set of logits** - Single forward pass through the model
+2. **Select N tokens** - Pick all tokens above a probability threshold
+3. **Append all N tokens** - Add them to the sequence simultaneously
+4. **Share RoPE position** - Assign them the SAME positional embedding (they're conceptually simultaneous)
+5. **Control attention** - Use masking to manage how future tokens see parallel tokens
 
-3. **Token Generator:** Handles the core token generation logic, maintaining the model state across generation steps.
+### Three-Layer Architecture (DDD)
 
-4. **Parallel Generator:** Coordinates the generation process with support for parallel tokens processing.
+**Domain Layer** (Business Logic - Zero Infrastructure Dependencies):
+- `domain/entities/`: Value objects (Token, TokenSet, GenerationState, GenerationConfig)
+- `domain/interfaces/`: Protocol definitions (TokenGeneratorInterface, GenerationStrategy, etc.)
+- `domain/services/`: Core orchestration (GenerationOrchestrator, SequenceTracker, RetroactiveRemovalCoordinator)
 
-5. **Pruning Strategies:**
-   - **Retroactive Pruning:** Refines previously processed parallel token sets based on attention from later tokens.
-   - **Dynamic Thresholding:** Adjusts pruning aggressiveness over time using Bezier or ReLU curves.
+**Application Layer** (Use Cases & Services):
+- `application/use_cases/generate_text.py`: Main text generation use case
+- `application/services/`: Application services (AttentionService, SequenceManager)
 
-6. **Attention Management:** Controls how parallel tokens attend to each other during processing.
+**Infrastructure Layer** (Implementation Details):
+- `infrastructure/`: Concrete implementations of domain interfaces
+- `algorithms/`: Reusable algorithms (attention masking, RoPE patching, pruning)
+- `modeling/`: Model wrappers with hooks for TEMPO modifications
+
+### Key Features
+
+1. **Parallel Token Processing**: Multiple token candidates processed simultaneously with shared RoPE position
+2. **Two Attention Modes**:
+   - **Isolated**: Parallel tokens can't see each other → more diverse outputs
+   - **Visible**: Parallel tokens can attend to each other → more coherent outputs
+3. **Retroactive Pruning**: Remove low-attention parallel tokens based on future context
+4. **Extension System**: Simple functional extensions (80 lines, no registry, no OOP)
+5. **JSON Output**: Comprehensive mechanistic interpretability data with per-step details
 
 ## Key Code Components
 

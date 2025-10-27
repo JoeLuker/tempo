@@ -93,5 +93,12 @@ frontend/vite.config.js.timestamp-*
 frontend/vite.config.ts.timestamp-* 
 
 .pytest_cache/
+.coverage
+htmlcov/
 
 tempo-profile.prof
+*.prof
+
+# Test coverage
+coverage.xml
+.coverage.*
