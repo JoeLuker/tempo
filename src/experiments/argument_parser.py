@@ -160,6 +160,13 @@ class ArgumentParser:
             help="Enable Cogito's deep thinking mode for better reasoning",
         )
 
+        # Extensions
+        parser.add_argument(
+            "--enable-extensions",
+            action="store_true",
+            help="Enable TEMPO extensions (confidence surfing, genealogy tracking, entropy watching)",
+        )
+
         # Default mode option (disables TEMPO)
         parser.add_argument(
             "--default-mode",

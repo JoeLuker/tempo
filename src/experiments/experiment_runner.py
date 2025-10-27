@@ -173,6 +173,13 @@ class ExperimentRunner:
         from src.application.services.text_formatter import TextFormatter
         formatter = TextFormatter(tokenizer=tokenizer_adapter, debug_mode=debug_mode)
 
+        # 13. Extensions (if enabled)
+        extensions = None
+        if args.get('enable_extensions', False):
+            from src.extensions import confidence_surf, track_genealogy, watch_entropy
+            extensions = [confidence_surf, track_genealogy, watch_entropy]
+            logger.info("Extensions enabled: confidence_surf, track_genealogy, watch_entropy")
+
         # Create generation config
         system_content = "Enable deep thinking subroutine." if enable_thinking else None
 
@@ -197,7 +204,8 @@ class ExperimentRunner:
             rope_modifier=rope_service,
             attention_manager=attention_service,
             formatter=formatter,
-            debug_mode=debug_mode
+            debug_mode=debug_mode,
+            extensions=extensions
         )
 
         # Handle MCTS if requested
@@ -225,6 +233,24 @@ class ExperimentRunner:
             }
             logger.info(f"Experiment data capture enabled for: {experiment_config['experiment_name']}")
 
+        # Create JSON collector if --output-json is set
+        json_collector = None
+        output_json = args.get("output_json", False)
+        if output_json:
+            from src.utils.generation_data_collector import GenerationDataCollector
+            json_collector = GenerationDataCollector(
+                prompt=prompt,
+                config={
+                    'selection_threshold': selection_threshold,
+                    'max_tokens': max_tokens,
+                    'temperature': 1.0,  # Default, could be added to args
+                    'use_retroactive_removal': use_retroactive_removal,
+                },
+                model_name='deepcogito/cogito-v1-preview-llama-3B',
+                seed=args.get('seed', 42)
+            )
+            logger.info("JSON data collector initialized for rich output")
+
         # Run generation
         logger.info(f"Starting generation...")
         generation_start = time.time()
@@ -234,7 +260,8 @@ class ExperimentRunner:
                 prompt=prompt,
                 config=config,
                 retroactive_remover=pruning_service,
-                experiment_config=experiment_config
+                experiment_config=experiment_config,
+                json_collector=json_collector
             )
 
             generation_time = time.time() - generation_start
@@ -257,43 +284,63 @@ class ExperimentRunner:
             }
 
             # Handle output format
-            output_json = args.get("output_json", False)
             json_output_file = args.get("json_output_file")
 
             if output_json:
-                # Prepare JSON output
-                json_output = {
-                    "prompt": prompt,
-                    "generated_text": result.generated_text,
-                    "clean_text": getattr(result, "clean_text", result.raw_generated_text),
-                    "raw_generated_text": result.raw_generated_text,
-                    "generation_time": generation_time,
-                    "tokens_per_second": max_tokens / generation_time if max_tokens > 0 else 0,
-                    "config": {
-                        "selection_threshold": selection_threshold,
-                        "max_tokens": max_tokens,
-                        "use_retroactive_removal": use_retroactive_removal,
-                        "attention_threshold": args.get("attention_threshold") if use_retroactive_removal else None,
-                        "use_mcts": use_mcts,
-                        "isolate_parallel_tokens": isolate_parallel_tokens,
-                        "enable_thinking": enable_thinking,
-                        "seed": args.get("seed", 42),
-                    },
-                    "metrics": {
-                        "generation_time": result.generation_time,
-                        "removal_time": result.removal_time,
-                        "removal_steps": result.removal_steps,
-                    }
-                }
+                # Use rich JSON output if collector was used
+                if json_collector:
+                    from src.utils.json_output import TempoJsonFormatter
 
-                # Output JSON
-                if json_output_file:
-                    json_path = output_path / json_output_file
-                    with open(json_path, 'w', encoding='utf-8') as f:
-                        json.dump(json_output, f, indent=2, ensure_ascii=False)
-                    print(f"JSON output saved to: {json_path}")
+                    # Finalize the collector to create the generation tree
+                    generation_tree = json_collector.finalize(result.clean_text or result.raw_generated_text)
+
+                    # Format and save
+                    formatter_json = TempoJsonFormatter(indent=2)
+
+                    if json_output_file:
+                        json_path = output_path / json_output_file
+                        formatter_json.save_generation(
+                            tree=generation_tree,
+                            output_path=json_path,
+                            include_attention=False
+                        )
+                    else:
+                        # Print to console
+                        print(formatter_json.format_generation(generation_tree, include_attention=False))
                 else:
-                    print(json.dumps(json_output, indent=2, ensure_ascii=False))
+                    # Fallback to simple JSON output if collector wasn't created
+                    json_output = {
+                        "prompt": prompt,
+                        "generated_text": result.generated_text,
+                        "clean_text": getattr(result, "clean_text", result.raw_generated_text),
+                        "raw_generated_text": result.raw_generated_text,
+                        "generation_time": generation_time,
+                        "tokens_per_second": max_tokens / generation_time if max_tokens > 0 else 0,
+                        "config": {
+                            "selection_threshold": selection_threshold,
+                            "max_tokens": max_tokens,
+                            "use_retroactive_removal": use_retroactive_removal,
+                            "attention_threshold": args.get("attention_threshold") if use_retroactive_removal else None,
+                            "use_mcts": use_mcts,
+                            "isolate_parallel_tokens": isolate_parallel_tokens,
+                            "enable_thinking": enable_thinking,
+                            "seed": args.get("seed", 42),
+                        },
+                        "metrics": {
+                            "generation_time": result.generation_time,
+                            "removal_time": result.removal_time,
+                            "removal_steps": result.removal_steps,
+                        }
+                    }
+
+                    # Output JSON
+                    if json_output_file:
+                        json_path = output_path / json_output_file
+                        with open(json_path, 'w', encoding='utf-8') as f:
+                            json.dump(json_output, f, indent=2, ensure_ascii=False)
+                        print(f"JSON output saved to: {json_path}")
+                    else:
+                        print(json.dumps(json_output, indent=2, ensure_ascii=False))
             else:
                 # Print formatted results
                 print(f"\n{'='*60}")

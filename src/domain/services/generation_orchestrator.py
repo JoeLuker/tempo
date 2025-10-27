@@ -23,26 +23,35 @@ from ..interfaces.retroactive_remover import RetroactiveRemoverInterface
 from .sequence_tracker import SequenceTracker
 from .retroactive_removal_coordinator import RetroactiveRemovalCoordinator
 from ...utils.logging_utils import LoggingMixin
+from ...extensions import GenState, Extension, run_extensions
+import math
 
 
 class GenerationOrchestrator(LoggingMixin):
     """Domain service that orchestrates the parallel generation process."""
     
-    def __init__(self, debug_mode: bool = False):
+    def __init__(self, debug_mode: bool = False, extensions: Optional[list[Extension]] = None):
         """Initialize the generation orchestrator.
-        
+
         Args:
             debug_mode: Whether to enable debug logging
+            extensions: Optional list of extension functions to run during generation
         """
         super().__init__()
         self.setup_logging("generation_orchestrator", "orchestrator.log", debug_mode)
-        
+
         # Track logical layout of parallel tokens
         self.logical_layout: list[LogicalPosition] = []
-        
+
         # Initialize coordinators
         self.sequence_tracker = SequenceTracker(debug_mode)
         self.removal_coordinator = RetroactiveRemovalCoordinator(debug_mode)
+
+        # Store extensions
+        self.extensions = extensions or []
+
+        # Extension state tracking
+        self.extension_metadata: dict = {}
     
     def orchestrate_generation(
         self,
@@ -52,7 +61,8 @@ class GenerationOrchestrator(LoggingMixin):
         token_generator: TokenGeneratorInterface,
         retroactive_remover: Optional[RetroactiveRemoverInterface] = None,
         data_capture: Optional[DataCaptureInterface] = None,
-        attention_manager: Optional[AttentionManagerInterface] = None
+        attention_manager: Optional[AttentionManagerInterface] = None,
+        json_collector: Optional['GenerationDataCollector'] = None
     ) -> tuple[GenerationResult, GenerationState]:
         """Orchestrate the parallel text generation process.
 
@@ -67,6 +77,7 @@ class GenerationOrchestrator(LoggingMixin):
             retroactive_remover: Optional retroactive pruning component
             data_capture: Optional experiment data capture instance
             attention_manager: Optional attention service for controlling parallel token visibility
+            json_collector: Optional JSON data collector for rich output
 
         Returns:
             GenerationResult with generated text and metadata
@@ -94,6 +105,7 @@ class GenerationOrchestrator(LoggingMixin):
         # Main generation loop
         for logical_step in range(config.max_tokens):
             self.log(f"\n--- Logical Step {logical_step} ---")
+            step_start_time = time.time()
 
             # 1. Generate logits for next tokens
             # Note: We don't pass custom attention mask here because:
@@ -104,7 +116,7 @@ class GenerationOrchestrator(LoggingMixin):
                 custom_attention_mask=None
             )
             current_state = new_state
-            
+
             # 3. Apply generation strategy to select tokens
             token_set = strategy.select_tokens(
                 logits=logits,
@@ -117,10 +129,30 @@ class GenerationOrchestrator(LoggingMixin):
                 self.log("No tokens selected, ending generation", "warning")
                 break
 
+            # 3.5. Run extensions (may modify config threshold)
+            config = self._run_extensions(
+                logical_step=logical_step,
+                token_set=token_set,
+                current_config=config,
+                prompt_length=initial_state.sequence_length
+            )
+
             # Store original token set
             all_original_token_sets[logical_step] = [
                 (t.id, t.probability) for t in token_set.tokens
             ]
+
+            # Capture JSON data if collector provided
+            if json_collector:
+                step_time_ms = (time.time() - step_start_time) * 1000
+                self._capture_json_step(
+                    json_collector,
+                    logical_step,
+                    current_state.sequence_length,
+                    token_set,
+                    logits,
+                    step_time_ms
+                )
 
             # 4. Apply retroactive removal if enabled
             if config.use_retroactive_removal and logical_step > 0 and retroactive_remover:
@@ -238,3 +270,155 @@ class GenerationOrchestrator(LoggingMixin):
         metrics = self.sequence_tracker.get_metrics()
         metrics["logical_layout_size"] = len(self.logical_layout)
         return metrics
+
+    def _calculate_entropy(self, token_set: TokenSet) -> float:
+        """Calculate Shannon entropy of token probabilities.
+
+        Args:
+            token_set: Set of tokens with probabilities
+
+        Returns:
+            Shannon entropy value
+        """
+        if not token_set.tokens:
+            return 0.0
+
+        entropy = 0.0
+        for token in token_set.tokens:
+            if token.probability > 0:
+                entropy -= token.probability * math.log2(token.probability)
+
+        return entropy
+
+    def _run_extensions(
+        self,
+        logical_step: int,
+        token_set: TokenSet,
+        current_config: GenerationConfig,
+        prompt_length: int
+    ) -> GenerationConfig:
+        """Run extensions and return updated config.
+
+        Args:
+            logical_step: Current generation step
+            token_set: Selected tokens for this step
+            current_config: Current generation config
+            prompt_length: Length of the prompt
+
+        Returns:
+            Potentially modified generation config
+        """
+        if not self.extensions:
+            return current_config
+
+        # Calculate entropy for this step
+        entropy = self._calculate_entropy(token_set)
+
+        # Convert to extension state
+        ext_state = GenState(
+            step=logical_step,
+            entropy=entropy,
+            threshold=current_config.selection_threshold,
+            selected_tokens=tuple((t.id, t.probability) for t in token_set.tokens),
+            branching_factor=len(token_set.tokens),
+            prompt_length=prompt_length,
+            metadata=self.extension_metadata
+        )
+
+        # Run extensions
+        ext_state = run_extensions(ext_state, self.extensions)
+
+        # Update extension metadata (extensions can write to it)
+        self.extension_metadata = ext_state.metadata
+
+        # Check if threshold was modified
+        if ext_state.threshold != current_config.selection_threshold:
+            if self.debug_mode:
+                self.log(f"Extension modified threshold: {current_config.selection_threshold:.4f} → {ext_state.threshold:.4f}")
+
+            # Create new config with updated threshold
+            current_config = GenerationConfig(
+                max_tokens=current_config.max_tokens,
+                selection_threshold=ext_state.threshold,
+                min_steps=current_config.min_steps,
+                use_retroactive_removal=current_config.use_retroactive_removal,
+                disable_kv_cache=current_config.disable_kv_cache,
+                isolate_parallel_tokens=current_config.isolate_parallel_tokens,
+                show_token_ids=current_config.show_token_ids,
+                system_content=current_config.system_content,
+                return_parallel_sets=current_config.return_parallel_sets,
+                sequence_callback=current_config.sequence_callback
+            )
+
+        return current_config
+
+    def _capture_json_step(
+        self,
+        collector: 'GenerationDataCollector',
+        step: int,
+        prompt_tokens_so_far: int,
+        token_set: TokenSet,
+        logits: TokenLogits,
+        generation_time_ms: float
+    ) -> None:
+        """Capture data for JSON output.
+
+        Args:
+            collector: The data collector
+            step: Current logical step
+            prompt_tokens_so_far: Number of prompt tokens processed
+            token_set: Selected token set
+            logits: Full logits distribution
+            generation_time_ms: Time taken for this step
+        """
+        # Extract probabilities from logits
+        # Handle both 2D (batch_size, vocab_size) and 3D (batch_size, seq_len, vocab_size) logits
+        if logits.tensor.dim() == 3:
+            probs = torch.softmax(logits.tensor[0, -1, :], dim=-1)
+        else:
+            probs = torch.softmax(logits.tensor[-1, :], dim=-1)
+
+        # Get top tokens for rejected comparison (top 20 to find 10 that weren't selected)
+        top_probs, top_indices = torch.topk(probs, k=min(20, probs.size(0)))
+
+        # Build selected tokens list
+        selected_ids = {t.id for t in token_set.tokens}
+        selected_tokens = []
+        for token in token_set.tokens:
+            # Find logit for this token
+            if logits.tensor.dim() == 3:
+                logit_value = logits.tensor[0, -1, token.id].item()
+            else:
+                logit_value = logits.tensor[-1, token.id].item()
+            selected_tokens.append((
+                token.id,
+                "",  # Token text will be decoded later if needed
+                token.probability,
+                logit_value
+            ))
+
+        # Build rejected tokens list (top tokens not selected)
+        rejected_tokens = []
+        for prob, idx in zip(top_probs.tolist(), top_indices.tolist()):
+            if idx not in selected_ids and len(rejected_tokens) < 10:
+                if logits.tensor.dim() == 3:
+                    logit_value = logits.tensor[0, -1, idx].item()
+                else:
+                    logit_value = logits.tensor[-1, idx].item()
+                rejected_tokens.append((
+                    idx,
+                    "",  # Token text will be decoded later if needed
+                    prob,
+                    logit_value
+                ))
+
+        # Call collector
+        collector.add_step(
+            step_num=step,
+            position=step,
+            prompt_tokens_so_far=prompt_tokens_so_far,
+            selected_tokens=selected_tokens,
+            rejected_tokens=rejected_tokens,
+            generation_time_ms=generation_time_ms,
+            attention_summary=None  # Could add attention data if needed
+        )

@@ -33,10 +33,11 @@ class GenerateTextUseCase(LoggingMixin):
         rope_modifier: Optional['RoPEModifier'] = None,  # Forward reference to avoid circular import
         attention_manager: Optional[AttentionManagerInterface] = None,
         formatter: Optional['TextFormatter'] = None,  # Forward reference
-        debug_mode: bool = False
+        debug_mode: bool = False,
+        extensions: Optional[list] = None
     ):
         """Initialize the generate text use case.
-        
+
         Args:
             token_generator: Interface for generating token logits
             tokenizer: Interface for tokenization operations
@@ -46,10 +47,11 @@ class GenerateTextUseCase(LoggingMixin):
             attention_manager: Optional attention manager
             formatter: Optional text formatter
             debug_mode: Whether to enable debug logging
+            extensions: Optional list of extension functions
         """
         super().__init__()
         self.setup_logging("generate_text_use_case", "use_case.log", debug_mode)
-        
+
         self.token_generator = token_generator
         self.tokenizer = tokenizer
         self.generation_strategy = generation_strategy
@@ -57,16 +59,17 @@ class GenerateTextUseCase(LoggingMixin):
         self.rope_modifier = rope_modifier
         self.attention_manager = attention_manager
         self.formatter = formatter
-        
-        # Create orchestrator
-        self.orchestrator = GenerationOrchestrator(debug_mode=debug_mode)
+
+        # Create orchestrator with extensions
+        self.orchestrator = GenerationOrchestrator(debug_mode=debug_mode, extensions=extensions)
     
     def execute(
         self,
         prompt: str,
         config: GenerationConfig,
         retroactive_remover: Optional[RetroactiveRemoverInterface] = None,
-        experiment_config: Optional[Dict] = None
+        experiment_config: Optional[Dict] = None,
+        json_collector: Optional['GenerationDataCollector'] = None
     ) -> GenerationResult:
         """Execute the text generation use case.
 
@@ -75,6 +78,7 @@ class GenerateTextUseCase(LoggingMixin):
             config: Generation configuration
             retroactive_remover: Optional retroactive pruning component
             experiment_config: Optional experiment configuration for data capture
+            json_collector: Optional JSON data collector for rich output
 
         Returns:
             GenerationResult with generated text and metadata
@@ -117,7 +121,8 @@ class GenerateTextUseCase(LoggingMixin):
                 token_generator=self.token_generator,
                 retroactive_remover=retroactive_remover,
                 data_capture=data_capture,
-                attention_manager=self.attention_manager
+                attention_manager=self.attention_manager,
+                json_collector=json_collector
             )
             
             # 7. Format the output

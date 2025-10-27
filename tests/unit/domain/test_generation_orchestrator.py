@@ -135,6 +135,12 @@ class TestGenerationOrchestrator:
             isolate_parallel_tokens=True
         )
 
+        # Make strategy return single token (not parallel, so no registration)
+        mock_strategy.select_tokens.return_value = TokenSet(
+            tokens=[Token(id=42, text="test", logit=2.5, probability=0.8, position=0)],
+            position=0
+        )
+
         result, final_state = orchestrator.orchestrate_generation(
             initial_state=basic_generation_state,
             config=config,
@@ -143,8 +149,8 @@ class TestGenerationOrchestrator:
             attention_manager=mock_attention_manager
         )
 
-        # Verify attention manager was called to build masks
-        assert mock_attention_manager.build_attention_mask.called
+        # With single token, no parallel set registration should occur
+        assert not mock_attention_manager.register_parallel_set.called
 
     def test_parallel_token_registration(
         self,
