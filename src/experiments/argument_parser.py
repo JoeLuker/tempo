@@ -166,6 +166,34 @@ class ArgumentParser:
             action="store_true",
             help="Enable TEMPO extensions (confidence surfing, genealogy tracking, entropy watching)",
         )
+        parser.add_argument(
+            "--two-phase",
+            action="store_true",
+            help="Enable two-phase generation (Phase 1: explore with supertokens, Phase 2: commit to single path)",
+        )
+        parser.add_argument(
+            "--phase1-steps",
+            type=int,
+            default=25,
+            help="Number of steps in Phase 1 before switching to Phase 2 (default: 25)",
+        )
+        parser.add_argument(
+            "--phase2-threshold",
+            type=float,
+            default=1.0,
+            help="Threshold for Phase 2 (forces single-token selection, default: 1.0)",
+        )
+        parser.add_argument(
+            "--dynamic-phase",
+            action="store_true",
+            help="Use dynamic phase switching based on position count instead of fixed step count",
+        )
+        parser.add_argument(
+            "--max-positions",
+            type=int,
+            default=100,
+            help="Maximum total positions in Phase 1 before switching to Phase 2 (default: 100, only used with --dynamic-phase)",
+        )
 
         # Default mode option (disables TEMPO)
         parser.add_argument(

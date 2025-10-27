@@ -1,0 +1,30 @@
+name: "simple-factorial"
+description: "Basic factorial function generation"
+tags: ["example", "simple", "code-generation"]
+
+model:
+  name: "deepcogito/cogito-v1-preview-llama-3B"
+  revision: "main"
+
+generation:
+  prompt: "Write a Python function to calculate factorial using recursion:"
+  max_tokens: 100
+  selection_threshold: 0.15
+  seed: 42
+
+extensions:
+  confidence_surfing: false
+  genealogy_tracking: false
+  entropy_watching: false
+  two_phase: false
+
+pruning:
+  enabled: false
+
+output:
+  json_output: true
+  json_file: "output/simple-factorial.json"
+
+debug:
+  debug_mode: false
+  profile: false

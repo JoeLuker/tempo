@@ -180,6 +180,27 @@ class ExperimentRunner:
             extensions = [confidence_surf, track_genealogy, watch_entropy]
             logger.info("Extensions enabled: confidence_surf, track_genealogy, watch_entropy")
 
+        # Two-phase extension (if enabled)
+        if args.get('two_phase', False):
+            phase2_threshold = args.get('phase2_threshold', 1.0)
+
+            # Check if using dynamic phase switching based on position count
+            if args.get('dynamic_phase', False):
+                from src.extensions.two_phase import make_dynamic_two_phase
+                max_positions = args.get('max_positions', 100)
+                two_phase_ext = make_dynamic_two_phase(max_positions=max_positions, phase2_threshold=phase2_threshold)
+                logger.info(f"Dynamic two-phase generation enabled: Phase 1 until {max_positions} positions, Phase 2 threshold = {phase2_threshold}")
+            else:
+                from src.extensions.two_phase import make_two_phase
+                phase1_steps = args.get('phase1_steps', 25)
+                two_phase_ext = make_two_phase(phase1_steps=phase1_steps, phase2_threshold=phase2_threshold)
+                logger.info(f"Two-phase generation enabled: Phase 1 = {phase1_steps} steps, Phase 2 threshold = {phase2_threshold}")
+
+            if extensions is None:
+                extensions = [two_phase_ext]
+            else:
+                extensions.append(two_phase_ext)
+
         # Create generation config
         system_content = "Enable deep thinking subroutine." if enable_thinking else None
 

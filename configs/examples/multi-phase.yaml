@@ -1,0 +1,54 @@
+name: "multi-phase-complex"
+description: "Multi-phase generation with 4 distinct phases"
+tags: ["multi-phase", "advanced", "complex"]
+
+model:
+  name: "deepcogito/cogito-v1-preview-llama-3B"
+
+generation:
+  prompt: "Design and implement a Python API client for a REST service with authentication, rate limiting, and retry logic:"
+  max_tokens: 300
+  selection_threshold: 0.10
+  seed: 42
+
+multi_phase:
+  enabled: true
+  phases:
+    - name: "exploration"
+      max_positions: 80
+      threshold: 0.08
+      description: "Aggressive exploration of design space"
+
+    - name: "refinement"
+      max_positions: 150
+      threshold: 0.15
+      description: "Moderate exploration with structure"
+
+    - name: "consolidation"
+      max_positions: 220
+      threshold: 0.25
+      description: "Refining the implementation"
+
+    - name: "commitment"
+      max_positions: 999
+      threshold: 1.0
+      description: "Final clean implementation"
+
+extensions:
+  confidence_surfing: true
+  genealogy_tracking: true
+  entropy_watching: true
+
+pruning:
+  enabled: true
+  attention_threshold: 0.015
+
+output:
+  json_output: true
+  json_file: "output/multi-phase-api-client.json"
+  save_checkpoints: true
+  checkpoint_every: 50
+
+debug:
+  debug_mode: false
+  verbose: true

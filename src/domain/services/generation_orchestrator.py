@@ -129,13 +129,24 @@ class GenerationOrchestrator(LoggingMixin):
                 self.log("No tokens selected, ending generation", "warning")
                 break
 
-            # 3.5. Run extensions (may modify config threshold)
-            config = self._run_extensions(
+            # 3.5. Run extensions (may modify config threshold or inject prompts)
+            config, prompt_to_inject = self._run_extensions(
                 logical_step=logical_step,
                 token_set=token_set,
                 current_config=config,
                 prompt_length=initial_state.sequence_length
             )
+
+            # Check if extension wants to inject a prompt
+            if prompt_to_inject:
+                # Return special signal to use case to handle prompt injection
+                # Store injection info in metadata for caller to handle
+                self.extension_metadata['pending_injection'] = {
+                    'prompt': prompt_to_inject,
+                    'step': logical_step
+                }
+                self.log(f"Extension requested prompt injection at step {logical_step}: '{prompt_to_inject[:50]}...'")
+                # Note: Actual injection must be handled by use case which has tokenizer access
 
             # Store original token set
             all_original_token_sets[logical_step] = [
@@ -296,8 +307,8 @@ class GenerationOrchestrator(LoggingMixin):
         token_set: TokenSet,
         current_config: GenerationConfig,
         prompt_length: int
-    ) -> GenerationConfig:
-        """Run extensions and return updated config.
+    ) -> tuple[GenerationConfig, Optional[str]]:
+        """Run extensions and return updated config and optional prompt injection.
 
         Args:
             logical_step: Current generation step
@@ -306,10 +317,10 @@ class GenerationOrchestrator(LoggingMixin):
             prompt_length: Length of the prompt
 
         Returns:
-            Potentially modified generation config
+            Tuple of (modified config, prompt to inject or None)
         """
         if not self.extensions:
-            return current_config
+            return current_config, None
 
         # Calculate entropy for this step
         entropy = self._calculate_entropy(token_set)
@@ -331,6 +342,9 @@ class GenerationOrchestrator(LoggingMixin):
         # Update extension metadata (extensions can write to it)
         self.extension_metadata = ext_state.metadata
 
+        # Check for prompt injection request
+        prompt_to_inject = ext_state.metadata.pop('inject_prompt', None)
+
         # Check if threshold was modified
         if ext_state.threshold != current_config.selection_threshold:
             if self.debug_mode:
@@ -350,7 +364,7 @@ class GenerationOrchestrator(LoggingMixin):
                 sequence_callback=current_config.sequence_callback
             )
 
-        return current_config
+        return current_config, prompt_to_inject
 
     def _capture_json_step(
         self,

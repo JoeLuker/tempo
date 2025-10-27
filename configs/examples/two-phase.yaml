@@ -1,0 +1,35 @@
+name: "two-phase-code-gen"
+description: "Two-phase generation: explore then commit"
+tags: ["two-phase", "code-generation", "advanced"]
+
+model:
+  name: "deepcogito/cogito-v1-preview-llama-3B"
+
+generation:
+  prompt: "Write a Python class for a binary search tree with insert, search, and delete methods:"
+  max_tokens: 200
+  selection_threshold: 0.12
+  seed: 42
+
+extensions:
+  # Enable two-phase with dynamic position-based switching
+  two_phase: true
+  dynamic_phase: true
+  max_positions: 120
+  phase2_threshold: 1.0
+
+  # Also enable extensions for exploration phase
+  confidence_surfing: true
+  entropy_watching: true
+  genealogy_tracking: true
+
+pruning:
+  enabled: true
+  attention_threshold: 0.02
+
+output:
+  json_output: true
+  json_file: "output/two-phase-bst.json"
+
+debug:
+  debug_mode: false
