@@ -199,9 +199,9 @@ class ArgumentParser:
 
         # Parallel token isolation option
         parser.add_argument(
-            "--allow-intraset-token-visibility",
+            "--isolate",
             action="store_true",
-            help="Allow tokens within the same parallel set to see each other during generation (disabled by default)",
+            help="Isolate parallel tokens (prevent them from seeing each other). Default: disabled",
         )
 
         # Profiling parameters

@@ -81,7 +81,7 @@ class ExperimentRunner:
         debug_mode = args.get("debug_mode", False)
         disable_kv_cache = args.get("disable_kv_cache", False)
         enable_thinking = args.get("enable_thinking", False)
-        isolate_parallel_tokens = not args.get("allow_intraset_token_visibility", False)
+        isolate_parallel_tokens = args.get("isolate", False)
         use_mcts = args.get("use_mcts", False)
 
         # Set debug mode
