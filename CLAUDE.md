@@ -39,6 +39,12 @@ python3 run_tempo.py --prompt "Your prompt here" --selection-threshold 0.2 --max
 
 # Enable profiling
 python3 run_tempo.py --prompt "Your prompt here" --selection-threshold 0.1 --max-tokens 50 --profile --use-cprofile
+
+# Enable extensions (confidence surfing, genealogy tracking, entropy watching)
+python3 run_tempo.py --prompt "Your prompt here" --selection-threshold 0.1 --enable-extensions
+
+# JSON output for mechanistic interpretability
+python3 run_tempo.py --prompt "Your prompt here" --output-json --json-output-file results.json
 ```
 
 ### Running Tests
@@ -125,6 +131,16 @@ TEMPO's architecture is centered around several key components:
 - `src/modeling/model_wrapper.py`: TEMPO model wrapper with hooks
 - `src/experiments/`: Experiment running and data capture
 
+### Extensions & Output Systems
+- `src/extensions/ultra_simple.py`: Ultra-simple extension system (80 lines, no registry, no decorators)
+  - Built-in extensions: `confidence_surf`, `track_genealogy`, `watch_entropy`, `collect_pruned`
+  - Extensions are just functions: `state -> state`
+  - Configuration via closures: `make_confidence_surf(low_thresh=1.5)`
+- `src/utils/json_output.py`: JSON output for mechanistic interpretability
+  - Dataclasses: `TokenChoice`, `GenerationStep`, `GenerationTree`, `GenerationStatistics`
+  - Includes jq query examples for exploration
+- `src/utils/generation_data_collector.py`: Runtime data collection during generation
+
 ### Entry Points
 - `run_tempo.py`: Command-line interface for text generation
 - `api.py`: FastAPI backend for web interface
@@ -147,7 +163,21 @@ TEMPO's architecture is centered around several key components:
 
 ## Recent Updates
 
-### Architecture & Testing (Latest)
+### Extensions & JSON Output (Latest)
+- **Extension System**: Ultra-simple extension framework (80 lines core, no registry, no decorators)
+  - Extensions are just functions: `state -> state`
+  - Built-in extensions: confidence surfing, genealogy tracking, entropy watching
+  - Integrated into GenerationOrchestrator - runs after token selection
+  - Extensions can modify config (e.g., threshold) based on entropy/branching
+  - Enabled via `--enable-extensions` flag
+- **JSON Output**: Comprehensive mechanistic interpretability output
+  - Captures per-step token alternatives, probabilities, logits, entropy
+  - Includes statistics: avg branching factor, total entropy, generation time
+  - Built-in jq query examples for exploration
+  - Enabled via `--output-json` flag
+- **Test Status**: All 48 unit tests passing
+
+### Architecture & Testing
 - **Test Coverage**: 51 passing tests (132% increase from initial 22 tests)
   - 3 integration tests for end-to-end generation flow
   - 48 unit tests (22 application layer + 26 domain layer)
@@ -173,7 +203,7 @@ TEMPO's architecture is centered around several key components:
 - Interactive token hover effects showing alternatives
 
 ### Test Status
-- **Current**: 51/51 tests passing
+- **Current**: 48/48 tests passing
 - **Coverage**: Core domain and application services well-covered
 - **Quality**: Proper mocking, edge case handling, error scenarios tested
 - **Integration**: End-to-end generation flow validated with both isolated and visible attention modes
