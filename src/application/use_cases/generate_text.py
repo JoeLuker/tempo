@@ -30,10 +30,11 @@ class GenerateTextUseCase(LoggingMixin):
         rope_modifier: Optional[Any] = None,
         attention_manager: Optional[Any] = None,
         formatter: Optional[Any] = None,
+        data_capture: Optional[Any] = None,
         debug_mode: bool = False
     ):
         """Initialize the generate text use case.
-        
+
         Args:
             token_generator: Interface for generating token logits
             tokenizer: Interface for tokenization operations
@@ -42,11 +43,12 @@ class GenerateTextUseCase(LoggingMixin):
             rope_modifier: Optional RoPE modifier for position embeddings
             attention_manager: Optional attention manager
             formatter: Optional text formatter
+            data_capture: Optional experiment data capture interface
             debug_mode: Whether to enable debug logging
         """
         super().__init__()
         self.setup_logging("generate_text_use_case", "use_case.log", debug_mode)
-        
+
         self.token_generator = token_generator
         self.tokenizer = tokenizer
         self.generation_strategy = generation_strategy
@@ -54,7 +56,8 @@ class GenerateTextUseCase(LoggingMixin):
         self.rope_modifier = rope_modifier
         self.attention_manager = attention_manager
         self.formatter = formatter
-        
+        self.data_capture = data_capture
+
         # Create orchestrator
         self.orchestrator = GenerationOrchestrator(debug_mode=debug_mode)
     
@@ -101,7 +104,8 @@ class GenerateTextUseCase(LoggingMixin):
                 config=config,
                 strategy=self.generation_strategy,
                 token_generator=self.token_generator,
-                retroactive_remover=retroactive_remover
+                retroactive_remover=retroactive_remover,
+                data_capture=self.data_capture
             )
             
             # 7. Format the output

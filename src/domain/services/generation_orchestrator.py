@@ -47,20 +47,22 @@ class GenerationOrchestrator(LoggingMixin):
         config: GenerationConfig,
         strategy: GenerationStrategy,
         token_generator: TokenGeneratorInterface,
-        retroactive_remover: Optional[Any] = None
+        retroactive_remover: Optional[Any] = None,
+        data_capture: Optional[Any] = None
     ) -> tuple[GenerationResult, GenerationState]:
         """Orchestrate the parallel text generation process.
-        
+
         This method coordinates the generation process, managing state,
         applying strategies, and tracking progress.
-        
+
         Args:
             initial_state: Initial generation state with prompt
             config: Generation configuration
             strategy: Strategy for token selection and pruning
             token_generator: Interface for generating token logits
             retroactive_remover: Optional retroactive pruning component
-            
+            data_capture: Optional experiment data capture interface
+
         Returns:
             GenerationResult with generated text and metadata
         """
@@ -127,17 +129,40 @@ class GenerationOrchestrator(LoggingMixin):
             
             # Get final token IDs
             token_ids = [t.id for t in token_set.tokens]
-            
-            # 4. Update state with new tokens
+
+            # 4. Capture experiment data if requested
+            if data_capture:
+                physical_start_idx = current_state.input_ids.size(1)
+                physical_positions = list(range(physical_start_idx, physical_start_idx + len(token_ids)))
+
+                # Get cached attention from token generator
+                attention_data = token_generator.get_cached_attention()
+                attention_tensor = None
+                if attention_data:
+                    attention_pattern, _ = attention_data
+                    # attention_pattern.layers is a list of tensors, one per layer
+                    attention_tensor = attention_pattern.layers
+
+                # Capture step data
+                data_capture.capture_step_data(
+                    logical_step=logical_step,
+                    physical_positions=physical_positions,
+                    token_ids=token_ids,
+                    logits=logits.tensor if hasattr(logits, 'tensor') else logits,
+                    attention=attention_tensor,
+                    kv_cache=current_state.past_key_values
+                )
+
+            # 5. Update state with new tokens
             physical_start_idx = current_state.input_ids.size(1)
             new_tokens_tensor = torch.tensor([token_ids], device=current_state.input_ids.device)
-            
+
             new_input_ids = torch.cat([current_state.input_ids, new_tokens_tensor], dim=1)
             new_attention_mask = torch.cat([
                 current_state.attention_mask,
                 torch.ones((1, len(token_ids)), device=current_state.attention_mask.device)
             ], dim=1)
-            
+
             physical_end_idx = new_input_ids.size(1) - 1
             
             # Create new state
@@ -159,13 +184,18 @@ class GenerationOrchestrator(LoggingMixin):
                 current_state.sequence_length - initial_state.sequence_length,
                 config.sequence_callback
             )
-            
-            # 5. Check termination conditions
+
+            # 6. Check termination conditions
             if logical_step >= config.min_steps:
                 if strategy.should_terminate(token_set, current_state):
                     self.log(f"Termination condition met at step {logical_step}")
                     break
-        
+
+        # Save captured data if requested
+        if data_capture:
+            self.log("Saving experiment data...")
+            data_capture.save_all()
+
         # Calculate total generation time
         generation_time = time.time() - generation_start
         
