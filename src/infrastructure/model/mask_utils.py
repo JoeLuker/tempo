@@ -4,121 +4,130 @@ import torch
 from typing import Optional
 
 
-def get_mask_row_for_position(
-    full_mask: torch.Tensor,
-    position: int,
-    kv_length: int
-) -> torch.Tensor:
-    """
-    Extract a single row from a full attention mask for a specific position.
+def extract_position_from_cache(cache_position: Optional[torch.LongTensor]) -> Optional[int]:
+    """Extract scalar position from cache_position tensor."""
+    if cache_position is None:
+        return None
 
-    Args:
-        full_mask: Full mask [seq_len, seq_len]
-        position: Which position's mask to extract
-        kv_length: Length of keys/values
+    if cache_position.dim() == 0:
+        return cache_position.item()
+    elif cache_position.dim() == 1:
+        return cache_position[0].item()
+    else:
+        return cache_position[0, 0].item()
 
-    Returns:
-        Mask for this position: [1, 1, 1, kv_length]
-    """
-    mask_size = full_mask.shape[0]
 
-    # Clamp position to valid range
-    pos = min(position, mask_size - 1)
+def clamp_position(position: int, max_position: int) -> int:
+    """Clamp position to valid range [0, max_position]."""
+    return min(max(0, position), max_position)
 
-    # Get the row for this position
-    mask_row = full_mask[pos, :kv_length]  # [kv_length]
 
-    # Reshape to [batch=1, heads=1, query=1, kv_length]
+def extract_mask_row(mask: torch.Tensor, row_index: int) -> torch.Tensor:
+    """Extract a single row from mask [seq_len, seq_len] -> [seq_len]."""
+    return mask[row_index, :]
+
+
+def slice_to_length(tensor: torch.Tensor, length: int) -> torch.Tensor:
+    """Slice tensor's last dimension to specified length."""
+    return tensor[..., :length]
+
+
+def reshape_to_attention_mask(mask_row: torch.Tensor) -> torch.Tensor:
+    """Reshape [seq_len] to [1, 1, 1, seq_len] for attention."""
     return mask_row.unsqueeze(0).unsqueeze(0).unsqueeze(0)
 
 
-def combine_masks(
-    causal_mask: Optional[torch.Tensor],
-    custom_mask: torch.Tensor
-) -> torch.Tensor:
-    """
-    Combine causal and custom masks by taking the minimum (most restrictive).
+def pad_mask_to_length(mask: torch.Tensor, target_length: int) -> torch.Tensor:
+    """Pad mask's last dimension to target_length with zeros (allow attention)."""
+    current_length = mask.shape[-1]
+    if current_length >= target_length:
+        return mask
 
-    Args:
-        causal_mask: Existing causal mask or None
-        custom_mask: Custom mask to apply
+    pad_size = target_length - current_length
+    return torch.nn.functional.pad(mask, (0, pad_size), value=0.0)
+
+
+def align_mask_shapes(mask_a: torch.Tensor, mask_b: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Align two masks to same shape by padding shorter one.
 
     Returns:
-        Combined mask
+        (aligned_mask_a, aligned_mask_b) with matching shapes
     """
-    if causal_mask is None:
-        return custom_mask
+    len_a = mask_a.shape[-1]
+    len_b = mask_b.shape[-1]
 
-    # If shapes don't match, pad custom mask to match causal mask size
-    if causal_mask.shape != custom_mask.shape:
-        causal_shape = causal_mask.shape
-        custom_shape = custom_mask.shape
+    if len_a == len_b:
+        return mask_a, mask_b
 
-        # Pad custom mask to match causal mask
-        # Padding with 0 (allow attention) for positions beyond our mask
-        if causal_shape[-1] > custom_shape[-1]:
-            pad_size = causal_shape[-1] - custom_shape[-1]
-            # Pad on the right (last dimension)
-            custom_padded = torch.nn.functional.pad(
-                custom_mask,
-                (0, pad_size),  # Pad right side of last dim
-                value=0.0  # 0 = allow attention
-            )
-            return torch.minimum(causal_mask, custom_padded)
-        else:
-            # Custom mask is larger, trim it
-            custom_trimmed = custom_mask[..., :causal_shape[-1]]
-            return torch.minimum(causal_mask, custom_trimmed)
-
-    return torch.minimum(causal_mask, custom_mask)
+    target_len = max(len_a, len_b)
+    return (
+        pad_mask_to_length(mask_a, target_len),
+        pad_mask_to_length(mask_b, target_len)
+    )
 
 
-def prepare_mask_for_kv_cache(
+def merge_masks(mask_a: torch.Tensor, mask_b: torch.Tensor) -> torch.Tensor:
+    """Merge two masks by taking minimum (most restrictive)."""
+    return torch.minimum(mask_a, mask_b)
+
+
+def prepare_custom_mask_for_generation(
     full_mask: torch.Tensor,
     cache_position: Optional[torch.LongTensor],
-    attention_mask: Optional[torch.Tensor],
     device: torch.device,
     dtype: torch.dtype
 ) -> torch.Tensor:
     """
-    Prepare a full mask for KV-cached generation.
-
-    During KV caching, we only process 1 new token but it needs to attend
-    to all previous tokens. Extract the appropriate row from the full mask.
+    Prepare custom mask for a single generation step.
 
     Args:
         full_mask: Full attention mask [seq_len, seq_len]
-        cache_position: Position(s) being processed
-        attention_mask: Existing attention mask (tells us KV length)
+        cache_position: Current position being generated
         device: Target device
         dtype: Target dtype
 
     Returns:
-        Mask slice ready for this forward pass
+        Mask slice [1, 1, 1, seq_len] for this generation step
     """
     mask_size = full_mask.shape[0]
 
-    # Determine which position we're processing
-    if cache_position is not None:
-        if cache_position.dim() == 0:  # Scalar
-            pos = cache_position.item()
-        elif cache_position.dim() == 1:
-            pos = cache_position[0].item()  # Take first
-        else:
-            pos = cache_position[0, 0].item()  # [batch, seq]
-    else:
-        # Fallback: assume we're processing the last position
-        pos = mask_size - 1
+    # Extract position
+    position = extract_position_from_cache(cache_position)
+    if position is None:
+        position = mask_size - 1
 
-    # Clamp position to mask bounds
-    pos = min(pos, mask_size - 1)
+    # Clamp to valid range
+    position = clamp_position(position, mask_size - 1)
 
-    # KV length should match the mask's second dimension
-    # Since we're extracting from a [seq_len, seq_len] mask, use mask_size
-    kv_len = mask_size
+    # Extract row, slice, and reshape
+    mask_row = extract_mask_row(full_mask, position)
+    mask_row = slice_to_length(mask_row, mask_size)
+    mask_reshaped = reshape_to_attention_mask(mask_row)
 
-    # Extract row and reshape
-    mask_slice = get_mask_row_for_position(full_mask, pos, kv_len)
+    # Move to target device/dtype
+    return mask_reshaped.to(device, dtype)
 
-    # Move to correct device and dtype
-    return mask_slice.to(device, dtype)
+
+def apply_custom_mask(
+    causal_mask: Optional[torch.Tensor],
+    custom_mask: torch.Tensor
+) -> torch.Tensor:
+    """
+    Apply custom mask on top of causal mask.
+
+    Args:
+        causal_mask: Existing causal mask from model (or None)
+        custom_mask: Custom mask to apply
+
+    Returns:
+        Combined mask with custom restrictions applied
+    """
+    if causal_mask is None:
+        return custom_mask
+
+    # Align shapes (pad shorter one)
+    aligned_causal, aligned_custom = align_mask_shapes(causal_mask, custom_mask)
+
+    # Merge (most restrictive wins)
+    return merge_masks(aligned_causal, aligned_custom)

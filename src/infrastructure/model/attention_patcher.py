@@ -1,37 +1,52 @@
-"""Monkey-patch Llama attention to support custom attention masks."""
+"""Patch model attention layers to inject custom masks."""
 
 import torch
 from typing import Optional
-from src.infrastructure.model.mask_utils import prepare_mask_for_kv_cache, combine_masks
+from src.infrastructure.model.mask_utils import (
+    prepare_custom_mask_for_generation,
+    apply_custom_mask
+)
+
+
+def unwrap_model(model):
+    """Extract base model from wrapper if present."""
+    return model.model if hasattr(model, 'model') else model
+
+
+def get_attention_layers(model):
+    """Extract attention layers from Llama model."""
+    base_model = unwrap_model(model)
+    if hasattr(base_model, 'model') and hasattr(base_model.model, 'layers'):
+        return base_model.model.layers
+    return []
 
 
 class AttentionPatcher:
-    """Patches model attention layers to use custom attention masks."""
+    """Injects custom attention masks into model forward passes."""
 
     def __init__(self):
         self.custom_mask = None
         self.original_forwards = {}
 
     def set_custom_mask(self, mask: Optional[torch.Tensor]):
-        """Set the custom attention mask to be used."""
+        """Set custom attention mask for next forward pass."""
         self.custom_mask = mask
 
     def patch_model(self, model):
-        """Patch all attention layers in the model."""
-        # Unwrap TEMPOModelWrapper or other wrappers to get to the actual model
-        actual_model = model
-        if hasattr(model, 'model'):
-            actual_model = model.model
+        """Replace attention forward methods with patched versions."""
+        for layer_idx, layer in enumerate(get_attention_layers(model)):
+            if hasattr(layer, 'self_attn'):
+                self._patch_attention_layer(layer.self_attn, layer_idx)
 
-        # For Llama models (LlamaForCausalLM has .model.layers)
-        if hasattr(actual_model, 'model') and hasattr(actual_model.model, 'layers'):
-            layers = actual_model.model.layers
-            for layer_idx, layer in enumerate(layers):
-                if hasattr(layer, 'self_attn'):
-                    self._patch_llama_attention(layer.self_attn, layer_idx)
+    def unpatch_model(self, model):
+        """Restore original attention forward methods."""
+        for layer_idx, layer in enumerate(get_attention_layers(model)):
+            if layer_idx in self.original_forwards:
+                layer.self_attn.forward = self.original_forwards[layer_idx]
+        self.original_forwards.clear()
 
-    def _patch_llama_attention(self, attn_module, layer_idx: int):
-        """Patch a Llama attention module."""
+    def _patch_attention_layer(self, attn_module, layer_idx: int):
+        """Patch single attention layer to inject custom mask."""
         original_forward = attn_module.forward
         self.original_forwards[layer_idx] = original_forward
 
@@ -43,28 +58,15 @@ class AttentionPatcher:
             cache_position: Optional[torch.LongTensor] = None,
             **kwargs
         ):
-            # Apply custom mask if we have one
             if self.custom_mask is not None:
-                try:
-                    # Prepare mask for KV-cached generation
-                    custom_slice = prepare_mask_for_kv_cache(
-                        full_mask=self.custom_mask,
-                        cache_position=cache_position,
-                        attention_mask=attention_mask,
-                        device=hidden_states.device,
-                        dtype=hidden_states.dtype
-                    )
+                attention_mask = self._apply_mask(
+                    attention_mask=attention_mask,
+                    cache_position=cache_position,
+                    device=hidden_states.device,
+                    dtype=hidden_states.dtype,
+                    layer_idx=layer_idx
+                )
 
-                    # Combine with existing mask
-                    attention_mask = combine_masks(attention_mask, custom_slice)
-
-                except Exception as e:
-                    # If masking fails, log and continue without it
-                    if layer_idx == 0:
-                        print(f"[PATCHER] Mask application failed: {e}")
-                    pass
-
-            # Call original forward
             return original_forward(
                 hidden_states=hidden_states,
                 position_embeddings=position_embeddings,
@@ -74,19 +76,27 @@ class AttentionPatcher:
                 **kwargs
             )
 
-        # Replace forward method
         attn_module.forward = patched_forward
 
-    def unpatch_model(self, model):
-        """Restore original forward methods."""
-        # Unwrap to actual model
-        actual_model = model
-        if hasattr(model, 'model'):
-            actual_model = model.model
+    def _apply_mask(
+        self,
+        attention_mask: Optional[torch.Tensor],
+        cache_position: Optional[torch.LongTensor],
+        device: torch.device,
+        dtype: torch.dtype,
+        layer_idx: int
+    ) -> torch.Tensor:
+        """Apply custom mask to attention_mask."""
+        try:
+            custom_prepared = prepare_custom_mask_for_generation(
+                full_mask=self.custom_mask,
+                cache_position=cache_position,
+                device=device,
+                dtype=dtype
+            )
+            return apply_custom_mask(attention_mask, custom_prepared)
 
-        if hasattr(actual_model, 'model') and hasattr(actual_model.model, 'layers'):
-            for layer_idx, layer in enumerate(actual_model.model.layers):
-                if layer_idx in self.original_forwards:
-                    layer.self_attn.forward = self.original_forwards[layer_idx]
-
-        self.original_forwards.clear()
+        except Exception as e:
+            if layer_idx == 0:
+                print(f"[PATCHER] Failed to apply mask: {e}")
+            return attention_mask
