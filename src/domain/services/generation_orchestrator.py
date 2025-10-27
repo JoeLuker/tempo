@@ -104,6 +104,8 @@ class GenerationOrchestrator(LoggingMixin):
                     seq_length=current_state.sequence_length,
                     dtype=torch.float32
                 )
+                num_sets = len(attention_manager.parallel_sets)
+                self.log(f"Step {logical_step}: Built mask (shape={custom_mask.shape}, {num_sets} parallel sets)")
 
             # 2. Generate logits for next tokens
             logits, new_state = token_generator.generate_logits_with_cache(
