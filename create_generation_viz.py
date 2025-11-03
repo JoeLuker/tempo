@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Create interactive HTML visualization of TEMPO generation process.
-Generates a beautiful D3.js tree diagram showing parallel token paths.
+Shows parallel tokens as simultaneous alternatives, not branching paths.
 """
 
 import subprocess
@@ -9,6 +9,7 @@ import json
 import yaml
 from pathlib import Path
 import webbrowser
+import re
 
 
 def run_tempo_with_capture(prompt, threshold=0.25, max_tokens=15):
@@ -38,10 +39,8 @@ def run_tempo_with_capture(prompt, threshold=0.25, max_tokens=15):
         return json.load(f)
 
 
-def parse_generation_tree(generated_text, prompt):
-    """Parse formatted text into tree structure."""
-    import re
-
+def parse_generation_sequence(generated_text, prompt):
+    """Parse formatted text into sequence of steps."""
     # Remove ANSI codes
     ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
     clean_text = ansi_escape.sub('', generated_text)
@@ -50,74 +49,55 @@ def parse_generation_tree(generated_text, prompt):
     if prompt in clean_text:
         clean_text = clean_text.split(prompt, 1)[1]
 
-    # Parse parallel tokens [token1/token2]
-    nodes = []
-    node_id = 0
+    steps = []
 
-    # Root node
-    nodes.append({
-        'id': node_id,
-        'text': prompt,
+    # Add prompt as first step
+    steps.append({
         'type': 'prompt',
-        'parent': None
+        'tokens': [prompt]
     })
-    current_parent = node_id
-    node_id += 1
 
-    # Find parallel sets
+    # Parse parallel sets [token1/token2]
     parallel_pattern = r'\[([^\]]+)\]'
     current_pos = 0
 
     for match in re.finditer(parallel_pattern, clean_text):
-        # Text before parallel set
+        # Text before parallel set (single tokens)
         before = clean_text[current_pos:match.start()].strip()
         if before:
-            nodes.append({
-                'id': node_id,
-                'text': before,
+            steps.append({
                 'type': 'single',
-                'parent': current_parent
+                'tokens': [before]
             })
-            current_parent = node_id
-            node_id += 1
 
         # Parallel tokens
         parallel_text = match.group(1)
         tokens = [t.strip() for t in parallel_text.split('/')]
-
-        # Create parallel set node
-        parallel_parent = current_parent
-        for token in tokens:
-            nodes.append({
-                'id': node_id,
-                'text': token,
-                'type': 'parallel',
-                'parent': parallel_parent
-            })
-            node_id += 1
-
-        # Continue from first parallel token
-        current_parent = parallel_parent + 1
+        steps.append({
+            'type': 'parallel',
+            'tokens': tokens
+        })
 
         current_pos = match.end()
 
     # Remaining text
     remaining = clean_text[current_pos:].strip()
     if remaining:
-        nodes.append({
-            'id': node_id,
-            'text': remaining,
+        steps.append({
             'type': 'single',
-            'parent': current_parent
+            'tokens': [remaining]
         })
 
-    return nodes
+    return steps
 
 
 def create_html_visualization(results, prompt, threshold, output_file='generation_viz.html'):
-    """Create interactive D3.js visualization."""
+    """Create interactive visualization showing parallel tokens correctly."""
 
-    nodes = parse_generation_tree(results['generated_text'], prompt)
+    steps = parse_generation_sequence(results['generated_text'], prompt)
+
+    # Convert steps to JSON-safe format
+    steps_json = json.dumps(steps)
 
     html = f"""<!DOCTYPE html>
 <html>
@@ -168,47 +148,90 @@ def create_html_visualization(results, prompt, threshold, output_file='generatio
             color: #2d3748;
         }}
 
-        svg {{
-            border: 1px solid #e2e8f0;
+        #sequence {{
+            margin: 30px 0;
+            min-height: 400px;
+        }}
+
+        .step {{
+            margin: 20px 0;
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }}
+
+        .step-number {{
+            background: #667eea;
+            color: white;
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+            flex-shrink: 0;
+        }}
+
+        .step-content {{
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }}
+
+        .token-box {{
+            padding: 12px 20px;
             border-radius: 8px;
-            background: #fafafa;
-        }}
-
-        .node circle {{
-            cursor: pointer;
-            stroke-width: 2px;
-        }}
-
-        .node.prompt circle {{
-            fill: #667eea;
-            stroke: #5568d3;
-        }}
-
-        .node.single circle {{
-            fill: #48bb78;
-            stroke: #38a169;
-        }}
-
-        .node.parallel circle {{
-            fill: #ed8936;
-            stroke: #dd6b20;
-        }}
-
-        .node text {{
-            font-size: 14px;
             font-family: 'Courier New', monospace;
-            pointer-events: none;
+            font-size: 16px;
+            transition: all 0.2s;
+            cursor: pointer;
         }}
 
-        .link {{
-            fill: none;
-            stroke: #cbd5e0;
-            stroke-width: 2px;
+        .token-box:hover {{
+            transform: translateX(5px);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
         }}
 
-        .node:hover circle {{
-            stroke-width: 4px;
-            filter: brightness(1.1);
+        .token-prompt {{
+            background: #667eea;
+            color: white;
+            font-weight: bold;
+        }}
+
+        .token-single {{
+            background: #48bb78;
+            color: white;
+        }}
+
+        .token-parallel {{
+            background: #ed8936;
+            color: white;
+            border: 2px solid #dd6b20;
+        }}
+
+        .parallel-group {{
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            padding-left: 20px;
+            border-left: 3px solid #ed8936;
+        }}
+
+        .parallel-label {{
+            font-size: 12px;
+            color: #718096;
+            font-weight: bold;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }}
+
+        .connector {{
+            width: 2px;
+            height: 20px;
+            background: #cbd5e0;
+            margin: 0 auto;
         }}
 
         .legend {{
@@ -244,7 +267,7 @@ def create_html_visualization(results, prompt, threshold, output_file='generatio
 </head>
 <body>
     <div class="container">
-        <h1>🌲 TEMPO Generation Tree Visualization</h1>
+        <h1>🔄 TEMPO Parallel Generation Sequence</h1>
 
         <div class="info">
             <div class="info-item">
@@ -259,81 +282,62 @@ def create_html_visualization(results, prompt, threshold, output_file='generatio
             <div class="info-item">
                 <span class="info-label">Generation Time:</span> {results['generation_time']:.2f}s
             </div>
+            <div class="info-item">
+                <span class="info-label">Key Concept:</span> Parallel tokens exist <strong>simultaneously</strong> at the same logical position (not separate branches!)
+            </div>
         </div>
 
-        <div id="tree"></div>
+        <div id="sequence"></div>
 
         <div class="legend">
-            <span class="legend-item legend-prompt">● Prompt</span>
-            <span class="legend-item legend-single">● Single Token</span>
-            <span class="legend-item legend-parallel">● Parallel Token (Multiple Paths)</span>
+            <span class="legend-item legend-prompt">● Prompt (Starting Point)</span>
+            <span class="legend-item legend-single">● Single Token (Only One Choice)</span>
+            <span class="legend-item legend-parallel">● Parallel Tokens (Multiple Choices at Same Position)</span>
         </div>
     </div>
 
     <script>
-        const nodes = {json.dumps(nodes)};
+        const steps = {steps_json};
 
-        // Build hierarchy
-        const root = d3.stratify()
-            .id(d => d.id)
-            .parentId(d => d.parent)
-            (nodes);
+        const sequenceDiv = d3.select('#sequence');
 
-        const width = 1200;
-        const height = 600;
+        steps.forEach((step, i) => {{
+            const stepDiv = sequenceDiv.append('div')
+                .attr('class', 'step');
 
-        const tree = d3.tree()
-            .size([height - 100, width - 200])
-            .separation((a, b) => a.parent === b.parent ? 1.5 : 2);
+            stepDiv.append('div')
+                .attr('class', 'step-number')
+                .text(i);
 
-        const treeData = tree(root);
+            const contentDiv = stepDiv.append('div')
+                .attr('class', 'step-content');
 
-        const svg = d3.select('#tree')
-            .append('svg')
-            .attr('width', width)
-            .attr('height', height)
-            .append('g')
-            .attr('transform', 'translate(80, 50)');
+            if (step.type === 'parallel') {{
+                contentDiv.append('div')
+                    .attr('class', 'parallel-label')
+                    .text(`Parallel Set (all ${{step.tokens.length}} exist simultaneously)`);
 
-        // Links
-        svg.selectAll('.link')
-            .data(treeData.links())
-            .enter()
-            .append('path')
-            .attr('class', 'link')
-            .attr('d', d3.linkHorizontal()
-                .x(d => d.y)
-                .y(d => d.x));
+                const parallelGroup = contentDiv.append('div')
+                    .attr('class', 'parallel-group');
 
-        // Nodes
-        const node = svg.selectAll('.node')
-            .data(treeData.descendants())
-            .enter()
-            .append('g')
-            .attr('class', d => `node ${{d.data.type}}`)
-            .attr('transform', d => `translate(${{d.y}},${{d.x}})`);
+                step.tokens.forEach(token => {{
+                    parallelGroup.append('div')
+                        .attr('class', 'token-box token-parallel')
+                        .text(token);
+                }});
+            }} else {{
+                step.tokens.forEach(token => {{
+                    contentDiv.append('div')
+                        .attr('class', `token-box token-${{step.type}}`)
+                        .text(token);
+                }});
+            }}
 
-        node.append('circle')
-            .attr('r', 8);
-
-        node.append('text')
-            .attr('dy', -15)
-            .attr('text-anchor', 'middle')
-            .style('font-weight', d => d.data.type === 'prompt' ? 'bold' : 'normal')
-            .text(d => d.data.text);
-
-        // Add interactivity
-        node.on('mouseover', function(event, d) {{
-            d3.select(this).select('circle')
-                .transition()
-                .duration(200)
-                .attr('r', 12);
-        }})
-        .on('mouseout', function(event, d) {{
-            d3.select(this).select('circle')
-                .transition()
-                .duration(200)
-                .attr('r', 8);
+            // Add connector except for last step
+            if (i < steps.length - 1) {{
+                sequenceDiv.append('div')
+                    .attr('class', 'connector');
+            }}
         }});
     </script>
 </body>
@@ -370,5 +374,5 @@ if __name__ == '__main__':
     # Cleanup
     os.remove('./viz_config.yaml')
 
-    print("\n✨ Done! The visualization is now open in your browser.")
+    print("\n✨ Done! The visualization shows parallel tokens as simultaneous alternatives.")
     print("="*80)
