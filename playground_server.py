@@ -107,9 +107,23 @@ def convert_to_structured_graph(result_dict: dict, prompt: str, tokenizer) -> di
     # node_map: logical_step -> [list of node IDs at that step]
     node_map: Dict[int, List[str]] = {}
 
-    # Process each logical step
-    for logical_step in sorted(all_original_token_sets.keys()):
-        token_set = all_original_token_sets[logical_step]
+    # Add prompt as step 0
+    prompt_node_id = "0_0"
+    nodes.append(TokenNode(
+        id=prompt_node_id,
+        token_id=0,  # Dummy token ID for prompt
+        text=prompt,
+        probability=1.0,
+        logical_step=0,
+        is_parallel=False,
+        parent_ids=[]
+    ))
+    node_map[0] = [prompt_node_id]
+
+    # Process each logical step (shift by 1 since prompt is step 0)
+    for gen_step in sorted(all_original_token_sets.keys()):
+        logical_step = gen_step + 1  # Shift to make room for prompt at step 0
+        token_set = all_original_token_sets[gen_step]
         is_parallel = len(token_set) > 1
 
         step_node_ids = []
@@ -119,19 +133,9 @@ def convert_to_structured_graph(result_dict: dict, prompt: str, tokenizer) -> di
             node_id = f"{logical_step}_{idx}"
             text = tokenizer.decode([token_id])
 
-            # Determine parent IDs
-            parent_ids = []
-            if logical_step > 0:
-                prev_step = logical_step - 1
-                if prev_step in node_map:
-                    # For parallel tokens, connect to primary parent
-                    # For convergence (multiple prev, single current), connect all
-                    if is_parallel or len(token_set) == 1:
-                        # Connect to all parents from previous step
-                        parent_ids = node_map[prev_step]
-                    else:
-                        # Single token after single token - direct lineage
-                        parent_ids = [node_map[prev_step][0]]
+            # Determine parent IDs - connect to previous step
+            prev_step = logical_step - 1
+            parent_ids = node_map.get(prev_step, [])
 
             nodes.append(TokenNode(
                 id=node_id,
