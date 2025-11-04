@@ -8,7 +8,7 @@
 		text: string;
 		type: 'prompt' | 'single' | 'parallel';
 		probability: number;
-		parent_id: string | null;
+		parent_ids: string[];  // Changed to array to support convergence
 		step: number;
 	}
 
@@ -131,16 +131,16 @@
 			height: 40
 		}));
 
-		// Build edges - simply use parent relationships directly
+		// Build edges - handle multiple parents for convergence (many-to-one)
 		const edges: any[] = [];
 		tokens.forEach((token) => {
-			if (token.parent_id) {
+			token.parent_ids.forEach((parent_id) => {
 				edges.push({
-					id: `${token.parent_id}_to_${token.id}`,
-					sources: [token.parent_id],
+					id: `${parent_id}_to_${token.id}`,
+					sources: [parent_id],
 					targets: [token.id]
 				});
-			}
+			});
 		});
 
 		return {

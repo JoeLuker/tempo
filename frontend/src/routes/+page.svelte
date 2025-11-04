@@ -59,7 +59,7 @@
 				text: node.text.trim(),
 				type: node.logical_step === 0 ? 'prompt' : (node.is_parallel ? 'parallel' : 'single'),
 				probability: node.probability,
-				parent_id: node.parent_ids.length > 0 ? node.parent_ids[0] : null,
+				parent_ids: node.parent_ids,  // Keep all parents for convergence support
 				step: node.logical_step
 			}));
 
