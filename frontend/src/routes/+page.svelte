@@ -1,15 +1,6 @@
 <script lang="ts">
-	import ElkFlow from '$lib/components/ElkFlow.svelte';
+	import ElkFlow, { type Token } from '$lib/components/ElkFlow.svelte';
 	import '../app.css';
-
-	interface Token {
-		id: string;
-		text: string;
-		type: 'prompt' | 'single' | 'parallel';
-		probability: number;
-		parent_id: string | null;
-		step: number;
-	}
 
 	let tokens = $state<Token[]>([]);
 	let prompt = $state('Once upon a time');
@@ -17,10 +8,24 @@
 	let errorMessage = $state<string | null>(null);
 	let statusMessage = $state<string>('');
 
+	// Debug indicator lights
+	let backendConnected = $state<boolean>(false);
+	let apiResponse = $state<string>('waiting');
+	let elkRendered = $state<boolean>(false);
+
+	// Check backend connection on mount
+	$effect(() => {
+		fetch('/api/generate', { method: 'OPTIONS' })
+			.then(() => { backendConnected = true; })
+			.catch(() => { backendConnected = false; });
+	});
+
 	async function generateTokens() {
 		isGenerating = true;
 		errorMessage = null;
 		tokens = [];
+		elkRendered = false;
+		apiResponse = 'requesting';
 		statusMessage = 'Connecting to TEMPO...';
 
 		try {
@@ -40,9 +45,11 @@
 			});
 
 			if (!response.ok) {
+				apiResponse = 'error';
 				throw new Error(`API error: ${response.status} ${response.statusText}`);
 			}
 
+			apiResponse = 'success';
 			const data = await response.json();
 			statusMessage = 'Processing results...';
 
@@ -56,15 +63,17 @@
 				step: node.logical_step
 			}));
 
-			// Stream tokens in one by one for visual effect
-			for (let i = 0; i < convertedTokens.length; i++) {
-				await new Promise(r => setTimeout(r, 200));
-				tokens = convertedTokens.slice(0, i + 1);
-			}
+			// Set all tokens at once (streaming causes Elk to be called too many times)
+			tokens = convertedTokens;
 
+			// Wait a moment for Elk to render
+			await new Promise(r => setTimeout(r, 1000));
+
+			elkRendered = true;
 			statusMessage = `Generated ${tokens.length} tokens in ${data.generation_time.toFixed(2)}s`;
 		} catch (error) {
 			console.error('Generation failed:', error);
+			apiResponse = 'error';
 			errorMessage = error instanceof Error ? error.message : 'Failed to generate tokens';
 			statusMessage = '';
 		} finally {
@@ -78,6 +87,26 @@
 		<h1>TEMPO Token Visualizer</h1>
 		<p>Interactive D3.js tree showing parallel token generation</p>
 	</header>
+
+	<!-- Debug Indicator Lights -->
+	<div class="debug-indicators">
+		<div class="indicator">
+			<span class="indicator-light" class:green={backendConnected} class:red={!backendConnected}></span>
+			<span class="indicator-label">Backend: {backendConnected ? 'Connected' : 'Disconnected'}</span>
+		</div>
+		<div class="indicator">
+			<span class="indicator-light"
+				class:green={apiResponse === 'success'}
+				class:yellow={apiResponse === 'requesting'}
+				class:red={apiResponse === 'error'}
+				class:gray={apiResponse === 'waiting'}></span>
+			<span class="indicator-label">API: {apiResponse}</span>
+		</div>
+		<div class="indicator">
+			<span class="indicator-light" class:green={elkRendered} class:gray={!elkRendered}></span>
+			<span class="indicator-label">Elk Render: {elkRendered ? 'Complete' : 'Waiting'}</span>
+		</div>
+	</div>
 
 	<div class="controls-panel">
 		<input
@@ -131,7 +160,7 @@
 
 	header {
 		text-align: center;
-		margin-bottom: 30px;
+		margin-bottom: 20px;
 	}
 
 	header h1 {
@@ -143,6 +172,68 @@
 	header p {
 		color: #64748b;
 		font-size: clamp(14px, 3vw, 16px);
+	}
+
+	.debug-indicators {
+		display: flex;
+		gap: 16px;
+		margin-bottom: 20px;
+		padding: 12px;
+		background: #f8fafc;
+		border-radius: 8px;
+		border: 1px solid #e2e8f0;
+		flex-wrap: wrap;
+		justify-content: center;
+	}
+
+	.indicator {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		padding: 6px 12px;
+		background: white;
+		border-radius: 6px;
+		border: 1px solid #e2e8f0;
+	}
+
+	.indicator-light {
+		width: 12px;
+		height: 12px;
+		border-radius: 50%;
+		border: 1px solid rgba(0, 0, 0, 0.1);
+		transition: all 0.3s ease;
+		box-shadow: 0 0 4px rgba(0, 0, 0, 0.1);
+	}
+
+	.indicator-light.green {
+		background: #10b981;
+		box-shadow: 0 0 8px rgba(16, 185, 129, 0.5);
+	}
+
+	.indicator-light.yellow {
+		background: #f59e0b;
+		box-shadow: 0 0 8px rgba(245, 158, 11, 0.5);
+		animation: pulse 1.5s ease-in-out infinite;
+	}
+
+	.indicator-light.red {
+		background: #ef4444;
+		box-shadow: 0 0 8px rgba(239, 68, 68, 0.5);
+	}
+
+	.indicator-light.gray {
+		background: #94a3b8;
+	}
+
+	.indicator-label {
+		font-size: 13px;
+		color: #475569;
+		font-weight: 500;
+	}
+
+	@keyframes pulse {
+		0%, 100% { opacity: 1; }
+		50% { opacity: 0.5; }
 	}
 
 	.controls-panel {

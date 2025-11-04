@@ -2,7 +2,15 @@
 	import { onMount } from 'svelte';
 	import * as d3 from 'd3';
 	import ELK from 'elkjs/lib/elk.bundled.js';
-	import type { Token } from '$lib/types';
+
+	export interface Token {
+		id: string;
+		text: string;
+		type: 'prompt' | 'single' | 'parallel';
+		probability: number;
+		parent_id: string | null;
+		step: number;
+	}
 
 	interface Props {
 		tokens: Token[];
@@ -69,22 +77,36 @@
 	}
 
 	async function updateVisualization() {
-		if (!g || !svg || tokens.length === 0) return;
+		if (!g || !svg || tokens.length === 0) {
+			console.log('[ElkFlow] updateVisualization skipped:', { g: !!g, svg: !!svg, tokensLength: tokens.length });
+			return;
+		}
+
+		console.log('[ElkFlow] Starting visualization update with', tokens.length, 'tokens');
 
 		// Clear previous visualization
 		g.selectAll('*').remove();
 
 		// Convert tokens to ELK graph
-		const elkGraph = await buildElkGraph(tokens);
+		const { graph: elkGraph, tokenMap } = await buildElkGraph(tokens);
+		console.log('[ElkFlow] Built Elk graph:', JSON.stringify(elkGraph, null, 2));
 
 		// Layout with ELK
-		const layout = await elk.layout(elkGraph);
+		try {
+			const layout = await elk.layout(elkGraph);
+			console.log('[ElkFlow] Elk layout complete:', layout);
 
-		// Render the layout
-		renderLayout(layout);
+			// Render the layout
+			renderLayout(layout, tokenMap);
+			console.log('[ElkFlow] Rendering complete');
 
-		// Reset zoom to fit content
-		resetZoom();
+			// Reset zoom to fit content
+			resetZoom();
+			console.log('[ElkFlow] Zoom reset complete');
+		} catch (error) {
+			console.error('[ElkFlow] Elk layout error:', error);
+			throw error;
+		}
 	}
 
 	async function buildElkGraph(tokens: Token[]) {
@@ -99,22 +121,14 @@
 
 		const sortedSteps = Array.from(stepMap.keys()).sort((a, b) => a - b);
 
-		// Build nodes
+		// Build nodes - store token lookup map
+		const tokenMap = new Map<string, Token>();
+		tokens.forEach(token => tokenMap.set(token.id, token));
+
 		const nodes = tokens.map((token) => ({
-			id: token.id,  // Already a string now
+			id: token.id,
 			width: 80,
-			height: 40,
-			labels: [
-				{
-					text: token.text,
-					width: 80,
-					height: 20
-				}
-			],
-			// Store token data for rendering
-			properties: {
-				token: token
-			}
+			height: 40
 		}));
 
 		// Build edges - simply use parent relationships directly
@@ -130,23 +144,20 @@
 		});
 
 		return {
-			id: 'root',
-			layoutOptions: {
-				'elk.algorithm': 'layered',
-				'elk.direction': 'RIGHT',
-				'elk.spacing.nodeNode': '60',
-				'elk.layered.spacing.nodeNodeBetweenLayers': '100',
-				'elk.layered.spacing.edgeNodeBetweenLayers': '40',
-				'elk.layered.nodePlacement.strategy': 'NETWORK_SIMPLEX',
-				'elk.layered.crossingMinimization.strategy': 'LAYER_SWEEP',
-				'elk.edge.type': 'DIRECTED'
+			graph: {
+				id: 'root',
+				layoutOptions: {
+					'elk.algorithm': 'layered',
+					'elk.direction': 'RIGHT'
+				},
+				children: nodes,
+				edges: edges
 			},
-			children: nodes,
-			edges: edges
+			tokenMap
 		};
 	}
 
-	function renderLayout(layout: any) {
+	function renderLayout(layout: any, tokenMap: Map<string, Token>) {
 		if (!g) return;
 
 		// Add arrowhead marker
@@ -192,7 +203,7 @@
 
 		// Render nodes
 		layout.children?.forEach((node: any) => {
-			const token = node.properties.token as Token;
+			const token = tokenMap.get(node.id)!;
 
 			const nodeGroup = g!.append('g').attr('class', 'node');
 
