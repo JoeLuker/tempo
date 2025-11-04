@@ -19,6 +19,11 @@ from src.experiments.experiment_runner import ExperimentRunner
 
 app = FastAPI(title="TEMPO Playground API")
 
+# Global model cache (lazy loaded on first request)
+_model = None
+_tokenizer = None
+_runner = None
+
 # Enable CORS
 app.add_middleware(
     CORSMiddleware,
@@ -120,8 +125,25 @@ async def generate(request: GenerationRequest):
     """Run TEMPO generation directly."""
 
     try:
-        # Create experiment runner
-        runner = ExperimentRunner()
+        # Lazy load model on first request
+        global _model, _tokenizer, _runner
+        if _runner is None:
+            from transformers import AutoModelForCausalLM, AutoTokenizer
+            import torch
+
+            device = 'mps' if torch.backends.mps.is_available() else 'cuda' if torch.cuda.is_available() else 'cpu'
+            model_name = 'deepcogito/cogito-v1-preview-llama-3B'
+
+            print(f"Loading model {model_name} on device {device}...")
+            _tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+            _model = AutoModelForCausalLM.from_pretrained(
+                model_name,
+                trust_remote_code=True,
+                torch_dtype=torch.float16 if device != 'cpu' else torch.float32
+            ).to(device)
+
+            _runner = ExperimentRunner(model=_model, tokenizer=_tokenizer, device=device)
+            print(f"Model loaded successfully on {device}")
 
         # Build args dict
         args = {
@@ -131,8 +153,6 @@ async def generate(request: GenerationRequest):
             'isolate': request.isolate,
             'seed': request.seed,
             'output_dir': './playground_temp',
-            'model': 'deepcogito/cogito-v1-preview-llama-3B',
-            'use_custom_rope': True,
             'debug_mode': False,
             'use_retroactive_removal': False,
             'disable_kv_cache': False,
@@ -141,7 +161,7 @@ async def generate(request: GenerationRequest):
         }
 
         # Run experiment
-        result_dict = runner.run_experiment(args)
+        result_dict = _runner.run_experiment(args)
 
         # Convert to frontend format
         steps = convert_results_to_steps(result_dict, request.prompt)
