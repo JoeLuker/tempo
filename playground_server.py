@@ -167,16 +167,17 @@ async def generate(request: GenerationRequest):
             device = 'mps' if torch.backends.mps.is_available() else 'cuda' if torch.cuda.is_available() else 'cpu'
             model_name = 'deepcogito/cogito-v1-preview-llama-3B'
 
-            print(f"Loading model {model_name} on device {device}...")
+            print(f"Loading model {model_name} on device {device} with eager attention for attention weight capture...")
             _tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
             _model = AutoModelForCausalLM.from_pretrained(
                 model_name,
                 trust_remote_code=True,
-                torch_dtype=torch.float16 if device != 'cpu' else torch.float32
+                torch_dtype=torch.float16 if device != 'cpu' else torch.float32,
+                attn_implementation="eager"  # Required for attention weight extraction
             ).to(device)
 
             _runner = ExperimentRunner(model=_model, tokenizer=_tokenizer, device=device)
-            print(f"Model loaded successfully on {device}")
+            print(f"Model loaded successfully on {device} with eager attention")
 
         # Build args dict
         args = {
