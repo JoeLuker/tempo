@@ -4,16 +4,29 @@
 
 	let tokens = $state<Token[]>([]);
 	let attentionMatrix = $state<number[][] | undefined>(undefined);
-	let prompt = $state('Once upon a time');
 	let isGenerating = $state(false);
 	let errorMessage = $state<string | null>(null);
 	let statusMessage = $state<string>('');
 	let showAttention = $state(false);
+	let showSettings = $state(false);
+
+	// Basic parameters
+	let prompt = $state('Once upon a time');
+	let maxTokens = $state(20);
+	let selectionThreshold = $state(0.25);
+	let seed = $state(42);
+
+	// Advanced parameters
+	let isolate = $state(false);
+	let useRetroactivePruning = $state(false);
+	let attentionThreshold = $state(0.01);
+	let dynamicThreshold = $state(false);
+	let finalThreshold = $state(1.0);
+	let bezierP1 = $state(0.2);
+	let bezierP2 = $state(0.8);
 
 	// Debug indicator lights
 	let backendConnected = $state<boolean>(false);
-	let apiResponse = $state<string>('waiting');
-	let elkRendered = $state<boolean>(false);
 
 	// Check backend connection on mount
 	$effect(() => {
@@ -26,34 +39,32 @@
 		isGenerating = true;
 		errorMessage = null;
 		tokens = [];
-		elkRendered = false;
-		apiResponse = 'requesting';
-		statusMessage = 'Connecting to TEMPO...';
+		statusMessage = 'Generating...';
 
 		try {
-			statusMessage = 'Generating tokens...';
 			const response = await fetch('/api/generate', {
 				method: 'POST',
-				headers: {
-					'Content-Type': 'application/json',
-				},
+				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({
-					prompt: prompt,
-					selection_threshold: 0.25,
-					max_tokens: 20,
-					isolate: false,
-					seed: 42
+					prompt,
+					max_tokens: maxTokens,
+					selection_threshold: selectionThreshold,
+					seed,
+					isolate,
+					use_retroactive_removal: useRetroactivePruning,
+					attention_threshold: attentionThreshold,
+					dynamic_threshold: dynamicThreshold,
+					final_threshold: finalThreshold,
+					bezier_p1: bezierP1,
+					bezier_p2: bezierP2
 				})
 			});
 
 			if (!response.ok) {
-				apiResponse = 'error';
-				throw new Error(`API error: ${response.status} ${response.statusText}`);
+				throw new Error(`API error: ${response.status}`);
 			}
 
-			apiResponse = 'success';
 			const data = await response.json();
-			statusMessage = 'Processing results...';
 
 			// Convert API nodes to Token format
 			const convertedTokens = data.nodes.map((node: any) => ({
@@ -61,104 +72,206 @@
 				text: node.text.trim(),
 				type: node.logical_step === 0 ? 'prompt' : (node.is_parallel ? 'parallel' : 'single'),
 				probability: node.probability,
-				parent_ids: node.parent_ids,  // Keep all parents for convergence support
+				parent_ids: node.parent_ids,
 				step: node.logical_step
 			}));
 
-			// Store attention matrix if available
-			if (data.attention_matrix) {
-				attentionMatrix = data.attention_matrix;
-				console.log(`[Attention] Received ${attentionMatrix.length}x${attentionMatrix[0]?.length || 0} attention matrix`);
-			} else {
-				attentionMatrix = undefined;
-			}
-
-			// Set all tokens at once (streaming causes Elk to be called too many times)
 			tokens = convertedTokens;
-
-			// Wait a moment for Elk to render
-			await new Promise(r => setTimeout(r, 1000));
-
-			elkRendered = true;
+			attentionMatrix = data.attention_matrix;
 			statusMessage = `Generated ${tokens.length} tokens in ${data.generation_time.toFixed(2)}s`;
 		} catch (error) {
-			console.error('Generation failed:', error);
-			apiResponse = 'error';
-			errorMessage = error instanceof Error ? error.message : 'Failed to generate tokens';
+			errorMessage = error instanceof Error ? error.message : 'Failed to generate';
 			statusMessage = '';
 		} finally {
 			isGenerating = false;
 		}
 	}
+
+	function resetToDefaults() {
+		maxTokens = 20;
+		selectionThreshold = 0.25;
+		seed = 42;
+		isolate = false;
+		useRetroactivePruning = false;
+		attentionThreshold = 0.01;
+		dynamicThreshold = false;
+		finalThreshold = 1.0;
+		bezierP1 = 0.2;
+		bezierP2 = 0.8;
+	}
 </script>
 
 <main>
+	<!-- Mobile-optimized header -->
 	<header>
-		<h1>TEMPO Token Visualizer</h1>
-		<p>Interactive D3.js tree showing parallel token generation</p>
+		<h1>🌳 TEMPO</h1>
+		<p>Parallel Token Generation</p>
+		<div class="status-indicator" class:connected={backendConnected}>
+			<span class="dot"></span>
+			{backendConnected ? 'Connected' : 'Offline'}
+		</div>
 	</header>
 
-	<!-- Debug Indicator Lights -->
-	<div class="debug-indicators">
-		<div class="indicator">
-			<span class="indicator-light" class:green={backendConnected} class:red={!backendConnected}></span>
-			<span class="indicator-label">Backend: {backendConnected ? 'Connected' : 'Disconnected'}</span>
+	<!-- Mobile-first controls -->
+	<div class="controls">
+		<div class="input-group">
+			<label for="prompt">Prompt</label>
+			<input
+				id="prompt"
+				type="text"
+				bind:value={prompt}
+				placeholder="Enter your prompt..."
+				disabled={isGenerating}
+			/>
 		</div>
-		<div class="indicator">
-			<span class="indicator-light"
-				class:green={apiResponse === 'success'}
-				class:yellow={apiResponse === 'requesting'}
-				class:red={apiResponse === 'error'}
-				class:gray={apiResponse === 'waiting'}></span>
-			<span class="indicator-label">API: {apiResponse}</span>
-		</div>
-		<div class="indicator">
-			<span class="indicator-light" class:green={elkRendered} class:gray={!elkRendered}></span>
-			<span class="indicator-label">Elk Render: {elkRendered ? 'Complete' : 'Waiting'}</span>
-		</div>
-	</div>
 
-	<div class="controls-panel">
-		<input
-			type="text"
-			bind:value={prompt}
-			placeholder="Enter prompt..."
-			disabled={isGenerating}
-		/>
-		<button onclick={generateTokens} disabled={isGenerating}>
-			{#if isGenerating}
-				<span class="spinner"></span>
-				Generating...
-			{:else}
-				Generate
-			{/if}
-		</button>
-		{#if attentionMatrix}
-			<label class="attention-toggle">
-				<input type="checkbox" bind:checked={showAttention} />
-				<span>Show Attention Arches</span>
-			</label>
+		<div class="action-row">
+			<button class="btn-primary" onclick={generateTokens} disabled={isGenerating}>
+				{#if isGenerating}
+					<span class="spinner"></span>
+					Generating...
+				{:else}
+					✨ Generate
+				{/if}
+			</button>
+
+			<button class="btn-secondary" onclick={() => showSettings = !showSettings}>
+				⚙️ Settings
+			</button>
+		</div>
+
+		<!-- Collapsible Settings Panel -->
+		{#if showSettings}
+			<div class="settings-panel">
+				<div class="settings-header">
+					<h3>Generation Settings</h3>
+					<button class="btn-text" onclick={resetToDefaults}>Reset</button>
+				</div>
+
+				<div class="setting-group">
+					<h4>Basic</h4>
+
+					<div class="setting">
+						<label>
+							<span>Max Tokens</span>
+							<span class="value">{maxTokens}</span>
+						</label>
+						<input type="range" bind:value={maxTokens} min="5" max="100" step="5" />
+						<p class="hint">Maximum tokens to generate</p>
+					</div>
+
+					<div class="setting">
+						<label>
+							<span>Selection Threshold</span>
+							<span class="value">{selectionThreshold.toFixed(2)}</span>
+						</label>
+						<input type="range" bind:value={selectionThreshold} min="0.05" max="0.95" step="0.05" />
+						<p class="hint">Probability threshold for parallel tokens (lower = more parallel)</p>
+					</div>
+
+					<div class="setting">
+						<label>
+							<span>Random Seed</span>
+							<span class="value">{seed}</span>
+						</label>
+						<input type="number" bind:value={seed} min="0" max="99999" />
+						<p class="hint">Seed for reproducible generation</p>
+					</div>
+				</div>
+
+				<div class="setting-group">
+					<h4>Advanced</h4>
+
+					<div class="setting">
+						<label class="checkbox-label">
+							<input type="checkbox" bind:checked={isolate} />
+							<span>Isolate Parallel Tokens</span>
+						</label>
+						<p class="hint">Prevent parallel tokens from attending to each other</p>
+					</div>
+
+					<div class="setting">
+						<label class="checkbox-label">
+							<input type="checkbox" bind:checked={useRetroactivePruning} />
+							<span>Retroactive Pruning</span>
+						</label>
+						<p class="hint">Prune tokens based on attention patterns</p>
+					</div>
+
+					{#if useRetroactivePruning}
+						<div class="setting nested">
+							<label>
+								<span>Attention Threshold</span>
+								<span class="value">{attentionThreshold.toFixed(3)}</span>
+							</label>
+							<input type="range" bind:value={attentionThreshold} min="0.001" max="0.1" step="0.001" />
+							<p class="hint">Minimum attention to keep tokens</p>
+						</div>
+					{/if}
+
+					<div class="setting">
+						<label class="checkbox-label">
+							<input type="checkbox" bind:checked={dynamicThreshold} />
+							<span>Dynamic Threshold</span>
+						</label>
+						<p class="hint">Gradually increase threshold over time</p>
+					</div>
+
+					{#if dynamicThreshold}
+						<div class="setting nested">
+							<label>
+								<span>Final Threshold</span>
+								<span class="value">{finalThreshold.toFixed(2)}</span>
+							</label>
+							<input type="range" bind:value={finalThreshold} min="0.1" max="1.0" step="0.05" />
+						</div>
+
+						<div class="setting nested">
+							<label>
+								<span>Bezier P1</span>
+								<span class="value">{bezierP1.toFixed(2)}</span>
+							</label>
+							<input type="range" bind:value={bezierP1} min="0" max="1" step="0.1" />
+						</div>
+
+						<div class="setting nested">
+							<label>
+								<span>Bezier P2</span>
+								<span class="value">{bezierP2.toFixed(2)}</span>
+							</label>
+							<input type="range" bind:value={bezierP2} min="0" max="1" step="0.1" />
+						</div>
+					{/if}
+				</div>
+			</div>
+		{/if}
+
+		{#if attentionMatrix && tokens.length > 0}
+			<div class="attention-toggle">
+				<label>
+					<input type="checkbox" bind:checked={showAttention} />
+					<span>Show Attention Arches</span>
+				</label>
+			</div>
 		{/if}
 	</div>
 
+	<!-- Status messages -->
 	{#if errorMessage}
-		<div class="error-message">
-			⚠️ {errorMessage}
-		</div>
+		<div class="message error">⚠️ {errorMessage}</div>
 	{/if}
 
 	{#if statusMessage}
-		<div class="status-message">
-			{statusMessage}
-		</div>
+		<div class="message success">✓ {statusMessage}</div>
 	{/if}
 
+	<!-- Visualization -->
 	<div class="visualization">
-		{#if tokens.length === 0 && !isGenerating && !errorMessage}
+		{#if tokens.length === 0 && !isGenerating}
 			<div class="empty-state">
 				<div class="empty-icon">🌳</div>
-				<h3>Ready to visualize</h3>
-				<p>Enter a prompt above and click Generate to see TEMPO's parallel token generation in action</p>
+				<h3>Ready to Generate</h3>
+				<p>Enter a prompt and tap Generate to visualize TEMPO's parallel token generation</p>
 			</div>
 		{:else}
 			<ElkFlow {tokens} {attentionMatrix} {showAttention} />
@@ -168,83 +281,61 @@
 
 <style>
 	main {
-		padding: var(--spacing-base);
-		max-width: 1400px;
-		margin: 0 auto;
-		min-height: 100vh;
+		display: flex;
+		flex-direction: column;
+		height: 100vh;
+		background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+		overflow: hidden;
 	}
 
 	header {
+		padding: 16px 20px;
+		background: rgba(255, 255, 255, 0.95);
+		backdrop-filter: blur(10px);
+		border-bottom: 1px solid rgba(0, 0, 0, 0.1);
 		text-align: center;
-		margin-bottom: 20px;
+		position: relative;
 	}
 
 	header h1 {
-		font-size: clamp(24px, 5vw, 32px);
-		color: #1e293b;
-		margin: 0 0 10px 0;
+		font-size: 28px;
+		font-weight: 800;
+		margin: 0;
+		background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+		-webkit-background-clip: text;
+		-webkit-text-fill-color: transparent;
+		background-clip: text;
 	}
 
 	header p {
+		font-size: 13px;
 		color: #64748b;
-		font-size: clamp(14px, 3vw, 16px);
+		margin: 4px 0 0 0;
+		font-weight: 500;
 	}
 
-	.debug-indicators {
-		display: flex;
-		gap: 16px;
-		margin-bottom: 20px;
-		padding: 12px;
-		background: #f8fafc;
-		border-radius: 8px;
-		border: 1px solid #e2e8f0;
-		flex-wrap: wrap;
-		justify-content: center;
-	}
-
-	.indicator {
+	.status-indicator {
+		position: absolute;
+		top: 16px;
+		right: 20px;
 		display: flex;
 		align-items: center;
-		gap: 8px;
-		padding: 6px 12px;
-		background: white;
-		border-radius: 6px;
-		border: 1px solid #e2e8f0;
+		gap: 6px;
+		font-size: 12px;
+		color: #ef4444;
+		font-weight: 600;
 	}
 
-	.indicator-light {
-		width: 12px;
-		height: 12px;
+	.status-indicator.connected {
+		color: #10b981;
+	}
+
+	.dot {
+		width: 8px;
+		height: 8px;
 		border-radius: 50%;
-		border: 1px solid rgba(0, 0, 0, 0.1);
-		transition: all 0.3s ease;
-		box-shadow: 0 0 4px rgba(0, 0, 0, 0.1);
-	}
-
-	.indicator-light.green {
-		background: #10b981;
-		box-shadow: 0 0 8px rgba(16, 185, 129, 0.5);
-	}
-
-	.indicator-light.yellow {
-		background: #f59e0b;
-		box-shadow: 0 0 8px rgba(245, 158, 11, 0.5);
-		animation: pulse 1.5s ease-in-out infinite;
-	}
-
-	.indicator-light.red {
-		background: #ef4444;
-		box-shadow: 0 0 8px rgba(239, 68, 68, 0.5);
-	}
-
-	.indicator-light.gray {
-		background: #94a3b8;
-	}
-
-	.indicator-label {
-		font-size: 13px;
-		color: #475569;
-		font-weight: 500;
+		background: currentColor;
+		animation: pulse 2s ease-in-out infinite;
 	}
 
 	@keyframes pulse {
@@ -252,106 +343,288 @@
 		50% { opacity: 0.5; }
 	}
 
-	.controls-panel {
-		display: flex;
-		gap: 12px;
-		margin-bottom: 20px;
-		flex-wrap: wrap;
+	.controls {
+		padding: 16px 20px;
+		background: rgba(255, 255, 255, 0.95);
+		backdrop-filter: blur(10px);
+		border-bottom: 1px solid rgba(0, 0, 0, 0.1);
+		max-height: 60vh;
+		overflow-y: auto;
+		-webkit-overflow-scrolling: touch;
 	}
 
-	.controls-panel input {
-		flex: 1;
-		min-width: 200px;
-		padding: 14px 18px;
+	.input-group {
+		margin-bottom: 12px;
+	}
+
+	.input-group label {
+		display: block;
+		font-size: 14px;
+		font-weight: 600;
+		color: #334155;
+		margin-bottom: 6px;
+	}
+
+	.input-group input {
+		width: 100%;
+		padding: 14px 16px;
 		border: 2px solid #e2e8f0;
 		border-radius: 12px;
 		font-size: 16px;
-		/* Prevent zoom on iOS */
-		font-size: max(16px, 1em);
-		min-height: var(--tap-target-min);
+		background: white;
+		transition: all 0.2s;
 	}
 
-	.controls-panel input:focus {
+	.input-group input:focus {
 		outline: none;
-		border-color: #9333ea;
-		box-shadow: 0 0 0 3px rgba(147, 51, 234, 0.1);
+		border-color: #667eea;
+		box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
 	}
 
-	.controls-panel button {
-		padding: 14px 28px;
-		background: #9333ea;
+	.action-row {
+		display: flex;
+		gap: 12px;
+		margin-bottom: 12px;
+	}
+
+	.btn-primary {
+		flex: 1;
+		padding: 16px 24px;
+		background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
 		color: white;
 		border: none;
 		border-radius: 12px;
 		font-size: 16px;
-		font-weight: 600;
+		font-weight: 700;
 		cursor: pointer;
 		transition: all 0.2s;
-		min-height: var(--tap-target-min);
-		min-width: 120px;
 		display: flex;
 		align-items: center;
 		justify-content: center;
 		gap: 8px;
-		/* Better touch feedback */
-		-webkit-tap-highlight-color: rgba(147, 51, 234, 0.3);
+		min-height: 54px;
+		-webkit-tap-highlight-color: rgba(102, 126, 234, 0.3);
 	}
 
-	.controls-panel button:active:not(:disabled) {
+	.btn-primary:active:not(:disabled) {
 		transform: scale(0.98);
 	}
 
-	.controls-panel button:disabled {
+	.btn-primary:disabled {
 		opacity: 0.6;
 		cursor: not-allowed;
 	}
 
-	.attention-toggle {
-		display: inline-flex;
-		align-items: center;
-		gap: 10px;
-		padding: 12px 20px;
-		background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%);
-		border: 2px solid #f59e0b;
-		border-radius: 8px;
+	.btn-secondary {
+		padding: 16px 24px;
+		background: white;
+		color: #667eea;
+		border: 2px solid #667eea;
+		border-radius: 12px;
+		font-size: 16px;
+		font-weight: 700;
 		cursor: pointer;
 		transition: all 0.2s;
-		user-select: none;
-		font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-		min-height: var(--tap-target-min);
+		min-height: 54px;
+		-webkit-tap-highlight-color: rgba(102, 126, 234, 0.1);
 	}
 
-	.attention-toggle:hover {
-		background: linear-gradient(135deg, #fde68a 0%, #fcd34d 100%);
-		border-color: #d97706;
-		transform: translateY(-1px);
-		box-shadow: 0 4px 12px rgba(245, 158, 11, 0.3);
+	.btn-secondary:active {
+		transform: scale(0.98);
+		background: #f8f9ff;
 	}
 
-	.attention-toggle:active {
-		transform: translateY(0);
+	.btn-text {
+		background: none;
+		border: none;
+		color: #667eea;
+		font-size: 14px;
+		font-weight: 600;
+		cursor: pointer;
+		padding: 8px 12px;
+		border-radius: 6px;
+		transition: background 0.2s;
+	}
+
+	.btn-text:active {
+		background: rgba(102, 126, 234, 0.1);
+	}
+
+	.settings-panel {
+		margin-top: 12px;
+		padding: 16px;
+		background: white;
+		border-radius: 12px;
+		border: 2px solid #e2e8f0;
+		animation: slideDown 0.2s ease-out;
+	}
+
+	@keyframes slideDown {
+		from {
+			opacity: 0;
+			transform: translateY(-10px);
+		}
+		to {
+			opacity: 1;
+			transform: translateY(0);
+		}
+	}
+
+	.settings-header {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+		margin-bottom: 16px;
+	}
+
+	.settings-header h3 {
+		font-size: 18px;
+		font-weight: 700;
+		color: #1e293b;
+		margin: 0;
+	}
+
+	.setting-group {
+		margin-bottom: 20px;
+	}
+
+	.setting-group:last-child {
+		margin-bottom: 0;
+	}
+
+	.setting-group h4 {
+		font-size: 14px;
+		font-weight: 700;
+		color: #64748b;
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
+		margin: 0 0 12px 0;
+		padding-top: 12px;
+		border-top: 1px solid #e2e8f0;
+	}
+
+	.setting-group:first-child h4 {
+		padding-top: 0;
+		border-top: none;
+	}
+
+	.setting {
+		margin-bottom: 16px;
+	}
+
+	.setting.nested {
+		margin-left: 20px;
+		padding-left: 16px;
+		border-left: 3px solid #e2e8f0;
+	}
+
+	.setting label {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+		font-size: 15px;
+		font-weight: 600;
+		color: #334155;
+		margin-bottom: 8px;
+	}
+
+	.setting label .value {
+		font-size: 14px;
+		color: #667eea;
+		font-weight: 700;
+		padding: 4px 10px;
+		background: rgba(102, 126, 234, 0.1);
+		border-radius: 6px;
+	}
+
+	.checkbox-label {
+		cursor: pointer;
+		display: flex !important;
+		align-items: center;
+		gap: 10px;
+	}
+
+	.checkbox-label input[type="checkbox"] {
+		width: 24px;
+		height: 24px;
+		cursor: pointer;
+		accent-color: #667eea;
+	}
+
+	.setting input[type="range"] {
+		width: 100%;
+		height: 8px;
+		border-radius: 4px;
+		background: #e2e8f0;
+		outline: none;
+		-webkit-appearance: none;
+		cursor: pointer;
+	}
+
+	.setting input[type="range"]::-webkit-slider-thumb {
+		-webkit-appearance: none;
+		width: 24px;
+		height: 24px;
+		border-radius: 50%;
+		background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+		cursor: pointer;
+		box-shadow: 0 2px 8px rgba(102, 126, 234, 0.3);
+		transition: transform 0.1s;
+	}
+
+	.setting input[type="range"]::-webkit-slider-thumb:active {
+		transform: scale(1.2);
+	}
+
+	.setting input[type="number"] {
+		width: 100%;
+		padding: 12px;
+		border: 2px solid #e2e8f0;
+		border-radius: 8px;
+		font-size: 16px;
+	}
+
+	.hint {
+		font-size: 13px;
+		color: #94a3b8;
+		margin: 4px 0 0 0;
+		line-height: 1.4;
+	}
+
+	.attention-toggle {
+		margin-top: 12px;
+		padding: 12px 16px;
+		background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%);
+		border: 2px solid #f59e0b;
+		border-radius: 12px;
+		cursor: pointer;
+		-webkit-tap-highlight-color: rgba(245, 158, 11, 0.2);
+	}
+
+	.attention-toggle label {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		cursor: pointer;
 	}
 
 	.attention-toggle input[type="checkbox"] {
-		width: 20px;
-		height: 20px;
+		width: 24px;
+		height: 24px;
 		cursor: pointer;
 		accent-color: #f59e0b;
-		margin: 0;
 	}
 
 	.attention-toggle span {
 		font-size: 15px;
 		font-weight: 600;
 		color: #92400e;
-		white-space: nowrap;
-		letter-spacing: 0.01em;
 	}
 
 	.spinner {
-		width: 16px;
-		height: 16px;
-		border: 2px solid rgba(255, 255, 255, 0.3);
+		width: 18px;
+		height: 18px;
+		border: 3px solid rgba(255, 255, 255, 0.3);
 		border-top-color: white;
 		border-radius: 50%;
 		animation: spin 0.6s linear infinite;
@@ -361,24 +634,32 @@
 		to { transform: rotate(360deg); }
 	}
 
-	.error-message {
-		background: #fee;
-		border: 2px solid #fcc;
-		color: #c33;
-		padding: 12px 16px;
-		border-radius: 8px;
-		margin-bottom: 12px;
+	.message {
+		margin: 12px 20px;
+		padding: 14px 16px;
+		border-radius: 12px;
 		font-size: 14px;
+		font-weight: 500;
+		animation: slideDown 0.2s ease-out;
 	}
 
-	.status-message {
-		background: #e0f2fe;
-		border: 2px solid #7dd3fc;
-		color: #0369a1;
-		padding: 12px 16px;
-		border-radius: 8px;
-		margin-bottom: 12px;
-		font-size: 14px;
+	.message.error {
+		background: #fee;
+		color: #dc2626;
+		border: 2px solid #fca5a5;
+	}
+
+	.message.success {
+		background: #f0fdf4;
+		color: #15803d;
+		border: 2px solid #86efac;
+	}
+
+	.visualization {
+		flex: 1;
+		background: #0f172a;
+		overflow: hidden;
+		position: relative;
 	}
 
 	.empty-state {
@@ -386,79 +667,48 @@
 		flex-direction: column;
 		align-items: center;
 		justify-content: center;
-		height: calc(100vh - 300px);
-		min-height: 300px;
-		color: #64748b;
-		text-align: center;
+		height: 100%;
 		padding: 40px 20px;
+		text-align: center;
 	}
 
 	.empty-icon {
-		font-size: 80px;
+		font-size: 64px;
 		margin-bottom: 20px;
-		opacity: 0.5;
+		opacity: 0.7;
 	}
 
 	.empty-state h3 {
-		font-size: 24px;
-		color: #334155;
+		font-size: 22px;
+		font-weight: 700;
+		color: #e2e8f0;
 		margin: 0 0 12px 0;
 	}
 
 	.empty-state p {
-		font-size: 16px;
-		max-width: 400px;
+		font-size: 15px;
+		color: #94a3b8;
 		line-height: 1.6;
+		max-width: 400px;
 		margin: 0;
 	}
 
-	.visualization {
-		height: calc(100vh - 250px);
-		min-height: 400px;
-		background: #fafafa;
-		border-radius: 12px;
-		overflow: hidden;
-		/* Prevent pull-to-refresh on mobile */
-		overscroll-behavior: contain;
-	}
-
-	/* Tablet landscape optimization */
-	@media (min-width: 768px) and (max-width: 1024px) {
+	/* Desktop adjustments */
+	@media (min-width: 768px) {
 		main {
-			padding: 24px;
+			flex-direction: row;
 		}
 
-		.controls-panel {
-			gap: 16px;
+		.controls {
+			width: 400px;
+			max-height: none;
+			overflow-y: auto;
+			border-right: 1px solid rgba(0, 0, 0, 0.1);
+			border-bottom: none;
 		}
 
 		.visualization {
-			height: calc(100vh - 220px);
-		}
-	}
-
-	/* Tablet portrait optimization */
-	@media (max-width: 767px) {
-		main {
-			padding: 12px;
-		}
-
-		header {
-			margin-bottom: 20px;
-		}
-
-		.controls-panel {
-			flex-direction: column;
-			gap: 12px;
-		}
-
-		.controls-panel input,
-		.controls-panel button {
-			width: 100%;
-		}
-
-		.visualization {
-			height: calc(100vh - 300px);
+			flex: 1;
 		}
 	}
 </style>

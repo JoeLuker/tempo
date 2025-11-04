@@ -30,14 +30,20 @@
 
 	const elk = new ELK();
 
+	// Best practice: Use $derived for computed values
+	const hasTokens = $derived(tokens.length > 0);
+	const hasAttention = $derived(attentionMatrix && attentionMatrix.length > 0);
+	const shouldShowAttention = $derived(showAttention && hasAttention);
+
 	// Reactive effect for visualization updates
+	// Best practice: Explicitly track dependencies synchronously
 	$effect(() => {
-		// Re-render when tokens, showAttention, or selectedTokenId changes
-		if (mounted && tokens.length > 0) {
+		// Use derived values for cleaner dependency tracking
+		if (mounted && hasTokens) {
 			updateVisualization();
 		}
-		// Include dependencies to trigger re-render
-		void showAttention;
+		// Track these to trigger re-renders when they change
+		void shouldShowAttention;
 		void selectedTokenId;
 	});
 
@@ -55,10 +61,15 @@
 		// Create main group for zoom/pan
 		g = svg.append('g');
 
-		// Setup zoom behavior
+		// Setup zoom behavior with mobile-friendly settings
 		const zoom = d3
 			.zoom<SVGSVGElement, unknown>()
 			.scaleExtent([0.1, 4])
+			// Mobile-optimized: smoother pinch-zoom
+			.wheelDelta((event) => {
+				// Reduce zoom sensitivity for better control
+				return -event.deltaY * (event.deltaMode === 1 ? 0.05 : event.deltaMode ? 1 : 0.002);
+			})
 			.on('zoom', (event) => {
 				g?.attr('transform', event.transform);
 			});
@@ -71,8 +82,14 @@
 
 		mounted = true;
 
+		// Best practice: Cleanup function removes event listeners
 		return () => {
 			window.removeEventListener('resize', updateDimensions);
+			// Clear SVG on unmount to prevent memory leaks
+			if (svg) {
+				svg.selectAll('*').remove();
+				svg.remove();
+			}
 		};
 	});
 
@@ -132,10 +149,15 @@
 		const tokenMap = new Map<string, Token>();
 		tokens.forEach(token => tokenMap.set(token.id, token));
 
+		// Mobile-optimized: larger touch targets
+		const isMobile = typeof window !== 'undefined' && window.innerWidth < 768;
+		const nodeWidth = isMobile ? 100 : 80;
+		const nodeHeight = isMobile ? 50 : 40;
+
 		const nodes = tokens.map((token) => ({
 			id: token.id,
-			width: 80,
-			height: 40
+			width: nodeWidth,
+			height: nodeHeight
 		}));
 
 		// Build edges - handle multiple parents for convergence (many-to-one)
@@ -236,18 +258,31 @@
 				.attr('stroke', isSelected ? '#fbbf24' : '#1e293b')
 				.attr('stroke-width', isSelected ? 4 : 2)
 				.style('cursor', 'pointer')
+				.style('transition', 'stroke 0.15s ease, stroke-width 0.15s ease')
 				.on('click', () => {
 					// Toggle selection
 					selectedTokenId = selectedTokenId === token.id ? null : token.id;
 				})
 				.on('mouseenter', function () {
 					if (!isSelected) {
-						d3.select(this).attr('stroke', '#f59e0b').attr('stroke-width', 3);
+						// Use transition for smooth hover effect
+						d3.select(this)
+							.transition()
+							.duration(150)
+							.ease(d3.easeCubicOut)
+							.attr('stroke', '#f59e0b')
+							.attr('stroke-width', 3);
 					}
 				})
 				.on('mouseleave', function () {
 					if (!isSelected) {
-						d3.select(this).attr('stroke', '#1e293b').attr('stroke-width', 2);
+						// Use transition for smooth hover exit
+						d3.select(this)
+							.transition()
+							.duration(150)
+							.ease(d3.easeCubicOut)
+							.attr('stroke', '#1e293b')
+							.attr('stroke-width', 2);
 					}
 				});
 
@@ -276,8 +311,8 @@
 			}
 		});
 
-		// Render attention arches if enabled
-		if (showAttention && attentionMatrix && attentionMatrix.length > 0) {
+		// Render attention arches if enabled (use derived value)
+		if (shouldShowAttention && attentionMatrix) {
 			renderAttentionArches(layout, tokenMap, attentionMatrix, selectedTokenId);
 		}
 
@@ -348,22 +383,28 @@
 				const dy = targetPos.y - sourcePos.y;
 				const distance = Math.sqrt(dx * dx + dy * dy);
 
-				// Create control point for arch (perpendicular to line)
+				// Create control points for cubic Bézier arch (smoother than quadratic)
 				const midX = (sourcePos.x + targetPos.x) / 2;
 				const midY = (sourcePos.y + targetPos.y) / 2;
 
 				// Scale arch height AGGRESSIVELY to prevent overlaps
-				// Longer horizontal spans need MUCH taller arches
 				const horizontalDist = Math.abs(dx);
-				const stepDiff = Math.abs(targetIdx - sourceIdx);  // How many steps apart
+				const stepDiff = Math.abs(targetIdx - sourceIdx);
 				const baseHeight = Math.max(80, horizontalDist * 1.2 + stepDiff * 50);
-				const archHeight = Math.min(600, baseHeight);  // Cap at 600px
+				const archHeight = Math.min(600, baseHeight);
 
-				const controlX = midX - (dy / distance) * archHeight;
-				const controlY = midY + (dx / distance) * archHeight;
+				// Calculate perpendicular offset for arch
+				const perpX = -(dy / distance) * archHeight;
+				const perpY = (dx / distance) * archHeight;
 
-				// Create quadratic curve path
-				const pathData = `M ${sourcePos.x},${sourcePos.y} Q ${controlX},${controlY} ${targetPos.x},${targetPos.y}`;
+				// Two control points for cubic Bézier (smoother curve)
+				const cp1X = sourcePos.x + dx * 0.25 + perpX;
+				const cp1Y = sourcePos.y + dy * 0.25 + perpY;
+				const cp2X = sourcePos.x + dx * 0.75 + perpX;
+				const cp2Y = sourcePos.y + dy * 0.75 + perpY;
+
+				// Create cubic Bézier curve path for smoother arches
+				const pathData = `M ${sourcePos.x},${sourcePos.y} C ${cp1X},${cp1Y} ${cp2X},${cp2Y} ${targetPos.x},${targetPos.y}`;
 
 				// Determine color based on selection
 				const isConnectedToSelection = selectedIdx !== undefined && (sourceIdx === selectedIdx || targetIdx === selectedIdx);
@@ -379,16 +420,22 @@
 					.attr('opacity', Math.min(0.9, weight * 2))  // More visible
 					.style('pointer-events', 'none');  // Don't interfere with node interactions
 
-				// Optional: Add weight label for strong attention
-				if (weight > 0.2) {
+				// Optional: Add weight label for very strong attention only
+				if (weight > 0.3) {
+					// Place label at midpoint of cubic Bézier curve
+					const labelX = (sourcePos.x + cp1X + cp2X + targetPos.x) / 4;
+					const labelY = (sourcePos.y + cp1Y + cp2Y + targetPos.y) / 4;
+
 					archGroup
 						.append('text')
-						.attr('x', controlX)
-						.attr('y', controlY)
+						.attr('x', labelX)
+						.attr('y', labelY)
 						.attr('text-anchor', 'middle')
-						.attr('fill', '#fbbf24')
-						.attr('font-size', 9)
-						.attr('opacity', 0.7)
+						.attr('fill', archColor)
+						.attr('font-size', 10)
+						.attr('font-weight', 600)
+						.attr('opacity', 0.8)
+						.style('pointer-events', 'none')
 						.text(`${(weight * 100).toFixed(0)}%`);
 				}
 			});
@@ -414,9 +461,11 @@
 		);
 		const translate = [width / 2 - scale * midX, height / 2 - scale * midY];
 
+		// Best practice: Use css() for better performance (runs off main thread)
 		svg
 			.transition()
 			.duration(750)
+			.ease(d3.easeCubicInOut)
 			.call(
 				d3.zoom<SVGSVGElement, unknown>().transform as any,
 				d3.zoomIdentity.translate(translate[0], translate[1]).scale(scale)
@@ -425,12 +474,20 @@
 
 	export function zoomIn() {
 		if (!svg) return;
-		svg.transition().duration(300).call(d3.zoom<SVGSVGElement, unknown>().scaleBy as any, 1.3);
+		svg
+			.transition()
+			.duration(300)
+			.ease(d3.easeCubicOut)
+			.call(d3.zoom<SVGSVGElement, unknown>().scaleBy as any, 1.3);
 	}
 
 	export function zoomOut() {
 		if (!svg) return;
-		svg.transition().duration(300).call(d3.zoom<SVGSVGElement, unknown>().scaleBy as any, 0.7);
+		svg
+			.transition()
+			.duration(300)
+			.ease(d3.easeCubicOut)
+			.call(d3.zoom<SVGSVGElement, unknown>().scaleBy as any, 0.7);
 	}
 </script>
 
@@ -442,9 +499,26 @@
 		height: 100%;
 		overflow: hidden;
 		border-radius: 8px;
+		/* Mobile touch optimizations */
+		touch-action: none;
+		-webkit-user-select: none;
+		user-select: none;
 	}
 
 	:global(.node) {
 		transition: all 0.2s ease;
+	}
+
+	/* Mobile-specific node sizing */
+	@media (max-width: 767px) {
+		:global(.node rect) {
+			/* Larger touch targets on mobile */
+			rx: 8px !important;
+		}
+
+		:global(.node text) {
+			/* Slightly larger text on mobile */
+			font-size: 14px !important;
+		}
 	}
 </style>
