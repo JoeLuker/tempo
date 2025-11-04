@@ -1,5 +1,5 @@
 <script lang="ts">
-	import TokenTree from '$lib/components/TokenTree.svelte';
+	import ElkFlow from '$lib/components/ElkFlow.svelte';
 	import '../app.css';
 
 	interface Token {
@@ -159,7 +159,7 @@
 				<p>Enter a prompt above and click Generate to see TEMPO's parallel token generation in action</p>
 			</div>
 		{:else}
-			<TokenTree {tokens} />
+			<ElkFlow {tokens} />
 		{/if}
 	</div>
 </main>
