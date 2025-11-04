@@ -35,11 +35,38 @@ app.add_middleware(
 
 
 class GenerationRequest(BaseModel):
+    # Basic parameters
     prompt: str
-    selection_threshold: float = 0.25
     max_tokens: int = 20
-    isolate: bool = False
+    selection_threshold: float = 0.25
+    min_steps: int = 0
     seed: int = 42
+
+    # Parallel token control
+    isolate: bool = False  # Isolate parallel tokens from seeing each other
+
+    # Retroactive pruning
+    use_retroactive_removal: bool = False
+    attention_threshold: float = 0.01
+
+    # Dynamic threshold
+    dynamic_threshold: bool = False
+    final_threshold: float = 1.0
+    bezier_p1: float = 0.2
+    bezier_p2: float = 0.8
+    use_relu: bool = False
+    relu_activation_point: float = 0.5
+
+    # MCTS parameters
+    use_mcts: bool = False
+    mcts_simulations: int = 10
+    mcts_c_puct: float = 1.0
+    mcts_depth: int = 5
+
+    # Advanced options
+    disable_kv_cache: bool = False
+    enable_thinking: bool = False  # Cogito model's deep thinking mode
+    show_token_ids: bool = False
 
 
 class TokenStep(BaseModel):
@@ -82,10 +109,16 @@ def convert_results_to_steps(result_dict: dict, prompt: str, tokenizer) -> List[
     ))
 
     # Parse parallel sets [token1/token2]
+    # Note: all_original_token_sets is keyed by logical step (includes ALL steps, not just parallel)
+    # Steps 0-N are: prompt processing, token 1, token 2, ... parallel set, etc.
+    # We need to find which logical step each parallel set corresponds to
     parallel_pattern = r'\[([^\]]+)\]'
     current_pos = 0
     step_num = 1
-    logical_step = 0  # Track logical step for matching with token sets
+
+    # Find all steps that have >1 token (these are parallel sets)
+    parallel_logical_steps = [step for step, tokens in all_original_token_sets.items() if len(tokens) > 1]
+    parallel_set_index = 0
 
     for match in re.finditer(parallel_pattern, clean_text):
         # Text before parallel set
@@ -97,7 +130,6 @@ def convert_results_to_steps(result_dict: dict, prompt: str, tokenizer) -> List[
                 tokens=[before]
             ))
             step_num += 1
-            logical_step += 1
 
         # Parallel tokens - extract from text
         parallel_text = match.group(1)
@@ -105,28 +137,28 @@ def convert_results_to_steps(result_dict: dict, prompt: str, tokenizer) -> List[
 
         # Try to get real probabilities from token sets
         probabilities = []
-        if logical_step in all_original_token_sets:
+        if parallel_set_index < len(parallel_logical_steps):
+            logical_step = parallel_logical_steps[parallel_set_index]
             token_set = all_original_token_sets[logical_step]
             # token_set is a list of (token_id, probability) tuples
 
-            # Decode token IDs to get token strings
-            token_id_to_prob = {tid: prob for tid, prob in token_set}
+            # If we have the same number of tokens, just use the probabilities in order
+            if len(token_set) == len(tokens_from_text):
+                probabilities = [prob for _, prob in token_set]
+            else:
+                # Try to match by decoding
+                for token_text in tokens_from_text:
+                    found_prob = None
+                    for token_id, prob in token_set:
+                        decoded = tokenizer.decode([token_id]).strip()
+                        if decoded == token_text:
+                            found_prob = prob
+                            break
 
-            # Match tokens from text to their probabilities
-            for token_text in tokens_from_text:
-                # Find the token ID that decodes to this text
-                found_prob = None
-                for token_id, prob in token_set:
-                    decoded = tokenizer.decode([token_id])
-                    if decoded.strip() == token_text.strip():
-                        found_prob = prob
-                        break
-
-                if found_prob is not None:
-                    probabilities.append(found_prob)
-                else:
-                    # Fallback if we can't match
-                    probabilities.append(0.1)
+                    if found_prob is not None:
+                        probabilities.append(found_prob)
+                    else:
+                        probabilities.append(0.1)
 
         # If we couldn't get real probabilities, use approximation
         if not probabilities or len(probabilities) != len(tokens_from_text):
@@ -143,7 +175,7 @@ def convert_results_to_steps(result_dict: dict, prompt: str, tokenizer) -> List[
             probabilities=probabilities
         ))
         step_num += 1
-        logical_step += 1
+        parallel_set_index += 1
 
         current_pos = match.end()
 
@@ -186,17 +218,42 @@ async def generate(request: GenerationRequest):
 
         # Build args dict
         args = {
+            # Basic parameters
             'prompt': request.prompt,
             'max_tokens': request.max_tokens,
             'selection_threshold': request.selection_threshold,
-            'isolate': request.isolate,
+            'min_steps': request.min_steps,
             'seed': request.seed,
+
+            # Parallel token control
+            'isolate': request.isolate,
+
+            # Retroactive pruning
+            'use_retroactive_removal': request.use_retroactive_removal,
+            'attention_threshold': request.attention_threshold,
+
+            # Dynamic threshold
+            'dynamic_threshold': request.dynamic_threshold,
+            'final_threshold': request.final_threshold,
+            'bezier_p1': request.bezier_p1,
+            'bezier_p2': request.bezier_p2,
+            'use_relu': request.use_relu,
+            'relu_activation_point': request.relu_activation_point,
+
+            # MCTS parameters
+            'use_mcts': request.use_mcts,
+            'mcts_simulations': request.mcts_simulations,
+            'mcts_c_puct': request.mcts_c_puct,
+            'mcts_depth': request.mcts_depth,
+
+            # Advanced options
+            'disable_kv_cache': request.disable_kv_cache,
+            'enable_thinking': request.enable_thinking,
+            'show_token_ids': request.show_token_ids,
+
+            # Internal
             'output_dir': './playground_temp',
             'debug_mode': False,
-            'use_retroactive_removal': False,
-            'disable_kv_cache': False,
-            'enable_thinking': False,
-            'use_mcts': False,
         }
 
         # Run experiment
