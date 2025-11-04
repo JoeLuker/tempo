@@ -90,8 +90,20 @@ frontend/.env
 frontend/.env.*
 frontend/.env.example
 frontend/vite.config.js.timestamp-*
-frontend/vite.config.ts.timestamp-* 
+frontend/vite.config.ts.timestamp-*
+frontend/node_modules/.vite
 
 .pytest_cache/
 
 tempo-profile.prof
+
+# Node modules at root (from testing)
+node_modules/
+
+# Test reports
+*_TEST_REPORT.md
+QUICK_TEST_GUIDE.md
+tests/
+
+# Playground temporary files
+playground_temp/

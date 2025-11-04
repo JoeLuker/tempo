@@ -3,11 +3,11 @@
 	import '../app.css';
 
 	interface Token {
-		id: number;
+		id: string;
 		text: string;
 		type: 'prompt' | 'single' | 'parallel';
 		probability: number;
-		parent_id: number | null;
+		parent_id: string | null;
 		step: number;
 	}
 
@@ -46,8 +46,15 @@
 			const data = await response.json();
 			statusMessage = 'Processing results...';
 
-			// Convert API response to token tree format
-			const convertedTokens = convertStepsToTokens(data.steps);
+			// Convert API nodes to Token format
+			const convertedTokens = data.nodes.map((node: any) => ({
+				id: node.id,
+				text: node.text.trim(),
+				type: node.logical_step === 0 ? 'prompt' : (node.is_parallel ? 'parallel' : 'single'),
+				probability: node.probability,
+				parent_id: node.parent_ids.length > 0 ? node.parent_ids[0] : null,
+				step: node.logical_step
+			}));
 
 			// Stream tokens in one by one for visual effect
 			for (let i = 0; i < convertedTokens.length; i++) {
@@ -63,56 +70,6 @@
 		} finally {
 			isGenerating = false;
 		}
-	}
-
-	function convertStepsToTokens(steps: any[]): Token[] {
-		const tokens: Token[] = [];
-		let tokenId = 0;
-		let lastParentIds: number[] = [];  // Track ALL current parallel paths
-
-		for (const step of steps) {
-			if (step.type === 'prompt') {
-				const id = tokenId++;
-				tokens.push({
-					id,
-					text: step.tokens[0],
-					type: 'prompt',
-					probability: 1.0,
-					parent_id: null,
-					step: step.step_number
-				});
-				lastParentIds = [id];
-			} else if (step.type === 'single') {
-				const id = tokenId++;
-				tokens.push({
-					id,
-					text: step.tokens[0],
-					type: 'single',
-					probability: step.probabilities?.[0] ?? 0.9,
-					parent_id: lastParentIds[0],  // Primary parent (first path)
-					step: step.step_number,
-					additionalParents: lastParentIds.slice(1)  // Store other parents for custom rendering
-				} as any);
-				lastParentIds = [id];  // Converge back to single path
-			} else if (step.type === 'parallel') {
-				const parentIds: number[] = [];
-				for (let i = 0; i < step.tokens.length; i++) {
-					const id = tokenId++;
-					tokens.push({
-						id,
-						text: step.tokens[i],
-						type: 'parallel',
-						probability: step.probabilities?.[i] ?? 0.5,
-						parent_id: lastParentIds[0],
-						step: step.step_number
-					});
-					parentIds.push(id);
-				}
-				lastParentIds = parentIds;  // Diverge into multiple parallel paths
-			}
-		}
-
-		return tokens;
 	}
 </script>
 

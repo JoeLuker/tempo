@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 FastAPI server for TEMPO interactive playground.
-Direct programmatic access to TEMPO components.
+Direct programmatic access to TEMPO components with clean structured output.
 """
 
 from fastapi import FastAPI, HTTPException
@@ -69,126 +69,88 @@ class GenerationRequest(BaseModel):
     show_token_ids: bool = False
 
 
-class TokenStep(BaseModel):
-    step_number: int
-    type: str  # 'prompt', 'single', 'parallel'
-    tokens: List[str]
-    probabilities: Optional[List[float]] = None
+class TokenNode(BaseModel):
+    """A single token node with all its metadata."""
+    id: str  # Unique ID in format "step_index" (e.g., "0_0", "1_0", "2_1")
+    token_id: int  # Actual tokenizer token ID
+    text: str  # Decoded text
+    probability: float  # Softmax probability
+    logical_step: int  # Which generation step this belongs to
+    is_parallel: bool  # Whether this is part of a parallel set
+    parent_ids: List[str]  # IDs of parent nodes (usually one, multiple for convergence)
 
 
 class GenerationResponse(BaseModel):
-    steps: List[TokenStep]
+    nodes: List[TokenNode]  # All tokens as flat list of nodes
+    edges: List[tuple[str, str]]  # Parent-child relationships as (parent_id, child_id)
+    prompt: str
     raw_text: str
     generation_time: float
     threshold: float
-    isolate: bool
 
 
-def convert_results_to_steps(result_dict: dict, prompt: str, tokenizer) -> List[TokenStep]:
-    """Convert TEMPO results into frontend-friendly steps with real probabilities."""
-    import re
-
-    generated_text = result_dict.get('generated_text', '')
+def convert_to_structured_graph(result_dict: dict, prompt: str, tokenizer) -> dict:
+    """
+    Convert TEMPO results directly into a structured graph.
+    No parsing, no regex, no text matching - use the actual token data.
+    """
     all_original_token_sets = result_dict.get('all_original_token_sets', {})
 
-    # Remove ANSI codes
-    ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
-    clean_text = ansi_escape.sub('', generated_text)
+    if not all_original_token_sets:
+        return {"nodes": [], "edges": []}
 
-    # Remove prompt
-    if prompt in clean_text:
-        clean_text = clean_text.split(prompt, 1)[1]
+    nodes = []
+    edges = []
 
-    steps = []
+    # Track node IDs for edge creation
+    # node_map: logical_step -> [list of node IDs at that step]
+    node_map: Dict[int, List[str]] = {}
 
-    # Add prompt
-    steps.append(TokenStep(
-        step_number=0,
-        type='prompt',
-        tokens=[prompt]
-    ))
+    # Process each logical step
+    for logical_step in sorted(all_original_token_sets.keys()):
+        token_set = all_original_token_sets[logical_step]
+        is_parallel = len(token_set) > 1
 
-    # Parse parallel sets [token1/token2]
-    # Note: all_original_token_sets is keyed by logical step (includes ALL steps, not just parallel)
-    # Steps 0-N are: prompt processing, token 1, token 2, ... parallel set, etc.
-    # We need to find which logical step each parallel set corresponds to
-    parallel_pattern = r'\[([^\]]+)\]'
-    current_pos = 0
-    step_num = 1
+        step_node_ids = []
 
-    # Find all steps that have >1 token (these are parallel sets)
-    parallel_logical_steps = [step for step, tokens in all_original_token_sets.items() if len(tokens) > 1]
-    parallel_set_index = 0
+        # Create a node for each token in this step
+        for idx, (token_id, probability) in enumerate(token_set):
+            node_id = f"{logical_step}_{idx}"
+            text = tokenizer.decode([token_id])
 
-    for match in re.finditer(parallel_pattern, clean_text):
-        # Text before parallel set
-        before = clean_text[current_pos:match.start()].strip()
-        if before:
-            steps.append(TokenStep(
-                step_number=step_num,
-                type='single',
-                tokens=[before]
-            ))
-            step_num += 1
-
-        # Parallel tokens - extract from text
-        parallel_text = match.group(1)
-        tokens_from_text = [t.strip() for t in parallel_text.split('/')]
-
-        # Try to get real probabilities from token sets
-        probabilities = []
-        if parallel_set_index < len(parallel_logical_steps):
-            logical_step = parallel_logical_steps[parallel_set_index]
-            token_set = all_original_token_sets[logical_step]
-            # token_set is a list of (token_id, probability) tuples
-
-            # If we have the same number of tokens, just use the probabilities in order
-            if len(token_set) == len(tokens_from_text):
-                probabilities = [prob for _, prob in token_set]
-            else:
-                # Try to match by decoding
-                for token_text in tokens_from_text:
-                    found_prob = None
-                    for token_id, prob in token_set:
-                        decoded = tokenizer.decode([token_id]).strip()
-                        if decoded == token_text:
-                            found_prob = prob
-                            break
-
-                    if found_prob is not None:
-                        probabilities.append(found_prob)
+            # Determine parent IDs
+            parent_ids = []
+            if logical_step > 0:
+                prev_step = logical_step - 1
+                if prev_step in node_map:
+                    # For parallel tokens, connect to primary parent
+                    # For convergence (multiple prev, single current), connect all
+                    if is_parallel or len(token_set) == 1:
+                        # Connect to all parents from previous step
+                        parent_ids = node_map[prev_step]
                     else:
-                        probabilities.append(0.1)
+                        # Single token after single token - direct lineage
+                        parent_ids = [node_map[prev_step][0]]
 
-        # If we couldn't get real probabilities, use approximation
-        if not probabilities or len(probabilities) != len(tokens_from_text):
-            num_tokens = len(tokens_from_text)
-            probabilities = [0.8 / (i + 1) for i in range(num_tokens)] if num_tokens > 0 else []
-            prob_sum = sum(probabilities)
-            if prob_sum > 0:
-                probabilities = [p / prob_sum for p in probabilities]
+            nodes.append(TokenNode(
+                id=node_id,
+                token_id=token_id,
+                text=text,
+                probability=probability,
+                logical_step=logical_step,
+                is_parallel=is_parallel,
+                parent_ids=parent_ids
+            ))
 
-        steps.append(TokenStep(
-            step_number=step_num,
-            type='parallel',
-            tokens=tokens_from_text,
-            probabilities=probabilities
-        ))
-        step_num += 1
-        parallel_set_index += 1
+            step_node_ids.append(node_id)
 
-        current_pos = match.end()
+            # Create edges
+            for parent_id in parent_ids:
+                edges.append((parent_id, node_id))
 
-    # Remaining text
-    remaining = clean_text[current_pos:].strip()
-    if remaining:
-        steps.append(TokenStep(
-            step_number=step_num,
-            type='single',
-            tokens=[remaining]
-        ))
+        node_map[logical_step] = step_node_ids
 
-    return steps
+    return {"nodes": nodes, "edges": edges}
 
 
 @app.post("/api/generate", response_model=GenerationResponse)
@@ -259,15 +221,16 @@ async def generate(request: GenerationRequest):
         # Run experiment
         result_dict = _runner.run_experiment(args)
 
-        # Convert to frontend format
-        steps = convert_results_to_steps(result_dict, request.prompt, _tokenizer)
+        # Convert to structured graph
+        graph_data = convert_to_structured_graph(result_dict, request.prompt, _tokenizer)
 
         return GenerationResponse(
-            steps=steps,
+            nodes=graph_data["nodes"],
+            edges=graph_data["edges"],
+            prompt=request.prompt,
             raw_text=result_dict.get('raw_generated_text', ''),
             generation_time=result_dict.get('generation_time', 0.0),
-            threshold=request.selection_threshold,
-            isolate=request.isolate
+            threshold=request.selection_threshold
         )
 
     except Exception as e:
