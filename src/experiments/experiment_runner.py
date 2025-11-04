@@ -196,7 +196,7 @@ class ExperimentRunner:
             isolate_parallel_tokens=isolate_parallel_tokens,
             show_token_ids=show_token_ids,
             system_content=system_content,
-            return_parallel_sets=False
+            return_parallel_sets=True  # Enable to get real probabilities
         )
 
         # Create use case
@@ -244,6 +244,8 @@ class ExperimentRunner:
                 "isolate_parallel_tokens": isolate_parallel_tokens,
                 "enable_thinking": enable_thinking,
                 "use_mcts": use_mcts,
+                "all_original_token_sets": result.all_original_token_sets,  # Include real token probabilities
+                "all_surviving_token_sets": result.all_surviving_token_sets,
             }
 
             # Handle output format

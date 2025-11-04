@@ -57,11 +57,12 @@ class GenerationResponse(BaseModel):
     isolate: bool
 
 
-def convert_results_to_steps(result_dict: dict, prompt: str) -> List[TokenStep]:
-    """Convert TEMPO results into frontend-friendly steps."""
+def convert_results_to_steps(result_dict: dict, prompt: str, tokenizer) -> List[TokenStep]:
+    """Convert TEMPO results into frontend-friendly steps with real probabilities."""
     import re
 
     generated_text = result_dict.get('generated_text', '')
+    all_original_token_sets = result_dict.get('all_original_token_sets', {})
 
     # Remove ANSI codes
     ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
@@ -84,6 +85,7 @@ def convert_results_to_steps(result_dict: dict, prompt: str) -> List[TokenStep]:
     parallel_pattern = r'\[([^\]]+)\]'
     current_pos = 0
     step_num = 1
+    logical_step = 0  # Track logical step for matching with token sets
 
     for match in re.finditer(parallel_pattern, clean_text):
         # Text before parallel set
@@ -95,16 +97,53 @@ def convert_results_to_steps(result_dict: dict, prompt: str) -> List[TokenStep]:
                 tokens=[before]
             ))
             step_num += 1
+            logical_step += 1
 
-        # Parallel tokens
+        # Parallel tokens - extract from text
         parallel_text = match.group(1)
-        tokens = [t.strip() for t in parallel_text.split('/')]
+        tokens_from_text = [t.strip() for t in parallel_text.split('/')]
+
+        # Try to get real probabilities from token sets
+        probabilities = []
+        if logical_step in all_original_token_sets:
+            token_set = all_original_token_sets[logical_step]
+            # token_set is a list of (token_id, probability) tuples
+
+            # Decode token IDs to get token strings
+            token_id_to_prob = {tid: prob for tid, prob in token_set}
+
+            # Match tokens from text to their probabilities
+            for token_text in tokens_from_text:
+                # Find the token ID that decodes to this text
+                found_prob = None
+                for token_id, prob in token_set:
+                    decoded = tokenizer.decode([token_id])
+                    if decoded.strip() == token_text.strip():
+                        found_prob = prob
+                        break
+
+                if found_prob is not None:
+                    probabilities.append(found_prob)
+                else:
+                    # Fallback if we can't match
+                    probabilities.append(0.1)
+
+        # If we couldn't get real probabilities, use approximation
+        if not probabilities or len(probabilities) != len(tokens_from_text):
+            num_tokens = len(tokens_from_text)
+            probabilities = [0.8 / (i + 1) for i in range(num_tokens)] if num_tokens > 0 else []
+            prob_sum = sum(probabilities)
+            if prob_sum > 0:
+                probabilities = [p / prob_sum for p in probabilities]
+
         steps.append(TokenStep(
             step_number=step_num,
             type='parallel',
-            tokens=tokens
+            tokens=tokens_from_text,
+            probabilities=probabilities
         ))
         step_num += 1
+        logical_step += 1
 
         current_pos = match.end()
 
@@ -164,7 +203,7 @@ async def generate(request: GenerationRequest):
         result_dict = _runner.run_experiment(args)
 
         # Convert to frontend format
-        steps = convert_results_to_steps(result_dict, request.prompt)
+        steps = convert_results_to_steps(result_dict, request.prompt, _tokenizer)
 
         return GenerationResponse(
             steps=steps,
