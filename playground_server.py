@@ -87,6 +87,7 @@ class GenerationResponse(BaseModel):
     raw_text: str
     generation_time: float
     threshold: float
+    attention_matrix: Optional[List[List[float]]] = None  # [seq_len, seq_len] attention weights
 
 
 def convert_to_structured_graph(result_dict: dict, prompt: str, tokenizer) -> dict:
@@ -231,7 +232,8 @@ async def generate(request: GenerationRequest):
             prompt=request.prompt,
             raw_text=result_dict.get('raw_generated_text', ''),
             generation_time=result_dict.get('generation_time', 0.0),
-            threshold=request.selection_threshold
+            threshold=request.selection_threshold,
+            attention_matrix=result_dict.get('attention_matrix')
         )
 
     except Exception as e:
@@ -248,10 +250,30 @@ async def root():
 
 if __name__ == "__main__":
     import uvicorn
+
+    # Check if --dev flag is passed for hot reload
+    dev_mode = "--dev" in sys.argv
+
     print("="*80)
     print("🚀 Starting TEMPO Playground Server")
+    if dev_mode:
+        print("🔥 HOT RELOAD ENABLED - Code changes will auto-restart")
+        print("   (Model stays loaded in memory)")
     print("="*80)
     print("\n📱 Open your browser to: http://localhost:8765")
     print("\n✨ Interactive playground ready!")
     print("="*80)
-    uvicorn.run(app, host="0.0.0.0", port=8765)
+
+    if dev_mode:
+        # Hot reload mode - watches for file changes
+        uvicorn.run(
+            "playground_server:app",
+            host="0.0.0.0",
+            port=8765,
+            reload=True,
+            reload_dirs=[".", "src"],
+            reload_includes=["*.py"]
+        )
+    else:
+        # Normal mode - faster startup
+        uvicorn.run(app, host="0.0.0.0", port=8765)

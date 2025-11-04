@@ -229,6 +229,22 @@ class ExperimentRunner:
 
             generation_time = time.time() - generation_start
 
+            # Extract attention weights from cache if available
+            attention_matrix = None
+            try:
+                cached_attention = cache_manager.get_cached_attention()
+                if cached_attention is not None:
+                    attention_pattern, seq_len = cached_attention
+                    attention_layers = attention_pattern.layers
+                    if attention_layers and len(attention_layers) > 0:
+                        # Stack all layers: [num_layers, batch, heads, seq, seq]
+                        stacked = torch.stack(attention_layers)
+                        # Take first batch, then average across layers and heads: [seq, seq]
+                        attention_matrix = stacked[:, 0, :, :, :].mean(dim=[0, 1]).cpu().numpy().tolist()
+                        logger.info(f"Extracted {len(attention_matrix)}x{len(attention_matrix[0])} attention matrix averaged across {len(attention_layers)} layers")
+            except Exception as e:
+                logger.warning(f"Failed to extract attention weights: {e}", exc_info=True)
+
             # Build results dictionary
             results = {
                 "generated_text": result.generated_text,
@@ -246,6 +262,7 @@ class ExperimentRunner:
                 "use_mcts": use_mcts,
                 "all_original_token_sets": result.all_original_token_sets,  # Include real token probabilities
                 "all_surviving_token_sets": result.all_surviving_token_sets,
+                "attention_matrix": attention_matrix,  # Attention weights for visualization
             }
 
             # Handle output format

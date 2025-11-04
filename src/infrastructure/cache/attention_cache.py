@@ -25,33 +25,62 @@ class AttentionCache(LoggingMixin):
     
     def cache(self, attention_layers: list[torch.Tensor], sequence_length: int) -> None:
         """Cache attention patterns from a forward pass.
-        
+
         Args:
-            attention_layers: List of attention tensors from each layer
-            sequence_length: The sequence length for this attention
+            attention_layers: List of attention tensors from each layer [batch, heads, query_len, key_len]
+            sequence_length: The total sequence length after this forward pass
         """
         # Validate inputs
         assert attention_layers, "attention_layers cannot be empty"
         assert all(isinstance(layer, torch.Tensor) for layer in attention_layers), "All layers must be tensors"
         assert sequence_length > 0, "sequence_length must be positive"
-        
+
         # Validate tensor shapes
         for i, layer in enumerate(attention_layers):
-            if layer.dim() != 4:  # [batch, heads, seq, seq]
+            if layer.dim() != 4:  # [batch, heads, query_len, key_len]
                 raise ValueError(f"Layer {i} attention must be 4D, got {layer.dim()}D")
             if torch.isnan(layer).any() or torch.isinf(layer).any():
                 raise ValueError(f"Layer {i} attention contains NaN or Inf values")
-        
-        # Store attention patterns
-        self.cached_attention = [layer.clone() for layer in attention_layers]
+
+        # Accumulate attention patterns across generation steps
+        if self.cached_attention is None:
+            # First forward pass - store as-is
+            self.cached_attention = [layer.clone() for layer in attention_layers]
+        else:
+            # Subsequent forward passes - pad and concatenate
+            # cached: [batch, heads, prev_queries, prev_keys]
+            # new: [batch, heads, new_queries, total_keys]
+            # Need to pad cached to match new key dimension before concatenating
+            accumulated = []
+            for cached_layer, new_layer in zip(self.cached_attention, attention_layers):
+                batch, heads, cached_queries, cached_keys = cached_layer.shape
+                _, _, new_queries, new_keys = new_layer.shape
+
+                # Pad cached attention to match new key_len
+                if cached_keys < new_keys:
+                    # Pad with zeros on the right (dim 3)
+                    pad_size = new_keys - cached_keys
+                    padding = torch.zeros(
+                        (batch, heads, cached_queries, pad_size),
+                        dtype=cached_layer.dtype,
+                        device=cached_layer.device
+                    )
+                    cached_layer = torch.cat([cached_layer, padding], dim=3)
+
+                # Now concatenate along query dimension (dim=2)
+                accumulated_layer = torch.cat([cached_layer, new_layer], dim=2)
+                accumulated.append(accumulated_layer)
+            self.cached_attention = accumulated
+
         self.cached_sequence_length = sequence_length
         self.cache_updates += 1
-        
+
+
         if self.debug_mode:
             self.log(f"Cached attention for {len(attention_layers)} layers, sequence length {sequence_length}")
-            if len(attention_layers) > 0:
-                first_shape = attention_layers[0].shape
-                self.log(f"First layer shape: {first_shape}")
+            if len(self.cached_attention) > 0:
+                first_shape = self.cached_attention[0].shape
+                self.log(f"Accumulated attention shape: {first_shape}")
     
     def get(self) -> Optional[tuple[AttentionPattern, int]]:
         """Get cached attention patterns.

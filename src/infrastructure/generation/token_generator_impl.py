@@ -70,6 +70,7 @@ class TokenGeneratorImpl(LoggingMixin, TokenGeneratorInterface):
         logits = outputs.logits[:, -1, :]
         
         # Cache attention if available
+        # Cache attention if available
         if hasattr(outputs, "attentions") and outputs.attentions and self.cache_manager:
             self.cache_manager.cache_attention(outputs.attentions, state.get_current_sequence_length())
         

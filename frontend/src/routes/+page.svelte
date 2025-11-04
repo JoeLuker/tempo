@@ -3,10 +3,12 @@
 	import '../app.css';
 
 	let tokens = $state<Token[]>([]);
+	let attentionMatrix = $state<number[][] | undefined>(undefined);
 	let prompt = $state('Once upon a time');
 	let isGenerating = $state(false);
 	let errorMessage = $state<string | null>(null);
 	let statusMessage = $state<string>('');
+	let showAttention = $state(false);
 
 	// Debug indicator lights
 	let backendConnected = $state<boolean>(false);
@@ -62,6 +64,14 @@
 				parent_ids: node.parent_ids,  // Keep all parents for convergence support
 				step: node.logical_step
 			}));
+
+			// Store attention matrix if available
+			if (data.attention_matrix) {
+				attentionMatrix = data.attention_matrix;
+				console.log(`[Attention] Received ${attentionMatrix.length}x${attentionMatrix[0]?.length || 0} attention matrix`);
+			} else {
+				attentionMatrix = undefined;
+			}
 
 			// Set all tokens at once (streaming causes Elk to be called too many times)
 			tokens = convertedTokens;
@@ -123,6 +133,12 @@
 				Generate
 			{/if}
 		</button>
+		{#if attentionMatrix}
+			<label class="attention-toggle">
+				<input type="checkbox" bind:checked={showAttention} />
+				<span>Show Attention Arches</span>
+			</label>
+		{/if}
 	</div>
 
 	{#if errorMessage}
@@ -145,7 +161,7 @@
 				<p>Enter a prompt above and click Generate to see TEMPO's parallel token generation in action</p>
 			</div>
 		{:else}
-			<ElkFlow {tokens} />
+			<ElkFlow {tokens} {attentionMatrix} {showAttention} />
 		{/if}
 	</div>
 </main>
@@ -288,6 +304,48 @@
 	.controls-panel button:disabled {
 		opacity: 0.6;
 		cursor: not-allowed;
+	}
+
+	.attention-toggle {
+		display: inline-flex;
+		align-items: center;
+		gap: 10px;
+		padding: 12px 20px;
+		background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%);
+		border: 2px solid #f59e0b;
+		border-radius: 8px;
+		cursor: pointer;
+		transition: all 0.2s;
+		user-select: none;
+		font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+		min-height: var(--tap-target-min);
+	}
+
+	.attention-toggle:hover {
+		background: linear-gradient(135deg, #fde68a 0%, #fcd34d 100%);
+		border-color: #d97706;
+		transform: translateY(-1px);
+		box-shadow: 0 4px 12px rgba(245, 158, 11, 0.3);
+	}
+
+	.attention-toggle:active {
+		transform: translateY(0);
+	}
+
+	.attention-toggle input[type="checkbox"] {
+		width: 20px;
+		height: 20px;
+		cursor: pointer;
+		accent-color: #f59e0b;
+		margin: 0;
+	}
+
+	.attention-toggle span {
+		font-size: 15px;
+		font-weight: 600;
+		color: #92400e;
+		white-space: nowrap;
+		letter-spacing: 0.01em;
 	}
 
 	.spinner {

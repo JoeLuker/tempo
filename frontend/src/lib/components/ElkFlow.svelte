@@ -14,9 +14,11 @@
 
 	interface Props {
 		tokens: Token[];
+		attentionMatrix?: number[][];  // [seq_len, seq_len] averaged across layers/heads
+		showAttention?: boolean;
 	}
 
-	let { tokens }: Props = $props();
+	let { tokens, attentionMatrix, showAttention = false }: Props = $props();
 
 	let containerRef: HTMLDivElement | null = $state(null);
 	let svg: d3.Selection<SVGSVGElement, unknown, null, undefined> | null = $state(null);
@@ -24,14 +26,19 @@
 	let width = $state(800);
 	let height = $state(600);
 	let mounted = $state(false);
+	let selectedTokenId = $state<string | null>(null);  // Track clicked token for attention filtering
 
 	const elk = new ELK();
 
 	// Reactive effect for visualization updates
 	$effect(() => {
+		// Re-render when tokens, showAttention, or selectedTokenId changes
 		if (mounted && tokens.length > 0) {
 			updateVisualization();
 		}
+		// Include dependencies to trigger re-render
+		void showAttention;
+		void selectedTokenId;
 	});
 
 	onMount(() => {
@@ -215,6 +222,9 @@
 						? '#f97316'
 						: '#06b6d4';
 
+			// Check if this token is selected
+			const isSelected = selectedTokenId === token.id;
+
 			nodeGroup
 				.append('rect')
 				.attr('x', node.x)
@@ -223,14 +233,22 @@
 				.attr('height', node.height)
 				.attr('rx', 6)
 				.attr('fill', nodeColor)
-				.attr('stroke', '#1e293b')
-				.attr('stroke-width', 2)
+				.attr('stroke', isSelected ? '#fbbf24' : '#1e293b')
+				.attr('stroke-width', isSelected ? 4 : 2)
 				.style('cursor', 'pointer')
+				.on('click', () => {
+					// Toggle selection
+					selectedTokenId = selectedTokenId === token.id ? null : token.id;
+				})
 				.on('mouseenter', function () {
-					d3.select(this).attr('stroke', '#f59e0b').attr('stroke-width', 3);
+					if (!isSelected) {
+						d3.select(this).attr('stroke', '#f59e0b').attr('stroke-width', 3);
+					}
 				})
 				.on('mouseleave', function () {
-					d3.select(this).attr('stroke', '#1e293b').attr('stroke-width', 2);
+					if (!isSelected) {
+						d3.select(this).attr('stroke', '#1e293b').attr('stroke-width', 2);
+					}
 				});
 
 			// Node text
@@ -258,12 +276,125 @@
 			}
 		});
 
+		// Render attention arches if enabled
+		if (showAttention && attentionMatrix && attentionMatrix.length > 0) {
+			renderAttentionArches(layout, tokenMap, attentionMatrix, selectedTokenId);
+		}
+
 		// Center the graph
 		const graphWidth = layout.width || 0;
 		const graphHeight = layout.height || 0;
 		const offsetX = (width - graphWidth) / 2;
 		const offsetY = (height - graphHeight) / 2;
 		g.attr('transform', `translate(${Math.max(20, offsetX)}, ${Math.max(20, offsetY)})`);
+	}
+
+	function renderAttentionArches(layout: any, tokenMap: Map<string, Token>, attentionMatrix: number[][], selectedTokenId: string | null) {
+		if (!g) return;
+
+		console.log('[ElkFlow] Rendering attention arches for matrix:', attentionMatrix.length, 'selected:', selectedTokenId);
+
+		// Create a map from token IDs to their index in the sequence
+		const tokenIdToIndex = new Map<string, number>();
+		const sortedTokens = Array.from(tokenMap.values()).sort((a, b) => a.step - b.step);
+		sortedTokens.forEach((token, idx) => {
+			tokenIdToIndex.set(token.id, idx);
+		});
+
+		// Get selected token index if any
+		const selectedIdx = selectedTokenId ? tokenIdToIndex.get(selectedTokenId) : undefined;
+
+		// Create a map from layout node IDs to their positions
+		const nodePositions = new Map<string, { x: number; y: number; width: number; height: number }>();
+		layout.children?.forEach((node: any) => {
+			nodePositions.set(node.id, {
+				x: node.x + node.width / 2,  // Center X
+				y: node.y + node.height / 2,  // Center Y
+				width: node.width,
+				height: node.height
+			});
+		});
+
+		// Filter attention weights by threshold (only show significant attention)
+		const attentionThreshold = 0.05;  // Only show attention > 5%
+
+		// Draw attention arches
+		const archGroup = g.append('g').attr('class', 'attention-arches').lower(); // Draw behind nodes
+
+		sortedTokens.forEach((targetToken, targetIdx) => {
+			const targetPos = nodePositions.get(targetToken.id);
+			if (!targetPos || targetIdx >= attentionMatrix.length) return;
+
+			const attentionWeights = attentionMatrix[targetIdx];
+
+			sortedTokens.forEach((sourceToken, sourceIdx) => {
+				if (sourceIdx >= attentionWeights.length) return;
+
+				const weight = attentionWeights[sourceIdx];
+				if (weight < attentionThreshold) return;  // Skip weak attention
+				if (sourceIdx === targetIdx) return;  // Skip self-attention
+
+				// Filter by selected token if any
+				if (selectedIdx !== undefined) {
+					// Only show arches connected to the selected token
+					if (sourceIdx !== selectedIdx && targetIdx !== selectedIdx) return;
+				}
+
+				const sourcePos = nodePositions.get(sourceToken.id);
+				if (!sourcePos) return;
+
+				// Draw arched path from source to target
+				const dx = targetPos.x - sourcePos.x;
+				const dy = targetPos.y - sourcePos.y;
+				const distance = Math.sqrt(dx * dx + dy * dy);
+
+				// Create control point for arch (perpendicular to line)
+				const midX = (sourcePos.x + targetPos.x) / 2;
+				const midY = (sourcePos.y + targetPos.y) / 2;
+
+				// Scale arch height AGGRESSIVELY to prevent overlaps
+				// Longer horizontal spans need MUCH taller arches
+				const horizontalDist = Math.abs(dx);
+				const stepDiff = Math.abs(targetIdx - sourceIdx);  // How many steps apart
+				const baseHeight = Math.max(80, horizontalDist * 1.2 + stepDiff * 50);
+				const archHeight = Math.min(600, baseHeight);  // Cap at 600px
+
+				const controlX = midX - (dy / distance) * archHeight;
+				const controlY = midY + (dx / distance) * archHeight;
+
+				// Create quadratic curve path
+				const pathData = `M ${sourcePos.x},${sourcePos.y} Q ${controlX},${controlY} ${targetPos.x},${targetPos.y}`;
+
+				// Determine color based on selection
+				const isConnectedToSelection = selectedIdx !== undefined && (sourceIdx === selectedIdx || targetIdx === selectedIdx);
+				const archColor = isConnectedToSelection ? '#22c55e' : '#fbbf24';  // Green if selected, amber otherwise
+
+				// Draw the arch with opacity based on attention weight
+				archGroup
+					.append('path')
+					.attr('d', pathData)
+					.attr('fill', 'none')
+					.attr('stroke', archColor)
+					.attr('stroke-width', Math.max(1, weight * 5))  // Thicker lines
+					.attr('opacity', Math.min(0.9, weight * 2))  // More visible
+					.style('pointer-events', 'none');  // Don't interfere with node interactions
+
+				// Optional: Add weight label for strong attention
+				if (weight > 0.2) {
+					archGroup
+						.append('text')
+						.attr('x', controlX)
+						.attr('y', controlY)
+						.attr('text-anchor', 'middle')
+						.attr('fill', '#fbbf24')
+						.attr('font-size', 9)
+						.attr('opacity', 0.7)
+						.text(`${(weight * 100).toFixed(0)}%`);
+				}
+			});
+		});
+
+		console.log('[ElkFlow] Attention arches rendered');
 	}
 
 	function resetZoom() {
