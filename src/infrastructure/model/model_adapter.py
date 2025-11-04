@@ -9,35 +9,40 @@ import torch
 from src.utils.logging_utils import LoggingMixin
 from src.domain.interfaces.model import ModelInterface
 from src.utils.model_utils import get_best_device
+from src.infrastructure.model.attention_patcher import AttentionPatcher
 
 
 class ModelAdapter(LoggingMixin, ModelInterface):
     """Adapter for the underlying language model."""
-    
+
     def __init__(self, model: Any, device: Optional[str] = None):
         """Initialize the model adapter.
-        
+
         Args:
             model: The underlying language model
             device: Device to use for computation (None for auto-detection)
         """
         super().__init__()
-        
+
         # Validate inputs
         assert model is not None, "Model cannot be None"
-        
+
         # Auto-detect device if not specified
         if device is None:
             device = get_best_device()
-        
+
         assert device in ["cpu", "cuda", "mps"], f"Unsupported device: {device}"
-        
+
         self.model = model
         self.device = device
-        
+
+        # Setup attention patcher for custom masks
+        self.attention_patcher = AttentionPatcher()
+        self.attention_patcher.patch_model(self.model)
+
         # Setup logging
         self.setup_logging("model_adapter", "model_adapter_debug.log")
-        
+
         # Verify model has required methods
         assert hasattr(self.model, "forward") or callable(self.model), "Model must be callable or have forward method"
         assert hasattr(self.model, "config"), "Model must have config attribute"
@@ -79,25 +84,17 @@ class ModelAdapter(LoggingMixin, ModelInterface):
         if past_key_values is not None:
             model_args["past_key_values"] = past_key_values
         
-        # Handle custom attention mask based on model type
+        # Handle custom attention mask via patcher
         if custom_attention_mask is not None:
-            if is_qwen:
-                # Handle Qwen-specific custom attention
-                if custom_attention_mask.dim() == 3:  # [batch, seq, seq]
-                    model_args["position_bias"] = custom_attention_mask
-                elif custom_attention_mask.dim() == 4:  # [batch, heads, seq, seq]
-                    model_args["attention_mask"] = custom_attention_mask
-            elif hasattr(self.model.config, "model_type") and "mistral" in self.model.config.model_type.lower():
-                # Handle Mistral-specific custom attention
-                if custom_attention_mask.dim() == 3:  # [batch, seq, seq]
-                    model_args["position_attention_mask"] = custom_attention_mask
-                elif custom_attention_mask.dim() == 4:  # [batch, heads, seq, seq]
-                    model_args["attention_mask"] = custom_attention_mask
-            else:
-                # For generic models, try the standard custom_attention_mask parameter
-                model_args["custom_attention_mask"] = custom_attention_mask
-        
-        # Run the model
+            # Set custom mask in patcher (it will inject it into attention layers)
+            self.attention_patcher.set_custom_mask(custom_attention_mask)
+            if self.debug_mode:
+                self.log(f"Set custom attention mask: shape={custom_attention_mask.shape}")
+        else:
+            # Clear custom mask if none provided
+            self.attention_patcher.set_custom_mask(None)
+
+        # Run the model (patcher will inject custom mask during attention computation)
         outputs = self.model(**model_args)
         
         # Log debug information if enabled

@@ -70,13 +70,17 @@ class TextFormatter(LoggingMixin):
 
         # Process generated tokens by logical step
         for logical_idx, logical_pos in enumerate(logical_layout):
-            # Skip the first position (prompt)
-            if logical_pos.logical_step == 0:
-                continue
-
             step = logical_pos.logical_step
             start = logical_pos.physical_start_idx
             end = logical_pos.physical_end_idx + 1
+
+            # Skip prompt tokens
+            if end <= prompt_length:
+                continue
+
+            # Adjust indices if they overlap with prompt
+            if start < prompt_length:
+                start = prompt_length
 
             if start >= len(token_ids):
                 break

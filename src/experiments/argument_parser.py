@@ -55,8 +55,8 @@ class ArgumentParser:
         parser.add_argument(
             "--selection-threshold",
             type=float,
-            default=0.1,
-            help="Probability threshold for initial token candidate selection",
+            default=0.25,
+            help="Probability threshold for initial token candidate selection (default: 0.25 for best quality)",
         )
         parser.add_argument(
             "--min-steps",
@@ -199,9 +199,9 @@ class ArgumentParser:
 
         # Parallel token isolation option
         parser.add_argument(
-            "--allow-intraset-token-visibility",
+            "--isolate",
             action="store_true",
-            help="Allow tokens within the same parallel set to see each other during generation (disabled by default)",
+            help="Isolate parallel tokens (prevent them from seeing each other). Default: disabled",
         )
 
         # Profiling parameters

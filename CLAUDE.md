@@ -132,9 +132,58 @@ TEMPO's architecture is centered around several key components:
 6. Use clear naming conventions that describe purpose.
 7. Add explanatory comments for complex logic.
 
+## Project Structure
+
+```
+tempo/
+├── src/                          # Core application code
+│   ├── application/             # Application services and use cases
+│   ├── domain/                  # Domain models and business logic
+│   ├── generation/              # Token generation, RoPE, attention
+│   ├── infrastructure/          # External integrations
+│   ├── modeling/                # Model wrappers and utilities
+│   └── pruning/                 # Pruning strategies
+├── docs/                         # Comprehensive documentation
+│   ├── algorithm.md             # TEMPO algorithm explanation
+│   ├── architecture.md          # System architecture details
+│   ├── configuration-guide.md   # Configuration options
+│   ├── development.md           # Development guidelines
+│   ├── quickstart.md            # Getting started guide
+│   ├── mechanistic_interpretability.md  # Analysis tools docs
+│   ├── isolation_analysis_findings.md   # Isolation experiments
+│   ├── ddd_test_results.md      # DDD refactor test results
+│   └── ml_research_profile.md   # Research contribution highlights
+├── examples/                     # Usage examples
+│   ├── configs/                 # Example YAML configurations
+│   ├── basic_generation.py      # Simple generation example
+│   ├── advanced_pruning.py      # Pruning features example
+│   └── api_client.py            # API usage example
+├── experiments/                  # Research experiments
+│   ├── analysis/                # Analysis results
+│   ├── results/                 # Experimental outputs
+│   ├── run_attention_analysis.py  # Attention pattern analysis
+│   └── run_deep_analysis.py     # Deep mechanistic analysis
+├── benchmark/                    # Performance benchmarking
+├── frontend/                     # Web UI (SvelteKit)
+├── run_tempo.py                 # Main CLI entry point
+├── playground_server.py         # Interactive playground server
+├── playground.html              # Standalone playground UI
+├── create_generation_viz.py     # Visualization tool
+├── setup_models.py              # Model setup utility
+├── check_requirements.py        # Dependency checker
+└── generate_config.py           # Config generator utility
+```
+
 ## Recent Updates
 
-### Frontend Improvements (Latest)
+### Repository Cleanup (Latest)
+- Organized documentation: Moved analysis docs to `docs/` folder
+- Consolidated config files: Moved examples to `examples/configs/`
+- Cleaned up temporary directories: Removed old output, logs, and cache dirs
+- Moved analysis scripts to `experiments/` for better organization
+- Removed obsolete files and duplicate documentation
+
+### Frontend Improvements
 - Fixed Melt UI preprocessor configuration issue that was preventing all interactions
 - Simplified UI to expert-only mode with comprehensive tooltips
 - Added tree visualization for token branching
@@ -147,8 +196,3 @@ TEMPO's architecture is centered around several key components:
   - `clean_text`: Readable text without brackets
   - `generated_text`: Full output with brackets for visualization
   - `raw_generated_text`: Raw token sequence
-
-### Configuration Changes
-- Frontend port changed from 5173 to 5174
-- Removed Docker-related files
-- Cleaned up duplicate API implementations

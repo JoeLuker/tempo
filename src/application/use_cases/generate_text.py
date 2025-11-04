@@ -105,7 +105,8 @@ class GenerateTextUseCase(LoggingMixin):
                 strategy=self.generation_strategy,
                 token_generator=self.token_generator,
                 retroactive_remover=retroactive_remover,
-                data_capture=self.data_capture
+                data_capture=self.data_capture,
+                attention_manager=self.attention_manager
             )
             
             # 7. Format the output
