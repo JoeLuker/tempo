@@ -6,17 +6,13 @@
 	let attentionMatrix = $state<number[][] | undefined>(undefined);
 	let isGenerating = $state(false);
 	let errorMessage = $state<string | null>(null);
-	let statusMessage = $state<string>('');
 	let showAttention = $state(false);
-	let showSettings = $state(false);
 
-	// Basic parameters
+	// Generation parameters
 	let prompt = $state('Once upon a time');
 	let maxTokens = $state(20);
 	let selectionThreshold = $state(0.25);
 	let seed = $state(42);
-
-	// Advanced parameters
 	let isolate = $state(false);
 	let useRetroactivePruning = $state(false);
 	let attentionThreshold = $state(0.01);
@@ -25,30 +21,23 @@
 	let bezierP1 = $state(0.2);
 	let bezierP2 = $state(0.8);
 
-	// Debug indicator lights
+	// Stats
 	let backendConnected = $state<boolean>(false);
+	let generationTime = $state<number>(0);
+	let tokenCount = $state<number>(0);
+	let tokensPerSecond = $state<number>(0);
 
-	// Check backend connection on mount
 	$effect(() => {
 		fetch('/api/generate', { method: 'OPTIONS' })
 			.then(() => { backendConnected = true; })
 			.catch(() => { backendConnected = false; });
 
-		// Desktop keyboard shortcuts
+		// Keyboard shortcuts
 		const handleKeyboard = (e: KeyboardEvent) => {
-			// Cmd/Ctrl + Enter to generate
-			if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+			if ((e.metaKey || e.ctrlKey) && e.key === 'Enter' && !isGenerating) {
 				e.preventDefault();
-				if (!isGenerating) {
-					generateTokens();
-				}
+				generateTokens();
 			}
-			// Cmd/Ctrl + , to toggle settings
-			if ((e.metaKey || e.ctrlKey) && e.key === ',') {
-				e.preventDefault();
-				showSettings = !showSettings;
-			}
-			// Cmd/Ctrl + K to focus prompt
 			if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
 				e.preventDefault();
 				document.getElementById('prompt')?.focus();
@@ -63,7 +52,6 @@
 		isGenerating = true;
 		errorMessage = null;
 		tokens = [];
-		statusMessage = 'Generating...';
 
 		try {
 			const response = await fetch('/api/generate', {
@@ -84,14 +72,11 @@
 				})
 			});
 
-			if (!response.ok) {
-				throw new Error(`API error: ${response.status}`);
-			}
+			if (!response.ok) throw new Error(`API error: ${response.status}`);
 
 			const data = await response.json();
 
-			// Convert API nodes to Token format
-			const convertedTokens = data.nodes.map((node: any) => ({
+			tokens = data.nodes.map((node: any) => ({
 				id: node.id,
 				text: node.text.trim(),
 				type: node.logical_step === 0 ? 'prompt' : (node.is_parallel ? 'parallel' : 'single'),
@@ -100,12 +85,12 @@
 				step: node.logical_step
 			}));
 
-			tokens = convertedTokens;
 			attentionMatrix = data.attention_matrix;
-			statusMessage = `Generated ${tokens.length} tokens in ${data.generation_time.toFixed(2)}s`;
+			generationTime = data.generation_time;
+			tokenCount = tokens.length;
+			tokensPerSecond = tokenCount / generationTime;
 		} catch (error) {
-			errorMessage = error instanceof Error ? error.message : 'Failed to generate';
-			statusMessage = '';
+			errorMessage = error instanceof Error ? error.message : 'Generation failed';
 		} finally {
 			isGenerating = false;
 		}
@@ -125,284 +110,300 @@
 	}
 </script>
 
-<main>
-	<!-- Desktop-optimized header -->
-	<header>
-		<div class="header-content">
-			<div class="header-left">
-				<h1>🌳 TEMPO</h1>
-				<p>Parallel Token Generation</p>
-			</div>
-			<div class="header-right">
-				<div class="status-indicator" class:connected={backendConnected}>
-					<span class="dot"></span>
-					<span class="status-text">{backendConnected ? 'Connected' : 'Offline'}</span>
-				</div>
-				<div class="keyboard-hints">
-					<kbd>⌘ Enter</kbd> Generate
-					<span class="divider">•</span>
-					<kbd>⌘ ,</kbd> Settings
-				</div>
+<div class="dashboard">
+	<!-- Top Navigation Bar -->
+	<nav class="navbar">
+		<div class="nav-left">
+			<h1>🌳 TEMPO</h1>
+			<span class="subtitle">Parallel Token Generation Playground</span>
+		</div>
+		<div class="nav-center">
+			<div class="status-badge" class:connected={backendConnected}>
+				<span class="dot"></span>
+				{backendConnected ? 'Backend Connected' : 'Backend Offline'}
 			</div>
 		</div>
-	</header>
-
-	<!-- Mobile-first controls -->
-	<div class="controls">
-		<div class="input-group">
-			<label for="prompt">Prompt</label>
-			<input
-				id="prompt"
-				type="text"
-				bind:value={prompt}
-				placeholder="Enter your prompt..."
-				disabled={isGenerating}
-			/>
+		<div class="nav-right">
+			<div class="shortcuts">
+				<kbd>⌘ Enter</kbd> Generate
+				<span class="sep">•</span>
+				<kbd>⌘ K</kbd> Focus
+			</div>
 		</div>
+	</nav>
 
-		<div class="action-row">
-			<button class="btn-primary" onclick={generateTokens} disabled={isGenerating}>
-				{#if isGenerating}
-					<span class="spinner"></span>
-					Generating...
-				{:else}
-					✨ Generate
-				{/if}
-			</button>
+	<!-- Main Dashboard Grid -->
+	<div class="dashboard-grid">
+		<!-- Left Sidebar: Controls & Settings -->
+		<aside class="sidebar">
+			<section class="control-section">
+				<h2>Generation</h2>
 
-			<button class="btn-secondary" onclick={() => showSettings = !showSettings}>
-				⚙️ Settings
-			</button>
-		</div>
-
-		<!-- Collapsible Settings Panel -->
-		{#if showSettings}
-			<div class="settings-panel">
-				<div class="settings-header">
-					<h3>Generation Settings</h3>
-					<button class="btn-text" onclick={resetToDefaults}>Reset</button>
+				<div class="form-group">
+					<label for="prompt">Prompt</label>
+					<textarea
+						id="prompt"
+						bind:value={prompt}
+						placeholder="Enter your prompt..."
+						rows="3"
+						disabled={isGenerating}
+					></textarea>
 				</div>
 
-				<div class="setting-group">
-					<h4>Basic</h4>
+				<button class="btn-generate" onclick={generateTokens} disabled={isGenerating}>
+					{#if isGenerating}
+						<span class="spinner"></span>
+						Generating...
+					{:else}
+						✨ Generate Tokens
+					{/if}
+				</button>
+			</section>
 
-					<div class="setting">
+			<section class="control-section">
+				<div class="section-header">
+					<h2>Parameters</h2>
+					<button class="btn-link" onclick={resetToDefaults}>Reset</button>
+				</div>
+
+				<div class="param-group">
+					<div class="param">
 						<label>
 							<span>Max Tokens</span>
-							<span class="value">{maxTokens}</span>
+							<span class="param-value">{maxTokens}</span>
 						</label>
 						<input type="range" bind:value={maxTokens} min="5" max="100" step="5" />
-						<p class="hint">Maximum tokens to generate</p>
 					</div>
 
-					<div class="setting">
+					<div class="param">
 						<label>
 							<span>Selection Threshold</span>
-							<span class="value">{selectionThreshold.toFixed(2)}</span>
+							<span class="param-value">{selectionThreshold.toFixed(2)}</span>
 						</label>
 						<input type="range" bind:value={selectionThreshold} min="0.05" max="0.95" step="0.05" />
-						<p class="hint">Probability threshold for parallel tokens (lower = more parallel)</p>
+						<p class="param-hint">Lower = more parallel paths</p>
 					</div>
 
-					<div class="setting">
+					<div class="param">
 						<label>
 							<span>Random Seed</span>
-							<span class="value">{seed}</span>
+							<span class="param-value">{seed}</span>
 						</label>
 						<input type="number" bind:value={seed} min="0" max="99999" />
-						<p class="hint">Seed for reproducible generation</p>
 					</div>
 				</div>
+			</section>
 
-				<div class="setting-group">
-					<h4>Advanced</h4>
+			<section class="control-section">
+				<h2>Advanced</h2>
 
-					<div class="setting">
-						<label class="checkbox-label">
-							<input type="checkbox" bind:checked={isolate} />
-							<span>Isolate Parallel Tokens</span>
-						</label>
-						<p class="hint">Prevent parallel tokens from attending to each other</p>
-					</div>
+				<div class="param-group">
+					<label class="checkbox">
+						<input type="checkbox" bind:checked={isolate} />
+						<span>Isolate Parallel Tokens</span>
+					</label>
 
-					<div class="setting">
-						<label class="checkbox-label">
-							<input type="checkbox" bind:checked={useRetroactivePruning} />
-							<span>Retroactive Pruning</span>
-						</label>
-						<p class="hint">Prune tokens based on attention patterns</p>
-					</div>
+					<label class="checkbox">
+						<input type="checkbox" bind:checked={useRetroactivePruning} />
+						<span>Retroactive Pruning</span>
+					</label>
 
 					{#if useRetroactivePruning}
-						<div class="setting nested">
+						<div class="param nested">
 							<label>
 								<span>Attention Threshold</span>
-								<span class="value">{attentionThreshold.toFixed(3)}</span>
+								<span class="param-value">{attentionThreshold.toFixed(3)}</span>
 							</label>
 							<input type="range" bind:value={attentionThreshold} min="0.001" max="0.1" step="0.001" />
-							<p class="hint">Minimum attention to keep tokens</p>
 						</div>
 					{/if}
 
-					<div class="setting">
-						<label class="checkbox-label">
-							<input type="checkbox" bind:checked={dynamicThreshold} />
-							<span>Dynamic Threshold</span>
-						</label>
-						<p class="hint">Gradually increase threshold over time</p>
-					</div>
+					<label class="checkbox">
+						<input type="checkbox" bind:checked={dynamicThreshold} />
+						<span>Dynamic Threshold</span>
+					</label>
 
 					{#if dynamicThreshold}
-						<div class="setting nested">
+						<div class="param nested">
 							<label>
 								<span>Final Threshold</span>
-								<span class="value">{finalThreshold.toFixed(2)}</span>
+								<span class="param-value">{finalThreshold.toFixed(2)}</span>
 							</label>
 							<input type="range" bind:value={finalThreshold} min="0.1" max="1.0" step="0.05" />
 						</div>
 
-						<div class="setting nested">
+						<div class="param nested">
 							<label>
 								<span>Bezier P1</span>
-								<span class="value">{bezierP1.toFixed(2)}</span>
+								<span class="param-value">{bezierP1.toFixed(2)}</span>
 							</label>
 							<input type="range" bind:value={bezierP1} min="0" max="1" step="0.1" />
 						</div>
 
-						<div class="setting nested">
+						<div class="param nested">
 							<label>
 								<span>Bezier P2</span>
-								<span class="value">{bezierP2.toFixed(2)}</span>
+								<span class="param-value">{bezierP2.toFixed(2)}</span>
 							</label>
 							<input type="range" bind:value={bezierP2} min="0" max="1" step="0.1" />
 						</div>
 					{/if}
 				</div>
-			</div>
-		{/if}
+			</section>
 
-		{#if attentionMatrix && tokens.length > 0}
-			<div class="attention-toggle">
-				<label>
-					<input type="checkbox" bind:checked={showAttention} />
-					<span>Show Attention Arches</span>
-				</label>
+			{#if attentionMatrix && tokens.length > 0}
+				<section class="control-section">
+					<label class="checkbox attention-checkbox">
+						<input type="checkbox" bind:checked={showAttention} />
+						<span>Show Attention Arches</span>
+					</label>
+				</section>
+			{/if}
+		</aside>
+
+		<!-- Center: Visualization -->
+		<main class="viz-container">
+			{#if errorMessage}
+				<div class="alert alert-error">
+					<strong>Error:</strong> {errorMessage}
+				</div>
+			{/if}
+
+			<div class="visualization">
+				{#if tokens.length === 0 && !isGenerating}
+					<div class="empty-viz">
+						<div class="empty-icon">🌳</div>
+						<h3>Ready to Generate</h3>
+						<p>Configure your parameters and press <kbd>⌘ Enter</kbd> or click Generate</p>
+					</div>
+				{:else}
+					<ElkFlow {tokens} {attentionMatrix} {showAttention} />
+				{/if}
 			</div>
-		{/if}
+		</main>
+
+		<!-- Right Sidebar: Stats & Info -->
+		<aside class="stats-panel">
+			<section class="stat-card">
+				<h3>Generation Stats</h3>
+
+				{#if tokenCount > 0}
+					<div class="stat">
+						<span class="stat-label">Tokens Generated</span>
+						<span class="stat-value">{tokenCount}</span>
+					</div>
+					<div class="stat">
+						<span class="stat-label">Generation Time</span>
+						<span class="stat-value">{generationTime.toFixed(2)}s</span>
+					</div>
+					<div class="stat">
+						<span class="stat-label">Tokens/Second</span>
+						<span class="stat-value">{tokensPerSecond.toFixed(1)}</span>
+					</div>
+					<div class="stat">
+						<span class="stat-label">Threshold Used</span>
+						<span class="stat-value">{selectionThreshold.toFixed(2)}</span>
+					</div>
+				{:else}
+					<p class="stat-empty">No generation yet</p>
+				{/if}
+			</section>
+
+			<section class="stat-card">
+				<h3>About TEMPO</h3>
+				<p class="info-text">
+					TEMPO explores parallel token generation by processing multiple possibilities
+					simultaneously at each step using modified RoPE embeddings.
+				</p>
+				<div class="legend">
+					<div class="legend-item">
+						<span class="legend-color prompt"></span>
+						<span>Prompt Token</span>
+					</div>
+					<div class="legend-item">
+						<span class="legend-color single"></span>
+						<span>Single Path</span>
+					</div>
+					<div class="legend-item">
+						<span class="legend-color parallel"></span>
+						<span>Parallel Paths</span>
+					</div>
+				</div>
+			</section>
+		</aside>
 	</div>
-
-	<!-- Status messages -->
-	{#if errorMessage}
-		<div class="message error">⚠️ {errorMessage}</div>
-	{/if}
-
-	{#if statusMessage}
-		<div class="message success">✓ {statusMessage}</div>
-	{/if}
-
-	<!-- Visualization -->
-	<div class="visualization">
-		{#if tokens.length === 0 && !isGenerating}
-			<div class="empty-state">
-				<div class="empty-icon">🌳</div>
-				<h3>Ready to Generate</h3>
-				<p>Enter a prompt and tap Generate to visualize TEMPO's parallel token generation</p>
-			</div>
-		{:else}
-			<ElkFlow {tokens} {attentionMatrix} {showAttention} />
-		{/if}
-	</div>
-</main>
+</div>
 
 <style>
-	main {
-		display: flex;
-		flex-direction: column;
-		height: 100vh;
-		background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+	:global(body) {
+		margin: 0;
 		overflow: hidden;
 	}
 
-	header {
-		padding: 16px 20px;
-		background: rgba(255, 255, 255, 0.95);
-		backdrop-filter: blur(10px);
-		border-bottom: 1px solid rgba(0, 0, 0, 0.1);
-		position: relative;
+	.dashboard {
+		display: flex;
+		flex-direction: column;
+		height: 100vh;
+		background: #f8fafc;
+		font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
 	}
 
-	.header-content {
+	/* Top Navigation */
+	.navbar {
 		display: flex;
+		align-items: center;
 		justify-content: space-between;
-		align-items: center;
+		padding: 16px 32px;
+		background: white;
+		border-bottom: 1px solid #e2e8f0;
+		box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+		z-index: 100;
 	}
 
-	.header-left {
-		text-align: left;
-	}
-
-	.header-right {
+	.nav-left {
 		display: flex;
-		align-items: center;
-		gap: 20px;
+		align-items: baseline;
+		gap: 16px;
 	}
 
-	header h1 {
-		font-size: 28px;
-		font-weight: 800;
+	.nav-left h1 {
 		margin: 0;
+		font-size: 24px;
+		font-weight: 800;
 		background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
 		-webkit-background-clip: text;
 		-webkit-text-fill-color: transparent;
-		background-clip: text;
 	}
 
-	header p {
-		font-size: 13px;
+	.subtitle {
+		font-size: 14px;
 		color: #64748b;
-		margin: 4px 0 0 0;
 		font-weight: 500;
 	}
 
-	.status-indicator {
+	.nav-center {
+		flex: 1;
+		display: flex;
+		justify-content: center;
+	}
+
+	.status-badge {
 		display: flex;
 		align-items: center;
-		gap: 6px;
-		font-size: 12px;
-		color: #ef4444;
-		font-weight: 600;
-	}
-
-	.status-indicator.connected {
-		color: #10b981;
-	}
-
-	.status-text {
-		display: none;
-	}
-
-	.keyboard-hints {
-		display: none;
-		align-items: center;
-		gap: 12px;
+		gap: 8px;
+		padding: 8px 16px;
+		background: #fee;
+		border: 1px solid #fca5a5;
+		border-radius: 8px;
 		font-size: 13px;
-		color: #64748b;
-		font-weight: 500;
+		font-weight: 600;
+		color: #dc2626;
 	}
 
-	.keyboard-hints kbd {
-		background: #f1f5f9;
-		border: 1px solid #cbd5e1;
-		border-radius: 4px;
-		padding: 4px 8px;
-		font-size: 12px;
-		font-family: 'SF Mono', 'Monaco', 'Courier New', monospace;
-		color: #475569;
-		box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
-	}
-
-	.divider {
-		color: #cbd5e1;
+	.status-badge.connected {
+		background: #f0fdf4;
+		border-color: #86efac;
+		color: #15803d;
 	}
 
 	.dot {
@@ -415,291 +416,150 @@
 
 	@keyframes pulse {
 		0%, 100% { opacity: 1; }
-		50% { opacity: 0.5; }
+		50% { opacity: 0.4; }
 	}
 
-	.controls {
-		padding: 16px 20px;
-		background: rgba(255, 255, 255, 0.95);
-		backdrop-filter: blur(10px);
-		border-bottom: 1px solid rgba(0, 0, 0, 0.1);
-		max-height: 60vh;
-		overflow-y: auto;
-		-webkit-overflow-scrolling: touch;
-	}
-
-	.input-group {
-		margin-bottom: 12px;
-	}
-
-	.input-group label {
-		display: block;
-		font-size: 14px;
-		font-weight: 600;
-		color: #334155;
-		margin-bottom: 6px;
-	}
-
-	.input-group input {
-		width: 100%;
-		padding: 14px 16px;
-		border: 2px solid #e2e8f0;
-		border-radius: 12px;
-		font-size: 16px;
-		background: white;
-		transition: all 0.2s;
-	}
-
-	.input-group input:focus {
-		outline: none;
-		border-color: #667eea;
-		box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
-	}
-
-	.action-row {
+	.shortcuts {
 		display: flex;
+		align-items: center;
 		gap: 12px;
-		margin-bottom: 12px;
+		font-size: 13px;
+		color: #64748b;
 	}
 
-	.btn-primary {
+	.shortcuts kbd {
+		background: #f1f5f9;
+		border: 1px solid #cbd5e1;
+		border-radius: 4px;
+		padding: 4px 8px;
+		font-size: 11px;
+		font-family: 'SF Mono', monospace;
+		color: #475569;
+	}
+
+	.sep {
+		color: #cbd5e1;
+	}
+
+	/* Dashboard Grid */
+	.dashboard-grid {
+		display: grid;
+		grid-template-columns: 340px 1fr 280px;
+		gap: 0;
 		flex: 1;
-		padding: 16px 24px;
-		background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-		color: white;
-		border: none;
-		border-radius: 12px;
-		font-size: 16px;
-		font-weight: 700;
-		cursor: pointer;
-		transition: all 0.2s;
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		gap: 8px;
-		min-height: 54px;
-		-webkit-tap-highlight-color: rgba(102, 126, 234, 0.3);
+		overflow: hidden;
 	}
 
-	.btn-primary:active:not(:disabled) {
-		transform: scale(0.98);
-	}
-
-	.btn-primary:disabled {
-		opacity: 0.6;
-		cursor: not-allowed;
-	}
-
-	.btn-secondary {
-		padding: 16px 24px;
+	/* Sidebar */
+	.sidebar {
 		background: white;
-		color: #667eea;
-		border: 2px solid #667eea;
-		border-radius: 12px;
-		font-size: 16px;
-		font-weight: 700;
-		cursor: pointer;
-		transition: all 0.2s;
-		min-height: 54px;
-		-webkit-tap-highlight-color: rgba(102, 126, 234, 0.1);
+		border-right: 1px solid #e2e8f0;
+		overflow-y: auto;
+		padding: 24px;
 	}
 
-	.btn-secondary:active {
-		transform: scale(0.98);
-		background: #f8f9ff;
+	.control-section {
+		margin-bottom: 32px;
 	}
 
-	.btn-text {
-		background: none;
-		border: none;
-		color: #667eea;
-		font-size: 14px;
-		font-weight: 600;
-		cursor: pointer;
-		padding: 8px 12px;
-		border-radius: 6px;
-		transition: background 0.2s;
-	}
-
-	.btn-text:active {
-		background: rgba(102, 126, 234, 0.1);
-	}
-
-	.settings-panel {
-		margin-top: 12px;
-		padding: 16px;
-		background: white;
-		border-radius: 12px;
-		border: 2px solid #e2e8f0;
-		animation: slideDown 0.2s ease-out;
-	}
-
-	@keyframes slideDown {
-		from {
-			opacity: 0;
-			transform: translateY(-10px);
-		}
-		to {
-			opacity: 1;
-			transform: translateY(0);
-		}
-	}
-
-	.settings-header {
-		display: flex;
-		justify-content: space-between;
-		align-items: center;
-		margin-bottom: 16px;
-	}
-
-	.settings-header h3 {
-		font-size: 18px;
-		font-weight: 700;
-		color: #1e293b;
-		margin: 0;
-	}
-
-	.setting-group {
-		margin-bottom: 20px;
-	}
-
-	.setting-group:last-child {
+	.control-section:last-child {
 		margin-bottom: 0;
 	}
 
-	.setting-group h4 {
-		font-size: 14px;
-		font-weight: 700;
-		color: #64748b;
-		text-transform: uppercase;
-		letter-spacing: 0.05em;
-		margin: 0 0 12px 0;
-		padding-top: 12px;
-		border-top: 1px solid #e2e8f0;
-	}
-
-	.setting-group:first-child h4 {
-		padding-top: 0;
-		border-top: none;
-	}
-
-	.setting {
-		margin-bottom: 16px;
-	}
-
-	.setting.nested {
-		margin-left: 20px;
-		padding-left: 16px;
-		border-left: 3px solid #e2e8f0;
-	}
-
-	.setting label {
+	.section-header {
 		display: flex;
 		justify-content: space-between;
 		align-items: center;
-		font-size: 15px;
+		margin-bottom: 16px;
+	}
+
+	.control-section h2 {
+		font-size: 16px;
+		font-weight: 700;
+		color: #1e293b;
+		margin: 0 0 16px 0;
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
+	}
+
+	.form-group {
+		margin-bottom: 16px;
+	}
+
+	.form-group label {
+		display: block;
+		font-size: 13px;
 		font-weight: 600;
-		color: #334155;
+		color: #475569;
 		margin-bottom: 8px;
 	}
 
-	.setting label .value {
-		font-size: 14px;
-		color: #667eea;
-		font-weight: 700;
-		padding: 4px 10px;
-		background: rgba(102, 126, 234, 0.1);
-		border-radius: 6px;
-	}
-
-	.checkbox-label {
-		cursor: pointer;
-		display: flex !important;
-		align-items: center;
-		gap: 10px;
-	}
-
-	.checkbox-label input[type="checkbox"] {
-		width: 24px;
-		height: 24px;
-		cursor: pointer;
-		accent-color: #667eea;
-	}
-
-	.setting input[type="range"] {
-		width: 100%;
-		height: 8px;
-		border-radius: 4px;
-		background: #e2e8f0;
-		outline: none;
-		-webkit-appearance: none;
-		cursor: pointer;
-	}
-
-	.setting input[type="range"]::-webkit-slider-thumb {
-		-webkit-appearance: none;
-		width: 24px;
-		height: 24px;
-		border-radius: 50%;
-		background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-		cursor: pointer;
-		box-shadow: 0 2px 8px rgba(102, 126, 234, 0.3);
-		transition: transform 0.1s;
-	}
-
-	.setting input[type="range"]::-webkit-slider-thumb:active {
-		transform: scale(1.2);
-	}
-
-	.setting input[type="number"] {
+	.form-group textarea {
 		width: 100%;
 		padding: 12px;
 		border: 2px solid #e2e8f0;
 		border-radius: 8px;
+		font-size: 14px;
+		font-family: inherit;
+		resize: vertical;
+		transition: border-color 0.2s;
+	}
+
+	.form-group textarea:focus {
+		outline: none;
+		border-color: #667eea;
+	}
+
+	.btn-generate {
+		width: 100%;
+		padding: 16px;
+		background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+		color: white;
+		border: none;
+		border-radius: 8px;
 		font-size: 16px;
-	}
-
-	.hint {
-		font-size: 13px;
-		color: #94a3b8;
-		margin: 4px 0 0 0;
-		line-height: 1.4;
-	}
-
-	.attention-toggle {
-		margin-top: 12px;
-		padding: 12px 16px;
-		background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%);
-		border: 2px solid #f59e0b;
-		border-radius: 12px;
+		font-weight: 700;
 		cursor: pointer;
-		-webkit-tap-highlight-color: rgba(245, 158, 11, 0.2);
-	}
-
-	.attention-toggle label {
+		transition: transform 0.1s;
 		display: flex;
 		align-items: center;
-		gap: 10px;
-		cursor: pointer;
+		justify-content: center;
+		gap: 8px;
 	}
 
-	.attention-toggle input[type="checkbox"] {
-		width: 24px;
-		height: 24px;
-		cursor: pointer;
-		accent-color: #f59e0b;
+	.btn-generate:hover:not(:disabled) {
+		transform: translateY(-1px);
+		box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3);
 	}
 
-	.attention-toggle span {
-		font-size: 15px;
+	.btn-generate:active:not(:disabled) {
+		transform: translateY(0);
+	}
+
+	.btn-generate:disabled {
+		opacity: 0.6;
+		cursor: not-allowed;
+	}
+
+	.btn-link {
+		background: none;
+		border: none;
+		color: #667eea;
+		font-size: 13px;
 		font-weight: 600;
-		color: #92400e;
+		cursor: pointer;
+		padding: 4px 8px;
+		border-radius: 4px;
+	}
+
+	.btn-link:hover {
+		background: #f1f5f9;
 	}
 
 	.spinner {
-		width: 18px;
-		height: 18px;
-		border: 3px solid rgba(255, 255, 255, 0.3);
+		width: 16px;
+		height: 16px;
+		border: 2px solid rgba(255, 255, 255, 0.3);
 		border-top-color: white;
 		border-radius: 50%;
 		animation: spin 0.6s linear infinite;
@@ -709,188 +569,270 @@
 		to { transform: rotate(360deg); }
 	}
 
-	.message {
-		margin: 12px 20px;
-		padding: 14px 16px;
-		border-radius: 12px;
+	/* Parameters */
+	.param-group {
+		display: flex;
+		flex-direction: column;
+		gap: 20px;
+	}
+
+	.param {
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+	}
+
+	.param.nested {
+		margin-left: 24px;
+		padding-left: 16px;
+		border-left: 3px solid #e2e8f0;
+	}
+
+	.param label {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+		font-size: 13px;
+		font-weight: 600;
+		color: #475569;
+	}
+
+	.param-value {
+		background: #f1f5f9;
+		padding: 4px 10px;
+		border-radius: 6px;
+		color: #667eea;
+		font-weight: 700;
+		font-size: 12px;
+	}
+
+	.param input[type="range"] {
+		width: 100%;
+		height: 6px;
+		border-radius: 3px;
+		background: #e2e8f0;
+		outline: none;
+		-webkit-appearance: none;
+		cursor: pointer;
+	}
+
+	.param input[type="range"]::-webkit-slider-thumb {
+		-webkit-appearance: none;
+		width: 18px;
+		height: 18px;
+		border-radius: 50%;
+		background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+		cursor: pointer;
+		box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+	}
+
+	.param input[type="number"] {
+		padding: 8px 12px;
+		border: 2px solid #e2e8f0;
+		border-radius: 6px;
+		font-size: 14px;
+	}
+
+	.param-hint {
+		font-size: 12px;
+		color: #94a3b8;
+		margin: 0;
+	}
+
+	.checkbox {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		cursor: pointer;
+		padding: 10px;
+		border-radius: 6px;
+		transition: background 0.2s;
+	}
+
+	.checkbox:hover {
+		background: #f8fafc;
+	}
+
+	.checkbox input[type="checkbox"] {
+		width: 18px;
+		height: 18px;
+		cursor: pointer;
+		accent-color: #667eea;
+	}
+
+	.checkbox span {
 		font-size: 14px;
 		font-weight: 500;
-		animation: slideDown 0.2s ease-out;
+		color: #334155;
 	}
 
-	.message.error {
+	.attention-checkbox {
+		background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%);
+		border: 2px solid #f59e0b;
+		padding: 12px;
+	}
+
+	/* Visualization */
+	.viz-container {
+		display: flex;
+		flex-direction: column;
+		overflow: hidden;
+		background: #f8fafc;
+	}
+
+	.alert {
+		margin: 16px;
+		padding: 12px 16px;
+		border-radius: 8px;
+		font-size: 14px;
+	}
+
+	.alert-error {
 		background: #fee;
-		color: #dc2626;
 		border: 2px solid #fca5a5;
-	}
-
-	.message.success {
-		background: #f0fdf4;
-		color: #15803d;
-		border: 2px solid #86efac;
+		color: #dc2626;
 	}
 
 	.visualization {
 		flex: 1;
-		background: #0f172a;
 		overflow: hidden;
-		position: relative;
+		background: #0f172a;
+		margin: 16px;
+		border-radius: 12px;
+		box-shadow: 0 4px 16px rgba(0, 0, 0, 0.1);
 	}
 
-	.empty-state {
+	.empty-viz {
 		display: flex;
 		flex-direction: column;
 		align-items: center;
 		justify-content: center;
 		height: 100%;
-		padding: 40px 20px;
+		color: #e2e8f0;
 		text-align: center;
 	}
 
 	.empty-icon {
-		font-size: 64px;
-		margin-bottom: 20px;
-		opacity: 0.7;
+		font-size: 80px;
+		margin-bottom: 24px;
+		opacity: 0.6;
 	}
 
-	.empty-state h3 {
-		font-size: 22px;
-		font-weight: 700;
-		color: #e2e8f0;
+	.empty-viz h3 {
+		font-size: 24px;
 		margin: 0 0 12px 0;
+		font-weight: 700;
 	}
 
-	.empty-state p {
+	.empty-viz p {
 		font-size: 15px;
 		color: #94a3b8;
-		line-height: 1.6;
-		max-width: 400px;
 		margin: 0;
 	}
 
-	/* Desktop optimizations */
-	@media (min-width: 768px) {
-		main {
-			flex-direction: row;
-		}
-
-		header {
-			position: fixed;
-			top: 0;
-			left: 0;
-			right: 0;
-			z-index: 100;
-			padding: 20px 40px;
-		}
-
-		header h1 {
-			font-size: 32px;
-		}
-
-		header p {
-			font-size: 14px;
-		}
-
-		.status-indicator {
-			font-size: 13px;
-		}
-
-		.status-text {
-			display: inline;
-		}
-
-		.keyboard-hints {
-			display: flex;
-		}
-
-		.controls {
-			width: 480px;
-			max-height: none;
-			overflow-y: auto;
-			border-right: 1px solid rgba(0, 0, 0, 0.1);
-			border-bottom: none;
-			margin-top: 80px;
-			padding: 24px 32px;
-		}
-
-		.visualization {
-			flex: 1;
-			margin-top: 80px;
-		}
-
-		.input-group input {
-			font-size: 18px;
-			padding: 16px 20px;
-		}
-
-		.btn-primary,
-		.btn-secondary {
-			font-size: 18px;
-			padding: 18px 32px;
-			min-height: 60px;
-		}
-
-		.settings-panel {
-			padding: 24px;
-		}
-
-		.setting-group h4 {
-			font-size: 15px;
-		}
-
-		.setting label {
-			font-size: 16px;
-		}
-
-		.hint {
-			font-size: 14px;
-		}
-
-		.message {
-			margin: 16px 32px;
-			padding: 16px 20px;
-			font-size: 15px;
-		}
-
-		.empty-state {
-			padding: 60px 40px;
-		}
-
-		.empty-icon {
-			font-size: 96px;
-		}
-
-		.empty-state h3 {
-			font-size: 28px;
-		}
-
-		.empty-state p {
-			font-size: 17px;
-			max-width: 500px;
-		}
+	.empty-viz kbd {
+		background: #1e293b;
+		border: 1px solid #334155;
+		padding: 4px 8px;
+		border-radius: 4px;
+		font-family: 'SF Mono', monospace;
+		font-size: 13px;
 	}
 
-	/* Large desktop (1440px+) */
-	@media (min-width: 1440px) {
-		.controls {
-			width: 560px;
-			padding: 32px 40px;
-		}
+	/* Stats Panel */
+	.stats-panel {
+		background: white;
+		border-left: 1px solid #e2e8f0;
+		overflow-y: auto;
+		padding: 24px;
+	}
 
-		header {
-			padding: 24px 48px;
-		}
+	.stat-card {
+		background: #f8fafc;
+		border: 1px solid #e2e8f0;
+		border-radius: 12px;
+		padding: 20px;
+		margin-bottom: 20px;
+	}
 
-		.status-indicator {
-			right: 48px;
-		}
+	.stat-card h3 {
+		font-size: 14px;
+		font-weight: 700;
+		color: #1e293b;
+		margin: 0 0 16px 0;
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
+	}
 
-		.input-group input {
-			font-size: 19px;
-		}
+	.stat {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+		padding: 12px 0;
+		border-bottom: 1px solid #e2e8f0;
+	}
 
-		.settings-header h3 {
-			font-size: 20px;
-		}
+	.stat:last-child {
+		border-bottom: none;
+	}
+
+	.stat-label {
+		font-size: 13px;
+		color: #64748b;
+		font-weight: 500;
+	}
+
+	.stat-value {
+		font-size: 16px;
+		font-weight: 700;
+		color: #667eea;
+	}
+
+	.stat-empty {
+		font-size: 13px;
+		color: #94a3b8;
+		text-align: center;
+		padding: 20px 0;
+		margin: 0;
+	}
+
+	.info-text {
+		font-size: 13px;
+		line-height: 1.6;
+		color: #64748b;
+		margin: 0 0 16px 0;
+	}
+
+	.legend {
+		display: flex;
+		flex-direction: column;
+		gap: 10px;
+	}
+
+	.legend-item {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		font-size: 13px;
+		color: #475569;
+	}
+
+	.legend-color {
+		width: 16px;
+		height: 16px;
+		border-radius: 4px;
+		border: 2px solid #1e293b;
+	}
+
+	.legend-color.prompt {
+		background: #7c3aed;
+	}
+
+	.legend-color.single {
+		background: #06b6d4;
+	}
+
+	.legend-color.parallel {
+		background: #f97316;
 	}
 </style>
