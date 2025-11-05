@@ -33,6 +33,30 @@
 		fetch('/api/generate', { method: 'OPTIONS' })
 			.then(() => { backendConnected = true; })
 			.catch(() => { backendConnected = false; });
+
+		// Desktop keyboard shortcuts
+		const handleKeyboard = (e: KeyboardEvent) => {
+			// Cmd/Ctrl + Enter to generate
+			if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+				e.preventDefault();
+				if (!isGenerating) {
+					generateTokens();
+				}
+			}
+			// Cmd/Ctrl + , to toggle settings
+			if ((e.metaKey || e.ctrlKey) && e.key === ',') {
+				e.preventDefault();
+				showSettings = !showSettings;
+			}
+			// Cmd/Ctrl + K to focus prompt
+			if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+				e.preventDefault();
+				document.getElementById('prompt')?.focus();
+			}
+		};
+
+		window.addEventListener('keydown', handleKeyboard);
+		return () => window.removeEventListener('keydown', handleKeyboard);
 	});
 
 	async function generateTokens() {
@@ -102,13 +126,24 @@
 </script>
 
 <main>
-	<!-- Mobile-optimized header -->
+	<!-- Desktop-optimized header -->
 	<header>
-		<h1>🌳 TEMPO</h1>
-		<p>Parallel Token Generation</p>
-		<div class="status-indicator" class:connected={backendConnected}>
-			<span class="dot"></span>
-			{backendConnected ? 'Connected' : 'Offline'}
+		<div class="header-content">
+			<div class="header-left">
+				<h1>🌳 TEMPO</h1>
+				<p>Parallel Token Generation</p>
+			</div>
+			<div class="header-right">
+				<div class="status-indicator" class:connected={backendConnected}>
+					<span class="dot"></span>
+					<span class="status-text">{backendConnected ? 'Connected' : 'Offline'}</span>
+				</div>
+				<div class="keyboard-hints">
+					<kbd>⌘ Enter</kbd> Generate
+					<span class="divider">•</span>
+					<kbd>⌘ ,</kbd> Settings
+				</div>
+			</div>
 		</div>
 	</header>
 
@@ -293,8 +328,23 @@
 		background: rgba(255, 255, 255, 0.95);
 		backdrop-filter: blur(10px);
 		border-bottom: 1px solid rgba(0, 0, 0, 0.1);
-		text-align: center;
 		position: relative;
+	}
+
+	.header-content {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+	}
+
+	.header-left {
+		text-align: left;
+	}
+
+	.header-right {
+		display: flex;
+		align-items: center;
+		gap: 20px;
 	}
 
 	header h1 {
@@ -315,9 +365,6 @@
 	}
 
 	.status-indicator {
-		position: absolute;
-		top: 16px;
-		right: 20px;
 		display: flex;
 		align-items: center;
 		gap: 6px;
@@ -328,6 +375,34 @@
 
 	.status-indicator.connected {
 		color: #10b981;
+	}
+
+	.status-text {
+		display: none;
+	}
+
+	.keyboard-hints {
+		display: none;
+		align-items: center;
+		gap: 12px;
+		font-size: 13px;
+		color: #64748b;
+		font-weight: 500;
+	}
+
+	.keyboard-hints kbd {
+		background: #f1f5f9;
+		border: 1px solid #cbd5e1;
+		border-radius: 4px;
+		padding: 4px 8px;
+		font-size: 12px;
+		font-family: 'SF Mono', 'Monaco', 'Courier New', monospace;
+		color: #475569;
+		box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+	}
+
+	.divider {
+		color: #cbd5e1;
 	}
 
 	.dot {
@@ -693,22 +768,129 @@
 		margin: 0;
 	}
 
-	/* Desktop adjustments */
+	/* Desktop optimizations */
 	@media (min-width: 768px) {
 		main {
 			flex-direction: row;
 		}
 
+		header {
+			position: fixed;
+			top: 0;
+			left: 0;
+			right: 0;
+			z-index: 100;
+			padding: 20px 40px;
+		}
+
+		header h1 {
+			font-size: 32px;
+		}
+
+		header p {
+			font-size: 14px;
+		}
+
+		.status-indicator {
+			font-size: 13px;
+		}
+
+		.status-text {
+			display: inline;
+		}
+
+		.keyboard-hints {
+			display: flex;
+		}
+
 		.controls {
-			width: 400px;
+			width: 480px;
 			max-height: none;
 			overflow-y: auto;
 			border-right: 1px solid rgba(0, 0, 0, 0.1);
 			border-bottom: none;
+			margin-top: 80px;
+			padding: 24px 32px;
 		}
 
 		.visualization {
 			flex: 1;
+			margin-top: 80px;
+		}
+
+		.input-group input {
+			font-size: 18px;
+			padding: 16px 20px;
+		}
+
+		.btn-primary,
+		.btn-secondary {
+			font-size: 18px;
+			padding: 18px 32px;
+			min-height: 60px;
+		}
+
+		.settings-panel {
+			padding: 24px;
+		}
+
+		.setting-group h4 {
+			font-size: 15px;
+		}
+
+		.setting label {
+			font-size: 16px;
+		}
+
+		.hint {
+			font-size: 14px;
+		}
+
+		.message {
+			margin: 16px 32px;
+			padding: 16px 20px;
+			font-size: 15px;
+		}
+
+		.empty-state {
+			padding: 60px 40px;
+		}
+
+		.empty-icon {
+			font-size: 96px;
+		}
+
+		.empty-state h3 {
+			font-size: 28px;
+		}
+
+		.empty-state p {
+			font-size: 17px;
+			max-width: 500px;
+		}
+	}
+
+	/* Large desktop (1440px+) */
+	@media (min-width: 1440px) {
+		.controls {
+			width: 560px;
+			padding: 32px 40px;
+		}
+
+		header {
+			padding: 24px 48px;
+		}
+
+		.status-indicator {
+			right: 48px;
+		}
+
+		.input-group input {
+			font-size: 19px;
+		}
+
+		.settings-header h3 {
+			font-size: 20px;
 		}
 	}
 </style>

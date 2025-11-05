@@ -491,7 +491,14 @@
 	}
 </script>
 
-<div bind:this={containerRef} class="elk-flow-container"></div>
+<div bind:this={containerRef} class="elk-flow-container">
+	<!-- Desktop zoom controls -->
+	<div class="zoom-controls">
+		<button onclick={zoomIn} title="Zoom In (or scroll)">+</button>
+		<button onclick={resetZoom} title="Reset View">⟲</button>
+		<button onclick={zoomOut} title="Zoom Out (or scroll)">−</button>
+	</div>
+</div>
 
 <style>
 	.elk-flow-container {
@@ -499,10 +506,47 @@
 		height: 100%;
 		overflow: hidden;
 		border-radius: 8px;
+		position: relative;
 		/* Mobile touch optimizations */
 		touch-action: none;
 		-webkit-user-select: none;
 		user-select: none;
+	}
+
+	.zoom-controls {
+		position: absolute;
+		bottom: 20px;
+		right: 20px;
+		display: none;
+		flex-direction: column;
+		gap: 8px;
+		z-index: 10;
+	}
+
+	.zoom-controls button {
+		width: 44px;
+		height: 44px;
+		background: rgba(255, 255, 255, 0.95);
+		backdrop-filter: blur(10px);
+		border: 2px solid rgba(102, 126, 234, 0.2);
+		border-radius: 8px;
+		font-size: 20px;
+		font-weight: 700;
+		color: #667eea;
+		cursor: pointer;
+		transition: all 0.2s;
+		box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+	}
+
+	.zoom-controls button:hover {
+		background: #667eea;
+		color: white;
+		border-color: #667eea;
+		transform: scale(1.05);
+	}
+
+	.zoom-controls button:active {
+		transform: scale(0.95);
 	}
 
 	:global(.node) {
@@ -519,6 +563,19 @@
 		:global(.node text) {
 			/* Slightly larger text on mobile */
 			font-size: 14px !important;
+		}
+	}
+
+	/* Desktop zoom controls */
+	@media (min-width: 768px) {
+		.zoom-controls {
+			display: flex;
+		}
+
+		.zoom-controls button {
+			width: 48px;
+			height: 48px;
+			font-size: 22px;
 		}
 	}
 </style>
