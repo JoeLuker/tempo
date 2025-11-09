@@ -26,6 +26,8 @@ class SimplePersistentRunner:
             model_id="deepcogito/cogito-v1-preview-llama-3B",
             device="mps",
             load_model_wrapper=True,
+            load_token_generator=False,  # Skip legacy component
+            load_parallel_generator=False,  # Don't need this either
             debug_mode=False
         )
 
