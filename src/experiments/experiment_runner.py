@@ -314,12 +314,7 @@ class ExperimentRunner:
                 # Prepare JSON output
                 json_output = {
                     "prompt": prompt,
-                    "generated_text": getattr(result, "formatted_text_no_ansi", result.raw_generated_text),
-                    "clean_text": getattr(result, "clean_text", result.raw_generated_text),
-                    "raw_generated_text": result.raw_generated_text,
-                    "parallel_tokens": parallel_tokens,  # Structured data for visualization
-                    "generation_time": generation_time,
-                    "tokens_per_second": max_tokens / generation_time if max_tokens > 0 else 0,
+                    "tokens": parallel_tokens,
                     "config": {
                         "selection_threshold": selection_threshold,
                         "max_tokens": max_tokens,
@@ -337,6 +332,7 @@ class ExperimentRunner:
                         "total_steps": len(parallel_tokens),
                         "parallel_steps": sum(1 for pt in parallel_tokens if len(pt["tokens"]) > 1),
                         "pruned_steps": sum(1 for pt in parallel_tokens if pt["was_pruned"]),
+                        "tokens_per_second": max_tokens / generation_time if generation_time > 0 else 0,
                     }
                 }
 

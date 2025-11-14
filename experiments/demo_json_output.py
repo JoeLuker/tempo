@@ -80,20 +80,22 @@ def print_json_results(data):
     print(f"Prompt: '{data['prompt']}'")
     print()
 
-    # Generated text with parallel tokens
-    print("Generated text (with parallel tokens):")
-    print(f"  {data['generated_text'][:200]}...")
+    # Tokens array
+    print(f"Generated tokens ({len(data['tokens'])} steps):")
     print()
 
-    # Clean text (one selected path)
-    print("Clean text (selected path):")
-    print(f"  {data['clean_text']}")
-    print()
+    # Show first few token steps
+    for i, step_data in enumerate(data['tokens'][:5]):
+        tokens = step_data['tokens']
+        print(f"  Step {step_data['step']}: {len(tokens)} alternative(s)")
+        for j, tok in enumerate(tokens):
+            marker = "→" if j == 0 else " "
+            print(f"    {marker} '{tok['text']}' (p={tok['probability']:.3f})")
+        print()
 
-    # Raw generated text (all parallel options)
-    print("Raw generated text (all parallel tokens):")
-    print(f"  {data['raw_generated_text']}")
-    print()
+    if len(data['tokens']) > 5:
+        print(f"  ... and {len(data['tokens']) - 5} more steps")
+        print()
 
     # Configuration
     print("Configuration:")
@@ -103,8 +105,10 @@ def print_json_results(data):
 
     # Metrics
     print("Performance Metrics:")
-    print(f"  Generation time: {data['generation_time']:.4f}s")
-    print(f"  Tokens per second: {data['tokens_per_second']:.2f}")
+    print(f"  Generation time: {data['metrics']['generation_time']:.4f}s")
+    print(f"  Tokens per second: {data['metrics']['tokens_per_second']:.2f}")
+    print(f"  Total steps: {data['metrics']['total_steps']}")
+    print(f"  Parallel steps: {data['metrics']['parallel_steps']}")
     print(f"  Removal time: {data['metrics']['removal_time']:.4f}s")
     print(f"  Removal steps: {data['metrics']['removal_steps']}")
     print()
@@ -164,11 +168,18 @@ def main():
     print("  # Parse JSON from output")
     print("  data = json.loads(result.stdout.split('{', 1)[1].rsplit('}', 1)[0] + '}')")
     print()
-    print("  # Access fields")
-    print("  clean_text = data['clean_text']")
-    print("  raw_text = data['raw_generated_text']")
-    print("  generation_time = data['generation_time']")
+    print("  # Access token data")
+    print("  prompt = data['prompt']")
+    print("  tokens = data['tokens']  # Array of token steps with alternatives")
     print("  config = data['config']")
+    print("  metrics = data['metrics']")
+    print()
+    print("  # Process tokens")
+    print("  for step_data in tokens:")
+    print("      step = step_data['step']")
+    print("      alternatives = step_data['tokens']")
+    print("      for tok in alternatives:")
+    print("          print(f\"Token: {tok['text']} (p={tok['probability']})\")")
     print()
 
     print("="*80)

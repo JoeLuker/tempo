@@ -45,27 +45,16 @@ def main():
     print("=" * 80)
     print()
 
-    # Example 1: Get clean text for downstream processing
-    print("Example 1: Extracting Clean Text")
-    print("-" * 80)
-
-    data = run_tempo_json("What is the meaning of life?", threshold=0.08, max_tokens=5)
-
-    clean_text = data['clean_text']
-    print(f"Clean text (highest probability path): {clean_text}")
-    print(f"Generation time: {data['generation_time']:.2f}s")
-    print()
-
-    # Example 2: Analyze parallel token alternatives
-    print("Example 2: Analyzing Parallel Token Alternatives")
+    # Example 1: Analyze parallel token alternatives
+    print("Example 1: Analyzing Token Alternatives")
     print("-" * 80)
 
     data = run_tempo_json("The weather today is", threshold=0.1, max_tokens=4)
 
     print(f"Prompt: '{data['prompt']}'")
-    print(f"\nParallel tokens at each step:")
+    print(f"\nTokens at each step:")
 
-    for step_data in data['parallel_tokens']:
+    for step_data in data['tokens']:
         step = step_data['step']
         tokens = step_data['tokens']
         was_pruned = step_data['was_pruned']
@@ -81,6 +70,24 @@ def main():
             orig_count = step_data['original_count']
             print(f"    (pruned from {orig_count} original tokens)")
 
+    print()
+
+    # Example 2: Build text from highest probability tokens
+    print("Example 2: Reconstructing Text from Tokens")
+    print("-" * 80)
+
+    data = run_tempo_json("What is the meaning of life?", threshold=0.08, max_tokens=5)
+
+    # Get highest probability token from each step
+    highest_prob_tokens = []
+    for step_data in data['tokens']:
+        if step_data['tokens']:
+            best_token = max(step_data['tokens'], key=lambda t: t['probability'])
+            highest_prob_tokens.append(best_token['text'])
+
+    reconstructed_text = ''.join(highest_prob_tokens)
+    print(f"Prompt: '{data['prompt']}'")
+    print(f"Highest probability path: {reconstructed_text}")
     print()
 
     # Example 3: Metrics and statistics
@@ -102,23 +109,33 @@ def main():
     print(f"  Parallel steps: {metrics['parallel_steps']}")
     print(f"  Pruned steps: {metrics['pruned_steps']}")
     print(f"  Generation time: {metrics['generation_time']:.3f}s")
-    print(f"  Speed: {data['tokens_per_second']:.2f} tokens/sec")
+    print(f"  Speed: {metrics['tokens_per_second']:.2f} tokens/sec")
     print()
 
-    # Example 4: Formatted output for visualization
-    print("Example 4: Different Text Formats")
+    # Example 4: Token analysis
+    print("Example 4: Token Analysis")
     print("-" * 80)
 
     data = run_tempo_json("The capital of France is", threshold=0.1, max_tokens=3)
 
-    print("Generated text (with brackets showing alternatives):")
-    print(f"  {data['generated_text']}")
+    print(f"Prompt: '{data['prompt']}'")
     print()
-    print("Clean text (selected path only):")
-    print(f"  {data['clean_text']}")
+
+    total_alternatives = sum(len(step['tokens']) for step in data['tokens'])
+    avg_alternatives = total_alternatives / len(data['tokens']) if data['tokens'] else 0
+
+    print(f"Statistics:")
+    print(f"  Total steps: {len(data['tokens'])}")
+    print(f"  Total token alternatives: {total_alternatives}")
+    print(f"  Average alternatives per step: {avg_alternatives:.2f}")
     print()
-    print("Raw text (all parallel tokens concatenated):")
-    print(f"  {data['raw_generated_text']}")
+
+    # Show token diversity
+    print("Token diversity by step:")
+    for step_data in data['tokens']:
+        num_alts = len(step_data['tokens'])
+        top_prob = step_data['tokens'][0]['probability'] if step_data['tokens'] else 0
+        print(f"  Step {step_data['step']}: {num_alts} alternatives (top prob: {top_prob:.3f})")
     print()
 
     # Example 5: Save to file
@@ -136,8 +153,14 @@ def main():
     print()
     print("Then load it with:")
     print()
+    print("  import json")
     print("  with open('results.json', 'r') as f:")
     print("      data = json.load(f)")
+    print()
+    print("  # Access token data")
+    print("  for step_data in data['tokens']:")
+    print("      for token in step_data['tokens']:")
+    print("          print(f\"{token['text']} (p={token['probability']:.3f})\")")
     print()
 
     print("=" * 80)
