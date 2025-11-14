@@ -13,23 +13,20 @@ model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float
 tokenizer = AutoTokenizer.from_pretrained(model_name)
 model.eval()
 
-prompt = "Once upon a time"
+prompt = "The answer to whether a hotdog is a sandwich or not is"
 input_ids = tokenizer.encode(prompt, return_tensors="pt").to(device)
 prompt_length = input_ids.shape[1]
 
 print(f"\nPrompt: '{prompt}' (length {prompt_length})\n")
 
-# Create sequence: prompt repeated 3 times
-sequence = torch.cat([input_ids[0], input_ids[0], input_ids[0]]).unsqueeze(0)
+# Normal TEMPO: just the prompt, no gaps
+sequence = input_ids
 
-# Position IDs with gaps
-position_ids = torch.tensor([[0,1,2,3,4, 0,1,2,3,5, 0,1,2,3,6]], device=device)
+# Position IDs: normal consecutive positions
+position_ids = torch.arange(prompt_length, device=device).unsqueeze(0)
 
-# Attention mask: 2D, each copy only attends to itself
-attention_mask = torch.zeros(1, 15, device=device)
-attention_mask[0, :5] = 1    # Copy 1
-attention_mask[0, 5:10] = 1  # Copy 2
-attention_mask[0, 10:15] = 1 # Copy 3
+# Attention mask: standard causal
+attention_mask = torch.ones(1, prompt_length, device=device)
 
 print("Position IDs:", position_ids[0].tolist())
 print()
@@ -46,28 +43,55 @@ with torch.no_grad():
 
 print("✓ Forward pass complete!\n")
 
-# Apply TEMPO threshold
+# Apply TEMPO threshold to get next tokens
 threshold = 0.05
 
-positions = [
-    (4, "Position 4 (immediate)"),
-    (9, "Position 5 (gap at 4)"),
-    (14, "Position 6 (gaps at 4,5)")
-]
+# Get predictions after the prompt
+logits = outputs.logits[0, -1, :]
+probs = torch.softmax(logits, dim=-1)
+viable = probs >= threshold
+viable_ids = torch.where(viable)[0]
+viable_probs = probs[viable_ids]
 
-for phys_pos, desc in positions:
-    print(f"{desc}:")
-    logits = outputs.logits[0, phys_pos, :]
-    probs = torch.softmax(logits, dim=-1)
-    viable = probs >= threshold
-    viable_ids = torch.where(viable)[0]
-    viable_probs = probs[viable_ids]
-    
-    print(f"  {len(viable_ids)} TEMPO tokens:")
-    for tid, prob in zip(viable_ids[:5], viable_probs[:5]):
-        print(f"    '{tokenizer.decode([tid.item()])}' (p={prob.item():.4f})")
+print(f"TEMPO threshold: {threshold}")
+print(f"Found {len(viable_ids)} viable next tokens:")
+for tid, prob in zip(viable_ids, viable_probs):
+    print(f"  '{tokenizer.decode([tid.item()])}' (p={prob.item():.4f})")
+print()
+
+# Now continue sequentially with each TEMPO token
+print("="*80)
+print("SEQUENTIAL CONTINUATION WITH TEMPO TOKENS")
+print("="*80)
+print()
+
+max_tokens_to_show = min(3, len(viable_ids))
+for i in range(max_tokens_to_show):
+    token_id = viable_ids[i]
+    token_text = tokenizer.decode([token_id.item()])
+    token_prob = viable_probs[i].item()
+
+    # Continue this path
+    print(f"Path {i+1}: '{token_text}' (p={token_prob:.4f})")
+
+    current_sequence = torch.cat([input_ids[0], token_id.unsqueeze(0)])
+
+    # Generate next 3 tokens sequentially
+    for step in range(3):
+        seq_input = current_sequence.unsqueeze(0)
+        pos_ids = torch.arange(len(current_sequence), device=device).unsqueeze(0)
+
+        with torch.no_grad():
+            out = model(input_ids=seq_input, position_ids=pos_ids, return_dict=True, use_cache=False)
+
+        next_logits = out.logits[0, -1, :]
+        next_probs = torch.softmax(next_logits, dim=-1)
+        next_token = torch.argmax(next_probs)
+
+        current_sequence = torch.cat([current_sequence, next_token.unsqueeze(0)])
+
+    full_text = tokenizer.decode(current_sequence[prompt_length:])
+    print(f"  → {full_text}")
     print()
 
-print("="*80)
-print("Generated 3 independent positions in ONE forward pass!")
 print("="*80)
