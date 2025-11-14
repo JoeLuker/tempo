@@ -144,21 +144,17 @@ def main():
         print(f"Error: {args.input_dir} does not exist")
         return 1
 
-    prompt_categories = {
-        "narrative_1": "narrative",
-        "narrative_2": "narrative",
-        "narrative_3": "narrative",
-        "factual_1": "factual",
-        "factual_2": "factual",
-        "factual_3": "factual",
-        "technical_1": "technical",
-        "technical_2": "technical",
-        "conversational_1": "conversational",
-        "conversational_2": "conversational",
-        "simple_1": "simple",
-        "simple_2": "simple",
-        "complex_1": "complex",
-    }
+    # Auto-discover all prompt directories and infer category from name
+    prompt_categories = {}
+    for item in args.input_dir.iterdir():
+        if item.is_dir() and not item.name.startswith('.'):
+            # Infer category from prompt name (e.g., "narrative_1" -> "narrative")
+            parts = item.name.rsplit('_', 1)
+            if len(parts) == 2 and parts[1].isdigit():
+                category = parts[0]
+            else:
+                category = "unknown"
+            prompt_categories[item.name] = category
 
     print("="*70)
     print("Attention Reduction Analysis (Corrected)")
