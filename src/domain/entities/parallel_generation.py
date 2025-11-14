@@ -81,11 +81,11 @@ class GenerationConfig:
     max_tokens: int = 100
     selection_threshold: float = 0.1
     min_steps: int = 0
-    
+
     # Retroactive pruning
     use_retroactive_removal: bool = False
     attention_threshold: Optional[float] = None
-    
+
     # Dynamic threshold
     dynamic_threshold: bool = False
     final_threshold: float = 1.0
@@ -93,13 +93,18 @@ class GenerationConfig:
     bezier_p2: float = 0.8
     use_relu: bool = False
     relu_activation_point: float = 0.5
-    
+
     # MCTS parameters
     use_mcts: bool = False
     mcts_simulations: int = 10
     mcts_c_puct: float = 1.0
     mcts_depth: int = 5
-    
+
+    # Memory control parameters
+    max_memory_gb: Optional[float] = None
+    max_parallel_tokens: Optional[int] = None
+    max_cache_tokens: Optional[int] = None
+
     # Other options
     disable_kv_cache: bool = False
     isolate_parallel_tokens: bool = True
@@ -108,7 +113,7 @@ class GenerationConfig:
     return_parallel_sets: bool = False
     debug_mode: Optional[bool] = None
     system_content: Optional[str] = None
-    
+
     # Callbacks
     sequence_callback: Optional[Callable[[int, int, int], None]] = None
     
@@ -140,6 +145,14 @@ class GenerationConfig:
                 raise ValueError(f"mcts_c_puct must be positive, got {self.mcts_c_puct}")
             if self.mcts_depth <= 0:
                 raise ValueError(f"mcts_depth must be positive, got {self.mcts_depth}")
+
+        # Validate memory control parameters
+        if self.max_memory_gb is not None and self.max_memory_gb <= 0:
+            raise ValueError(f"max_memory_gb must be positive, got {self.max_memory_gb}")
+        if self.max_parallel_tokens is not None and self.max_parallel_tokens <= 0:
+            raise ValueError(f"max_parallel_tokens must be positive, got {self.max_parallel_tokens}")
+        if self.max_cache_tokens is not None and self.max_cache_tokens <= 0:
+            raise ValueError(f"max_cache_tokens must be positive, got {self.max_cache_tokens}")
 
 
 @dataclass 

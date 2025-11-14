@@ -204,6 +204,26 @@ class ArgumentParser:
             help="Isolate parallel tokens (prevent them from seeing each other). Default: disabled",
         )
 
+        # Memory control parameters
+        parser.add_argument(
+            "--max-memory-gb",
+            type=float,
+            default=36.0,
+            help="Maximum memory usage in GB (default: 36.0)",
+        )
+        parser.add_argument(
+            "--max-parallel-tokens",
+            type=int,
+            default=None,
+            help="Maximum parallel tokens per step (auto-calculated from memory if not set)",
+        )
+        parser.add_argument(
+            "--max-cache-tokens",
+            type=int,
+            default=None,
+            help="Maximum tokens in KV cache (optional, for memory control)",
+        )
+
         # Profiling parameters
         parser.add_argument(
             "--profile",

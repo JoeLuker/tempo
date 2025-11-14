@@ -84,6 +84,11 @@ class ExperimentRunner:
         isolate_parallel_tokens = args.get("isolate", False)
         use_mcts = args.get("use_mcts", False)
 
+        # Memory control parameters
+        max_memory_gb = args.get("max_memory_gb", 36.0)
+        max_parallel_tokens = args.get("max_parallel_tokens", None)
+        max_cache_tokens = args.get("max_cache_tokens", None)
+
         # Set debug mode
         self.debug_mode = debug_mode
         if debug_mode:
@@ -112,8 +117,11 @@ class ExperimentRunner:
         # 1. Model Adapter
         model_adapter = ModelAdapter(model=self.model, device=self.device)
 
-        # 2. Cache Manager
+        # 2. Cache Manager with memory limits
         cache_manager = CacheManager()
+        if max_cache_tokens is not None:
+            logger.info(f"Setting cache token limit to {max_cache_tokens}")
+            # Cache manager will apply limits when initializing KV cache
 
         # 3. Performance Tracker
         performance_tracker = PerformanceTracker()
@@ -184,7 +192,7 @@ class ExperimentRunner:
             )
             logger.info(f"Experiment data capture enabled - output to: {output_path}")
 
-        # Create generation config
+        # Create generation config with memory controls
         system_content = "Enable deep thinking subroutine." if enable_thinking else None
 
         config = GenerationConfig(
@@ -196,7 +204,9 @@ class ExperimentRunner:
             isolate_parallel_tokens=isolate_parallel_tokens,
             show_token_ids=show_token_ids,
             system_content=system_content,
-            return_parallel_sets=True  # Enable to get real probabilities
+            return_parallel_sets=True,  # Enable to get real probabilities
+            max_parallel_tokens=max_parallel_tokens,  # Memory control
+            max_cache_tokens=max_cache_tokens  # Memory control
         )
 
         # Create use case

@@ -34,6 +34,7 @@ from src.utils.model_utils import (
     load_model,
     load_tempo_components,
 )
+from src.utils.memory_monitor import MemoryMonitor
 
 # --- Main Execution ---
 
@@ -50,6 +51,11 @@ def main():
         profile_output = args_dict.pop("profile_output", "tempo_profile.prof")
         debug_mode = args_dict.get("debug_mode", False)  # Get debug mode
 
+        # Extract memory control parameters
+        max_memory_gb = args_dict.get("max_memory_gb", 36.0)
+        max_parallel_tokens = args_dict.get("max_parallel_tokens", None)
+        max_cache_tokens = args_dict.get("max_cache_tokens", None)
+
         # 2. Set Random Seeds
         seed = args_dict.get("seed", 42)  # Use .get with default
         random.seed(seed)
@@ -64,6 +70,11 @@ def main():
         device = torch.device(device_str)  # Use torch.device object
         dtype = get_device_dtype(device_str)
         print(f"Using device: {device} with dtype: {dtype}")
+
+        # 3.5. Initialize memory monitor
+        print(f"\nInitializing memory monitor with {max_memory_gb}GB limit")
+        memory_monitor = MemoryMonitor(max_memory_gb=max_memory_gb, device=device_str)
+        memory_monitor.log_memory_stats("Initial")
 
         # 4. Load Model, Tokenizer and TEMPO components
         # User wants this hardcoded for now, but ideally use args_dict.get("model", DEFAULT_MODEL)
@@ -93,6 +104,19 @@ def main():
 
         print(f"Model and components loaded in {time.time() - load_start_time:.2f}s")
         print(f"Model loaded on device: {model_wrapper.device}")
+
+        # Check memory after model load
+        memory_monitor.log_memory_stats("After model load")
+        memory_monitor.check_memory_limit("model loading")
+
+        # Auto-calculate max parallel tokens if not specified
+        if max_parallel_tokens is None:
+            sequence_length = args_dict.get("max_tokens", 100)
+            max_parallel_tokens = memory_monitor.calculate_max_parallel_tokens(
+                sequence_length=sequence_length
+            )
+            args_dict["max_parallel_tokens"] = max_parallel_tokens
+            print(f"Auto-calculated max parallel tokens: {max_parallel_tokens}")
 
         # Ensure debug mode is set
         model_wrapper.set_debug_mode(debug_mode)
@@ -125,6 +149,9 @@ def main():
 
         generation_time = time.time() - generation_start_time
         print(f"\nGeneration completed in {generation_time:.2f} seconds")
+
+        # Log final memory stats
+        memory_monitor.log_memory_stats("After generation")
 
         # 8. Handle Profiling Results
         if profiler:

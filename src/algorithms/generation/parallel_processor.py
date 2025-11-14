@@ -1,8 +1,11 @@
 """Parallel token processing for TEMPO generation."""
 
 import torch
+import logging
 from typing import List, Dict, Tuple, Optional
 from dataclasses import dataclass
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -12,15 +15,26 @@ class ParallelTokenSet:
     token_ids: List[int]
     probabilities: List[float]
     parent_idx: int  # Index in sequence where these branch from
-    
+
 
 class ParallelProcessor:
-    """Processes multiple tokens in parallel at same positions."""
-    
-    def __init__(self, device: str = "cuda"):
+    """Processes multiple tokens in parallel at same positions with memory controls."""
+
+    def __init__(
+        self,
+        device: str = "cuda",
+        max_parallel_tokens: Optional[int] = None
+    ):
+        """Initialize parallel processor.
+
+        Args:
+            device: Device for processing
+            max_parallel_tokens: Maximum parallel tokens per step (optional)
+        """
         self.device = device
         self.active_sets: List[ParallelTokenSet] = []
         self.sequence_map: Dict[int, int] = {}  # Maps sequence position to set index
+        self.max_parallel_tokens = max_parallel_tokens
         
     def create_parallel_set(
         self,
@@ -29,7 +43,34 @@ class ParallelProcessor:
         probabilities: List[float],
         parent_idx: int
     ) -> ParallelTokenSet:
-        """Create a new parallel token set."""
+        """Create a new parallel token set with memory limits.
+
+        Args:
+            position: Logical position
+            token_ids: List of token IDs
+            probabilities: List of probabilities
+            parent_idx: Parent sequence index
+
+        Returns:
+            ParallelTokenSet, possibly trimmed to max_parallel_tokens
+        """
+        # Enforce maximum parallel tokens if set
+        if self.max_parallel_tokens is not None and len(token_ids) > self.max_parallel_tokens:
+            logger.debug(
+                f"Trimming parallel set from {len(token_ids)} to {self.max_parallel_tokens} tokens"
+            )
+
+            # Sort by probability and keep top-k
+            sorted_pairs = sorted(
+                zip(probabilities, token_ids),
+                key=lambda x: x[0],
+                reverse=True
+            )[:self.max_parallel_tokens]
+
+            probabilities, token_ids = zip(*sorted_pairs)
+            token_ids = list(token_ids)
+            probabilities = list(probabilities)
+
         return ParallelTokenSet(
             position=position,
             token_ids=token_ids,
@@ -157,9 +198,33 @@ class ParallelProcessor:
         min_entropy: float = 0.5,
         max_size: int = 10
     ) -> bool:
-        """Determine if a parallel set should be expanded further."""
-        if len(token_set.token_ids) >= max_size:
+        """Determine if a parallel set should be expanded further.
+
+        Args:
+            token_set: Token set to evaluate
+            min_entropy: Minimum entropy threshold
+            max_size: Maximum set size
+
+        Returns:
+            True if set should be expanded
+        """
+        # Check against configured limit
+        effective_max = max_size
+        if self.max_parallel_tokens is not None:
+            effective_max = min(max_size, self.max_parallel_tokens)
+
+        if len(token_set.token_ids) >= effective_max:
             return False
-            
+
         entropy = self.compute_set_entropy(token_set)
         return entropy > min_entropy
+
+    def set_max_parallel_tokens(self, max_tokens: int) -> None:
+        """Set maximum parallel tokens per step.
+
+        Args:
+            max_tokens: Maximum number of parallel tokens
+        """
+        assert max_tokens > 0, "Max parallel tokens must be positive"
+        self.max_parallel_tokens = max_tokens
+        logger.info(f"Set max parallel tokens to {max_tokens}")
