@@ -2,13 +2,13 @@
 """Test script to verify memory controls are working.
 
 This script runs a simple TEMPO generation with memory monitoring to ensure
-the 36GB limit is respected.
+the memory limit is respected.
 """
 
 import sys
 import torch
 from src.utils.memory_monitor import MemoryMonitor
-from src.utils.model_utils import load_tempo_components
+from src.utils.model_utils import load_tempo_components, get_best_device
 
 def test_memory_controls():
     """Test memory controls with a simple generation."""
@@ -16,16 +16,32 @@ def test_memory_controls():
     print("TEMPO Memory Controls Test")
     print("="*70)
 
-    # Configuration
-    MAX_MEMORY_GB = 36.0
+    # Detect device
+    device_str = get_best_device()
+    print(f"\nDetected device: {device_str}")
+
+    # Configuration - use realistic limit based on available memory
     model_name = "deepcogito/cogito-v1-preview-llama-3B"
     prompt = "The future of artificial intelligence is"
     max_tokens = 50
     selection_threshold = 0.1
 
+    # Set limit based on device
+    if device_str == "cuda" and torch.cuda.is_available():
+        # For CUDA, use GPU memory
+        gpu_total = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+        MAX_MEMORY_GB = min(36.0, gpu_total * 0.9)  # 90% of GPU memory
+        print(f"GPU total memory: {gpu_total:.2f}GB")
+    else:
+        # For MPS/CPU, set realistic limit for model size
+        # The model is ~6-7GB, so allow some headroom
+        MAX_MEMORY_GB = 15.0  # Realistic for 3B model + generation
+
+    print(f"Memory limit: {MAX_MEMORY_GB:.2f}GB")
+
     # Initialize memory monitor
-    print(f"\n1. Initializing memory monitor (limit: {MAX_MEMORY_GB}GB)")
-    memory_monitor = MemoryMonitor(max_memory_gb=MAX_MEMORY_GB, device="cuda")
+    print(f"\n1. Initializing memory monitor")
+    memory_monitor = MemoryMonitor(max_memory_gb=MAX_MEMORY_GB, device=device_str)
     memory_monitor.log_memory_stats("Initial state")
 
     try:
@@ -33,7 +49,7 @@ def test_memory_controls():
         print(f"\n2. Loading model: {model_name}")
         components = load_tempo_components(
             model_id=model_name,
-            device="cuda",
+            device=device_str,
             load_model_wrapper=True,
             load_token_generator=False,
             load_parallel_generator=False,
@@ -95,7 +111,7 @@ def test_memory_controls():
         runner = ExperimentRunner(
             model=model_wrapper,
             tokenizer=tokenizer,
-            device="cuda"
+            device=device_str
         )
 
         args = {
@@ -117,9 +133,9 @@ def test_memory_controls():
         # Verify we stayed under limit
         final_usage = memory_monitor.get_current_usage_gb()
         if final_usage <= MAX_MEMORY_GB:
-            print(f"\n✓ SUCCESS: Memory usage {final_usage:.2f}GB <= {MAX_MEMORY_GB}GB")
+            print(f"\n✓ SUCCESS: Memory usage {final_usage:.2f}GB <= {MAX_MEMORY_GB:.2f}GB")
         else:
-            print(f"\n✗ FAILED: Memory usage {final_usage:.2f}GB > {MAX_MEMORY_GB}GB")
+            print(f"\n✗ FAILED: Memory usage {final_usage:.2f}GB > {MAX_MEMORY_GB:.2f}GB")
             return False
 
         print(f"\n5. Results:")

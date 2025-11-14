@@ -49,7 +49,16 @@ class MemoryMonitor:
         self.warning_threshold = 0.85  # Warn at 85% usage
         self.critical_threshold = 0.95  # Critical at 95% usage
 
-        logger.info(f"Initialized MemoryMonitor with {max_memory_gb}GB limit")
+        # For MPS/CPU, track baseline and measure incremental usage
+        if device in ["mps", "cpu"]:
+            mem = psutil.virtual_memory()
+            self.baseline_memory_gb = mem.used / (1024**3)
+            logger.info(
+                f"Initialized MemoryMonitor with {max_memory_gb}GB limit (baseline: {self.baseline_memory_gb:.2f}GB)"
+            )
+        else:
+            self.baseline_memory_gb = 0.0
+            logger.info(f"Initialized MemoryMonitor with {max_memory_gb}GB limit")
 
     def get_memory_stats(self) -> MemoryStats:
         """Get current memory statistics.
@@ -81,23 +90,42 @@ class MemoryMonitor:
     def get_current_usage_gb(self) -> float:
         """Get current memory usage in GB.
 
+        For CUDA: returns GPU memory reserved
+        For MPS/CPU: returns incremental RAM used above baseline
+
         Returns:
             Current memory usage in GB
         """
         if self.device == "cuda" and torch.cuda.is_available():
-            return torch.cuda.memory_allocated() / (1024**3)
+            # Use reserved memory (not allocated) as it includes fragmentation
+            return torch.cuda.memory_reserved() / (1024**3)
         else:
+            # For MPS/CPU, measure incremental usage above baseline
             mem = psutil.virtual_memory()
-            return mem.used / (1024**3)
+            current_gb = mem.used / (1024**3)
+            incremental_gb = max(0, current_gb - self.baseline_memory_gb)
+            return incremental_gb
 
     def get_available_memory_gb(self) -> float:
         """Get available memory in GB.
 
         Returns:
-            Available memory in GB
+            Available memory in GB (relative to max_memory_gb limit)
         """
-        current_usage = self.get_current_usage_gb()
-        return self.max_memory_gb - current_usage
+        if self.device == "cuda" and torch.cuda.is_available():
+            # For CUDA, calculate based on actual GPU memory
+            gpu_total = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+            gpu_reserved = torch.cuda.memory_reserved() / (1024**3)
+
+            # Use the smaller of: GPU available or our configured limit
+            gpu_available = gpu_total - gpu_reserved
+            limit_available = self.max_memory_gb - gpu_reserved
+
+            return min(gpu_available, limit_available)
+        else:
+            # For MPS/CPU, use incremental usage
+            incremental_usage = self.get_current_usage_gb()
+            return self.max_memory_gb - incremental_usage
 
     def is_within_limit(self, buffer_gb: float = 2.0) -> bool:
         """Check if memory usage is within limit.
