@@ -131,17 +131,19 @@ class TextFormatter(LoggingMixin):
         self,
         token_ids: List[int],
         logical_layout: List[LogicalPosition],
-        prompt_length: int
+        prompt_length: int,
+        all_surviving_token_sets: Optional[Dict[int, List[tuple[int, float]]]] = None
     ) -> str:
-        """Extract clean text using only the first token from each parallel set.
+        """Extract clean text using the highest probability token from each parallel set.
 
         Args:
             token_ids: All generated token IDs
             logical_layout: Layout showing parallel token groups
             prompt_length: Number of tokens in the prompt
+            all_surviving_token_sets: Optional dict of surviving tokens with probabilities
 
         Returns:
-            Clean text without parallel alternatives
+            Clean text without parallel alternatives, using highest probability tokens
         """
         # Decode all tokens
         all_tokens = self.tokenizer.decode_tokens(token_ids)
@@ -150,19 +152,119 @@ class TextFormatter(LoggingMixin):
             # Can't extract from already-joined string, return as-is
             return all_tokens
 
-        # Build clean output using first token of each parallel set
+        # Build clean output using highest probability token of each parallel set
         clean_tokens = list(all_tokens[:prompt_length])  # Keep all prompt tokens
 
         for logical_pos in logical_layout:
             start = logical_pos.physical_start_idx
+            end = logical_pos.physical_end_idx + 1
+            step = logical_pos.logical_step
+
+            # Skip prompt positions
+            if end <= prompt_length:
+                continue
 
             if start >= len(all_tokens):
                 break
 
-            # Take only the first token from each parallel set
+            # If we have surviving token sets with probabilities, use the highest probability token
+            if all_surviving_token_sets and step in all_surviving_token_sets:
+                token_set = all_surviving_token_sets[step]
+                if token_set:
+                    # Find the highest probability token
+                    best_token_id, best_prob = max(token_set, key=lambda x: x[1])
+                    # Decode just this token
+                    decoded = self.tokenizer.decode_tokens([best_token_id])
+                    best_text = decoded[0] if isinstance(decoded, list) else decoded
+                    clean_tokens.append(best_text)
+                    continue
+
+            # Fallback: Take the first token from the physical range
             clean_tokens.append(all_tokens[start])
 
         return "".join(clean_tokens)
+
+    def format_without_ansi(
+        self,
+        token_ids: List[int],
+        logical_layout: List[LogicalPosition],
+        prompt_length: int,
+        all_original_token_sets: Optional[Dict[int, List[tuple[int, float]]]] = None,
+        all_surviving_token_sets: Optional[Dict[int, List[tuple[int, float]]]] = None
+    ) -> str:
+        """Format text showing parallel token alternatives WITHOUT ANSI color codes.
+
+        This is identical to format_with_parallel_indicators but without colors,
+        suitable for JSON output.
+
+        Args:
+            token_ids: All generated token IDs
+            logical_layout: Layout showing parallel token groups
+            prompt_length: Number of tokens in the prompt
+            all_original_token_sets: Optional dict of original token sets before pruning
+            all_surviving_token_sets: Optional dict of surviving tokens after pruning
+
+        Returns:
+            Formatted text with brackets showing parallel tokens (no ANSI codes)
+        """
+        # Decode prompt tokens
+        prompt_tokens = self.tokenizer.decode_tokens(token_ids[:prompt_length])
+        prompt_text = "".join(prompt_tokens) if isinstance(prompt_tokens, list) else prompt_tokens
+
+        # Build formatted output starting with prompt
+        result = prompt_text
+
+        # Track original parallel positions (positions that had multiple tokens)
+        original_parallel_positions = set()
+        if all_original_token_sets:
+            for step, tokens in all_original_token_sets.items():
+                if len(tokens) > 1:
+                    original_parallel_positions.add(step)
+
+        # Process generated tokens by logical step
+        for logical_idx, logical_pos in enumerate(logical_layout):
+            step = logical_pos.logical_step
+            start = logical_pos.physical_start_idx
+            end = logical_pos.physical_end_idx + 1
+
+            # Skip prompt tokens
+            if end <= prompt_length:
+                continue
+
+            # Adjust indices if they overlap with prompt
+            if start < prompt_length:
+                start = prompt_length
+
+            if start >= len(token_ids):
+                break
+
+            # Get tokens for this position
+            position_tokens = token_ids[start:end]
+
+            # Check if using surviving tokens (after pruning)
+            tokens_to_display = position_tokens
+            was_parallel = step in original_parallel_positions
+
+            if len(tokens_to_display) > 1:
+                # Multiple tokens - create bracket notation WITHOUT colors
+                token_texts = []
+                for token_id in tokens_to_display:
+                    decoded = self.tokenizer.decode_tokens([token_id])
+                    text = decoded[0] if isinstance(decoded, list) else decoded
+                    token_texts.append(text)
+
+                # Join with slashes and add brackets (no colors)
+                joined = "/".join(token_texts)
+                result += f"[{joined}]"
+
+            else:
+                # Single token (whether parallel or not)
+                token_id = tokens_to_display[0]
+                decoded = self.tokenizer.decode_tokens([token_id])
+                token_text = decoded[0] if isinstance(decoded, list) else decoded
+                result += token_text
+
+        return result
 
     def format_with_probabilities(
         self,

@@ -188,7 +188,7 @@ class GenerateTextUseCase(LoggingMixin):
         
         # Format with layout if formatter available
         if self.formatter:
-            # Use colored bracket formatting
+            # Use colored bracket formatting for terminal
             all_token_ids = final_state.input_ids[0].tolist()
             result.generated_text = self.formatter.format_with_parallel_indicators(
                 token_ids=all_token_ids,
@@ -198,14 +198,25 @@ class GenerateTextUseCase(LoggingMixin):
                 all_surviving_token_sets=result.all_surviving_token_sets
             )
 
-            # Extract clean text
+            # Generate format without ANSI codes for JSON output
+            result.formatted_text_no_ansi = self.formatter.format_without_ansi(
+                token_ids=all_token_ids,
+                logical_layout=result.logical_layout,
+                prompt_length=prompt_length,
+                all_original_token_sets=result.all_original_token_sets,
+                all_surviving_token_sets=result.all_surviving_token_sets
+            )
+
+            # Extract clean text using highest probability tokens
             result.clean_text = self.formatter.extract_clean_text(
                 token_ids=all_token_ids,
                 logical_layout=result.logical_layout,
-                prompt_length=prompt_length
+                prompt_length=prompt_length,
+                all_surviving_token_sets=result.all_surviving_token_sets
             )
         else:
             result.generated_text = prompt + result.raw_generated_text
+            result.formatted_text_no_ansi = prompt + result.raw_generated_text
             result.clean_text = result.raw_generated_text
         
         # Build visualization data if requested

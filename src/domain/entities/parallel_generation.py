@@ -155,12 +155,13 @@ class GenerationConfig:
             raise ValueError(f"max_cache_tokens must be positive, got {self.max_cache_tokens}")
 
 
-@dataclass 
+@dataclass
 class GenerationResult:
     """Result of parallel text generation."""
-    generated_text: str  # Formatted output text
+    generated_text: str  # Formatted output text with ANSI colors
     raw_generated_text: str  # Raw decoded text
-    clean_text: Optional[str] = None  # Clean text without formatting
+    clean_text: Optional[str] = None  # Clean text without formatting (highest prob tokens)
+    formatted_text_no_ansi: Optional[str] = None  # Formatted output without ANSI codes (for JSON)
     
     # Timing information
     generation_time: float = 0.0

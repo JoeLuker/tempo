@@ -134,7 +134,7 @@ class GenerationOrchestrator(LoggingMixin):
             # 4. Apply retroactive removal if enabled
             if config.use_retroactive_removal and logical_step > 0 and retroactive_remover:
                 removal_start = time.time()
-                
+
                 # Apply retroactive removal
                 surviving_history = self.removal_coordinator.apply_retroactive_removal(
                     retroactive_remover,
@@ -143,9 +143,12 @@ class GenerationOrchestrator(LoggingMixin):
                     logical_step
                 )
                 all_surviving_token_sets.update(surviving_history)
-                
+
                 removal_time += time.time() - removal_start
                 removal_steps += 1
+            else:
+                # No pruning: surviving tokens = original tokens
+                all_surviving_token_sets[logical_step] = all_original_token_sets[logical_step]
             
             # Get final token IDs
             token_ids = [t.id for t in token_set.tokens]
