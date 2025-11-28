@@ -97,13 +97,15 @@ frontend/node_modules/.vite
 
 tempo-profile.prof
 
-# Node modules at root (from testing)
-node_modules/
-
 # Test reports
 *_TEST_REPORT.md
 QUICK_TEST_GUIDE.md
-tests/
 
 # Playground temporary files
-playground_temp/
+playground/temp/
+
+# Images (generated artifacts)
+images/
+
+# PNG screenshots (generated artifacts)
+*.png

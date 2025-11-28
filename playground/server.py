@@ -12,8 +12,8 @@ from typing import Optional, List, Dict
 import sys
 import os
 
-# Add src to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
+# Add parent directory to path for src imports
+sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from src.experiments.experiment_runner import ExperimentRunner
 
@@ -220,7 +220,7 @@ async def generate(request: GenerationRequest):
             'show_token_ids': request.show_token_ids,
 
             # Internal
-            'output_dir': './playground_temp',
+            'output_dir': os.path.join(os.path.dirname(__file__), 'temp'),
             'debug_mode': False,
         }
 
@@ -249,7 +249,7 @@ async def generate(request: GenerationRequest):
 @app.get("/")
 async def root():
     """Serve the playground UI."""
-    return FileResponse('playground.html')
+    return FileResponse(os.path.join(os.path.dirname(__file__), 'index.html'))
 
 
 if __name__ == "__main__":
@@ -271,11 +271,11 @@ if __name__ == "__main__":
     if dev_mode:
         # Hot reload mode - watches for file changes
         uvicorn.run(
-            "playground_server:app",
+            "playground.server:app",
             host="0.0.0.0",
             port=8765,
             reload=True,
-            reload_dirs=[".", "src"],
+            reload_dirs=[os.path.dirname(os.path.dirname(__file__))],
             reload_includes=["*.py"]
         )
     else:

@@ -45,35 +45,23 @@ python3 run_tempo.py --prompt "Your prompt here" --selection-threshold 0.1 --max
 
 ```bash
 # Run all tests
-python3 run_tests.py
+pytest tests/
 
-# Run unit tests only
-python3 run_tests.py --unit-only
-
-# Run integration tests only
-python3 run_tests.py --integration-only
-
-# Run tests with coverage report
-python3 run_tests.py --cov
+# Run with coverage
+pytest tests/ --cov=src
 ```
 
 ### Running the Web Interface
 
 ```bash
-# Start the FastAPI backend server
-uvicorn api:app --reload --port 8000
+# Start the playground server (backend)
+python3 playground/server.py
 
-# In a separate terminal, navigate to the frontend directory
-cd frontend
-
-# Install frontend dependencies (if not done already)
-npm install
-
-# Start the frontend development server
-npm run dev
+# In a separate terminal, start the frontend
+cd frontend && npm install && npm run dev
 ```
 
-Access the UI at `http://localhost:5174` and the API documentation at `http://localhost:8000/docs`.
+Access the UI at `http://localhost:5173`. The frontend proxies API requests to the playground server at `http://localhost:8765`.
 
 ### Frontend Features
 
@@ -107,13 +95,10 @@ TEMPO's architecture is centered around several key components:
 
 ### Backend
 - `src/modeling/model_wrapper.py`: Wraps the underlying LLM model for TEMPO's requirements.
-- `src/generation/parallel_generator.py`: Core implementation of TEMPO's parallel generation approach.
-- `src/generation/rope_modifier.py`: Handles modifications to the model's Rotary Position Embeddings.
-- `src/generation/token_generator.py`: Manages token generation and state tracking.
-- `src/pruning/retroactive_pruner.py`: Implements attention-based pruning of parallel token sets.
-- `src/generation/attention_manager.py`: Controls attention visibility between parallel tokens.
-- `src/visualization/`: Contains tools for visualizing token probabilities and positions.
-- `api.py`: FastAPI implementation with clean text extraction for web interface.
+- `src/experiments/experiment_runner.py`: Core experiment execution logic.
+- `src/infrastructure/generation/`: Token generation strategies and RoPE modifications.
+- `src/infrastructure/selection/`: Token selection strategies.
+- `playground/server.py`: FastAPI server for interactive playground.
 - `run_tempo.py`: Command-line interface for experiments.
 
 ### Frontend
@@ -139,49 +124,40 @@ tempo/
 ├── src/                          # Core application code
 │   ├── application/             # Application services and use cases
 │   ├── domain/                  # Domain models and business logic
-│   ├── generation/              # Token generation, RoPE, attention
+│   ├── experiments/             # Experiment runner and analyzers
 │   ├── infrastructure/          # External integrations
 │   ├── modeling/                # Model wrappers and utilities
-│   └── pruning/                 # Pruning strategies
-├── docs/                         # Comprehensive documentation
-│   ├── algorithm.md             # TEMPO algorithm explanation
-│   ├── architecture.md          # System architecture details
-│   ├── configuration-guide.md   # Configuration options
-│   ├── development.md           # Development guidelines
-│   ├── quickstart.md            # Getting started guide
-│   ├── mechanistic_interpretability.md  # Analysis tools docs
-│   ├── isolation_analysis_findings.md   # Isolation experiments
-│   ├── ddd_test_results.md      # DDD refactor test results
-│   └── ml_research_profile.md   # Research contribution highlights
-├── examples/                     # Usage examples
-│   ├── configs/                 # Example YAML configurations
-│   ├── basic_generation.py      # Simple generation example
-│   ├── advanced_pruning.py      # Pruning features example
-│   └── api_client.py            # API usage example
-├── experiments/                  # Research experiments
+│   └── utils/                   # Utility modules
+├── scripts/                      # Utility scripts
+│   ├── check_requirements.py    # Dependency checker
+│   ├── setup_models.py          # Model setup utility
+│   ├── generate_config.py       # Config generator
+│   └── create_generation_viz.py # Visualization tool
+├── playground/                   # Standalone playground
+│   ├── server.py                # FastAPI playground server
+│   └── index.html               # Playground UI
+├── frontend/                     # Web UI (SvelteKit)
+├── experiments/                  # Research experiments and demos
 │   ├── analysis/                # Analysis results
 │   ├── results/                 # Experimental outputs
-│   ├── run_attention_analysis.py  # Attention pattern analysis
-│   └── run_deep_analysis.py     # Deep mechanistic analysis
+│   └── demo_*.py                # Demo scripts
+├── examples/                     # Usage examples
+│   ├── configs/                 # Example configurations
+│   └── *.py                     # Example scripts
+├── docs/                         # Documentation
 ├── benchmark/                    # Performance benchmarking
-├── frontend/                     # Web UI (SvelteKit)
-├── run_tempo.py                 # Main CLI entry point
-├── playground_server.py         # Interactive playground server
-├── playground.html              # Standalone playground UI
-├── create_generation_viz.py     # Visualization tool
-├── setup_models.py              # Model setup utility
-├── check_requirements.py        # Dependency checker
-└── generate_config.py           # Config generator utility
+├── tests/                        # Test suite
+└── run_tempo.py                 # Main CLI entry point
 ```
 
 ## Recent Updates
 
-### Repository Cleanup (Latest)
-- Organized documentation: Moved analysis docs to `docs/` folder
-- Consolidated config files: Moved examples to `examples/configs/`
-- Cleaned up temporary directories: Removed old output, logs, and cache dirs
-- Moved analysis scripts to `experiments/` for better organization
-- Removed obsolete files and duplicate documentation
+### Project Restructure (Latest)
+- Created `scripts/` directory: Consolidated utility scripts (check_requirements, setup_models, generate_config, create_generation_viz)
+- Created `playground/` directory: Moved playground server and HTML into dedicated folder
+- Removed scattered artifacts: Deleted PNG screenshots, temp directories, duplicate STRUCTURE.md
+- Cleaned gitignore: Removed `tests/` from ignore, added proper patterns for generated files
+- Fixed path references in playground server for new location
 
 ### Frontend Improvements
 - Fixed Melt UI preprocessor configuration issue that was preventing all interactions
