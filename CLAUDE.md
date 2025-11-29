@@ -125,6 +125,7 @@ tempo/
 │   ├── application/             # Application services and use cases
 │   ├── domain/                  # Domain models and business logic
 │   ├── experiments/             # Experiment runner and analyzers
+│   ├── hebbian/                 # Hebbian consolidation experiment
 │   ├── infrastructure/          # External integrations
 │   ├── modeling/                # Model wrappers and utilities
 │   └── utils/                   # Utility modules
@@ -152,7 +153,21 @@ tempo/
 
 ## Recent Updates
 
-### Project Restructure (Latest)
+### Hebbian Consolidation Experiment (Latest)
+Added experimental Hebbian learning system in `src/hebbian/`:
+- `minimal_engine.py`: Direct inference engine with Hebbian weight updates
+- Tokens leaving context window apply rank-one weight updates: ΔW = α × importance × outer(output, input)
+- Eviction based on attention importance, not recency
+- Sparse position tracking (evicted positions leave gaps, like RoPE works in TEMPO)
+
+Running experiments:
+```bash
+python3 experiments/hebbian/test_minimal.py
+```
+
+Initial results show -0.48% perplexity improvement with Hebbian consolidation.
+
+### Project Restructure
 - Created `scripts/` directory: Consolidated utility scripts (check_requirements, setup_models, generate_config, create_generation_viz)
 - Created `playground/` directory: Moved playground server and HTML into dedicated folder
 - Removed scattered artifacts: Deleted PNG screenshots, temp directories, duplicate STRUCTURE.md
