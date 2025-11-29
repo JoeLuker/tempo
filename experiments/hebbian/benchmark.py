@@ -2,10 +2,10 @@
 """
 Rigorous benchmark harness for Hebbian consolidation experiments.
 
-Tests three key questions:
-1. Does improvement compound over long generations?
-2. What's the optimal update formula?
-3. Does learning persist (in-context learning)?
+Uses functional modification vectors for efficient testing:
+- Load model ONCE
+- Run all trials by clearing/applying modifications
+- Zero-cost reset between trials
 """
 
 import torch
@@ -13,18 +13,56 @@ import gc
 import json
 import logging
 import sys
+import psutil
 from pathlib import Path
 from dataclasses import dataclass, field, asdict
 from typing import Optional, Callable
 from datetime import datetime
 import statistics
+from scipy import stats
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from transformers import AutoModelForCausalLM, AutoTokenizer
+from src.hebbian.config import HebbianConfig, BenchmarkConfig, BASELINE, HEBBIAN
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# Setup logging to both console and file
+LOG_DIR = Path(__file__).parent / "logs"
+LOG_DIR.mkdir(exist_ok=True)
+LOG_FILE = LOG_DIR / f"benchmark_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+
+# Configure root logger
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler(LOG_FILE),
+        logging.StreamHandler(sys.stdout),
+    ]
+)
 logger = logging.getLogger(__name__)
+logger.info(f"Logging to: {LOG_FILE}")
+
+
+def check_memory(min_gb: float = 8.0) -> bool:
+    """Check if enough memory is available. Returns False and logs warning if not."""
+    available_gb = psutil.virtual_memory().available / (1024**3)
+    percent_used = psutil.virtual_memory().percent
+
+    if available_gb < min_gb:
+        logger.error(f"INSUFFICIENT MEMORY: {available_gb:.1f}GB available, need {min_gb:.1f}GB")
+        logger.error(f"System memory {percent_used:.0f}% used. Free up memory before running.")
+        return False
+
+    logger.info(f"Memory OK: {available_gb:.1f}GB available ({100-percent_used:.0f}% free)")
+    return True
+
+
+def log_memory(prefix: str = ""):
+    """Log current memory state."""
+    available_gb = psutil.virtual_memory().available / (1024**3)
+    percent_used = psutil.virtual_memory().percent
+    logger.debug(f"{prefix} Memory: {available_gb:.1f}GB available, {percent_used:.0f}% used")
 
 
 @dataclass
@@ -36,7 +74,7 @@ class ExperimentResult:
     perplexity_curve: list = field(default_factory=list)
     final_perplexity: float = 0.0
     total_evictions: int = 0
-    total_updates: int = 0
+    total_modifications: int = 0
     generated_text: str = ""
     metadata: dict = field(default_factory=dict)
 
@@ -49,538 +87,396 @@ class AggregateResult:
     n_seeds: int
     mean_perplexity: float
     std_perplexity: float
-    ci_lower: float  # 95% CI
+    ci_lower: float
     ci_upper: float
     mean_evictions: float
-    mean_updates: float
+    mean_modifications: float
+    p_value: Optional[float] = None  # vs baseline
 
 
-def load_model(model_name: str, device: str):
-    """Load model with memory cleanup."""
-    gc.collect()
-    if device == "mps":
-        torch.mps.empty_cache()
-    elif device == "cuda":
-        torch.cuda.empty_cache()
-
-    return AutoModelForCausalLM.from_pretrained(
-        model_name,
-        trust_remote_code=True,
-        torch_dtype=torch.float16 if device != 'cpu' else torch.float32,
-    ).to(device)
-
-
-def compute_confidence_interval(values: list, confidence: float = 0.95) -> tuple:
-    """Compute mean and 95% confidence interval."""
+def compute_stats(values: list) -> tuple[float, float, float, float]:
+    """Compute mean, std, and 95% CI."""
     n = len(values)
     if n < 2:
         mean = values[0] if values else 0
-        return mean, mean, mean
+        return mean, 0, mean, mean
 
     mean = statistics.mean(values)
     std = statistics.stdev(values)
-    # t-value for 95% CI (approximation for small samples)
-    t_value = 2.0 if n < 30 else 1.96
-    margin = t_value * std / (n ** 0.5)
+    sem = std / (n ** 0.5)
 
-    return mean, mean - margin, mean + margin
+    # t-distribution for small samples
+    t_crit = stats.t.ppf(0.975, df=n-1)
+    margin = t_crit * sem
+
+    return mean, std, mean - margin, mean + margin
+
+
+def compute_p_value(group1: list, group2: list) -> float:
+    """Compute two-tailed t-test p-value."""
+    if len(group1) < 2 or len(group2) < 2:
+        return 1.0
+    _, p = stats.ttest_ind(group1, group2)
+    return p
 
 
 class HebbianBenchmark:
-    """Benchmark harness for Hebbian experiments."""
+    """Efficient benchmark using functional modifications."""
 
     def __init__(
         self,
-        model_name: str = "deepcogito/cogito-v1-preview-llama-3B",
+        config: BenchmarkConfig = None,
         device: str = None,
-        n_seeds: int = 5,
-        output_dir: str = "experiments/hebbian/results",
+        # Legacy params for backward compatibility
+        model_name: str = None,
+        n_seeds: int = None,
+        output_dir: str = None,
     ):
-        self.model_name = model_name
+        # Use config or build from legacy params
+        if config is None:
+            defaults = BenchmarkConfig()
+            config = BenchmarkConfig(
+                model_name=model_name or defaults.model_name,
+                n_seeds=n_seeds or defaults.n_seeds,
+                output_dir=output_dir or defaults.output_dir,
+            )
+
+        self.benchmark_config = config
+        self.model_name = config.model_name
         self.device = device or (
             "mps" if torch.backends.mps.is_available() else
             "cuda" if torch.cuda.is_available() else "cpu"
         )
-        self.n_seeds = n_seeds
-        self.output_dir = Path(output_dir)
+        self.n_seeds = config.n_seeds
+        self.output_dir = Path(config.output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
-        logger.info(f"Benchmark initialized: device={self.device}, seeds={n_seeds}")
+        # Check memory before loading model (need ~8GB for 3B model in fp16)
+        logger.debug("CHECKPOINT: About to check memory before model load")
+        if not check_memory(min_gb=config.min_memory_gb):
+            raise MemoryError("Insufficient memory to load model. Free up memory first.")
 
-        # Load tokenizer once
-        self.tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+        logger.info(f"Loading model once: {self.model_name}")
+        logger.debug("CHECKPOINT: Loading tokenizer")
 
+        # Load model and tokenizer ONCE
+        self.tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
+        logger.debug("CHECKPOINT: Tokenizer loaded, clearing cache before model load")
+
+        gc.collect()
+        if self.device == "mps":
+            torch.mps.empty_cache()
+        log_memory("Before model load")
+
+        logger.debug("CHECKPOINT: Loading model weights")
+        self.model = AutoModelForCausalLM.from_pretrained(
+            self.model_name,
+            trust_remote_code=True,
+            torch_dtype=torch.float16 if self.device != 'cpu' else torch.float32,
+        )
+        logger.debug("CHECKPOINT: Model loaded to CPU, moving to device")
+        log_memory("After model load, before .to(device)")
+
+        self.model = self.model.to(self.device)
+        logger.debug(f"CHECKPOINT: Model moved to {self.device}")
+        log_memory("After model.to(device)")
+
+        logger.info(f"Benchmark ready: device={self.device}, seeds={n_seeds}")
         self.results: list[ExperimentResult] = []
 
-    def _run_single(
+    def _run_trial(
         self,
+        engine,
         experiment: str,
         variant: str,
         seed: int,
         prompt: str,
         max_tokens: int,
-        window_size: int,
-        update_scale: float,
-        update_fn: Optional[Callable] = None,
     ) -> ExperimentResult:
-        """Run a single experiment trial."""
-        from src.hebbian.minimal_engine import MinimalHebbianEngine
+        """Run a single trial."""
+        logger.debug(f"CHECKPOINT: Starting trial {experiment}/{variant}/seed={seed}")
+        log_memory(f"Trial start")
 
-        # Set seed for reproducibility
         torch.manual_seed(seed)
 
-        # Fresh model for each trial
-        model = load_model(self.model_name, self.device)
+        # Clear any previous modifications for clean trial
+        logger.debug("CHECKPOINT: Clearing modifications")
+        engine.clear_modifications()
+        log_memory("After clear_modifications")
 
-        engine = MinimalHebbianEngine(
-            model=model,
-            tokenizer=self.tokenizer,
-            window_size=window_size,
-            update_scale=update_scale,
-            device=self.device,
-        )
-
-        # Override update function if provided
-        if update_fn is not None:
-            engine._apply_hebbian = lambda *args, **kwargs: update_fn(engine, *args, **kwargs)
-
-        result = engine.generate(
-            prompt=prompt,
-            max_new_tokens=max_tokens,
-            temperature=0.0,  # Deterministic for reproducibility
-        )
+        logger.debug(f"CHECKPOINT: Starting generation, max_tokens={max_tokens}")
+        try:
+            result = engine.generate(
+                prompt=prompt,
+                max_new_tokens=max_tokens,
+                temperature=0.0,
+            )
+            logger.debug("CHECKPOINT: Generation complete")
+        except Exception as e:
+            logger.error(f"CHECKPOINT: Generation FAILED: {type(e).__name__}: {e}")
+            log_memory("At failure")
+            raise
 
         perp_curve = result['perplexity_curve']
         final_perp = statistics.mean(perp_curve[-10:]) if len(perp_curve) >= 10 else (
             statistics.mean(perp_curve) if perp_curve else 0
         )
 
-        # Cleanup
-        del model, engine
+        # Clear memory between trials
         gc.collect()
+        if self.device == "mps":
+            torch.mps.empty_cache()
 
+        # Only store final perplexity, not full curve (memory savings)
         return ExperimentResult(
             experiment=experiment,
             variant=variant,
             seed=seed,
-            perplexity_curve=perp_curve,
+            perplexity_curve=[],  # Don't store full curve
             final_perplexity=final_perp,
             total_evictions=len(result['evictions']),
-            total_updates=result['total_updates'],
-            generated_text=result['text'][:200],
+            total_modifications=result['total_modifications'],
+            generated_text=result['text'][:100],  # Shorter
         )
-
-    def experiment_1_compounding(self) -> list[AggregateResult]:
-        """
-        Experiment 1: Does improvement compound over long generations?
-
-        Generate increasingly long sequences, measure if Hebbian advantage grows.
-        """
-        logger.info("=" * 60)
-        logger.info("EXPERIMENT 1: Compounding over length")
-        logger.info("=" * 60)
-
-        prompt = "In the beginning, there was"
-        lengths = [50, 100, 200, 400]
-        variants = [
-            ("baseline", 0.0),
-            ("hebbian", 0.01),
-        ]
-
-        aggregates = []
-
-        for max_tokens in lengths:
-            for variant_name, scale in variants:
-                logger.info(f"Running: length={max_tokens}, variant={variant_name}")
-
-                trial_results = []
-                for seed in range(self.n_seeds):
-                    result = self._run_single(
-                        experiment="compounding",
-                        variant=f"{variant_name}_len{max_tokens}",
-                        seed=seed,
-                        prompt=prompt,
-                        max_tokens=max_tokens,
-                        window_size=32,
-                        update_scale=scale,
-                    )
-                    trial_results.append(result)
-                    self.results.append(result)
-
-                # Aggregate
-                perps = [r.final_perplexity for r in trial_results]
-                mean, ci_low, ci_high = compute_confidence_interval(perps)
-
-                agg = AggregateResult(
-                    experiment="compounding",
-                    variant=f"{variant_name}_len{max_tokens}",
-                    n_seeds=self.n_seeds,
-                    mean_perplexity=mean,
-                    std_perplexity=statistics.stdev(perps) if len(perps) > 1 else 0,
-                    ci_lower=ci_low,
-                    ci_upper=ci_high,
-                    mean_evictions=statistics.mean([r.total_evictions for r in trial_results]),
-                    mean_updates=statistics.mean([r.total_updates for r in trial_results]),
-                )
-                aggregates.append(agg)
-
-                logger.info(f"  Perplexity: {mean:.3f} [{ci_low:.3f}, {ci_high:.3f}]")
-
-        return aggregates
 
     def experiment_2_update_formulas(self) -> list[AggregateResult]:
         """
-        Experiment 2: What's the optimal update formula?
+        Experiment 2: Compare update formulas.
 
-        Test different Hebbian update variants.
+        Tests: baseline (no mods), k_only
+        Uses functional engine for efficient comparison.
         """
+        from src.hebbian.functional_engine import FunctionalHebbianEngine
+
         logger.info("=" * 60)
-        logger.info("EXPERIMENT 2: Update formula variants")
+        logger.info("EXPERIMENT 2: Update formula comparison")
         logger.info("=" * 60)
 
         prompt = "The quick brown fox jumps over"
 
-        # Define update formula variants
-        def standard_update(engine, layer_idx, key, value, input_hidden, importance):
-            """Standard: outer(output, input), normalized."""
-            layer = engine.layers[layer_idx]
-            with torch.no_grad():
-                for proj, output in [('k_proj', key), ('v_proj', value)]:
-                    W = layer[proj].weight
-                    out = output.to(W.device, W.dtype)
-                    inp = input_hidden.to(W.device, W.dtype)
-                    if out.size(0) != W.size(0):
-                        out = out[:W.size(0)]
-                    if inp.size(0) != W.size(1):
-                        inp = inp[:W.size(1)]
-                    update = torch.outer(out, inp)
-                    u_norm = update.norm()
-                    if u_norm > 0:
-                        update = update / u_norm
-                    W.add_(update, alpha=engine.update_scale * importance)
-            engine.total_updates += 1
+        # Create engine once, reuse for all trials
+        engine = FunctionalHebbianEngine(
+            model=self.model,
+            tokenizer=self.tokenizer,
+            config=HEBBIAN,
+            device=self.device,
+        )
 
-        def k_only_update(engine, layer_idx, key, value, input_hidden, importance):
-            """Only update K projection, not V."""
-            layer = engine.layers[layer_idx]
-            with torch.no_grad():
-                W = layer['k_proj'].weight
-                out = key.to(W.device, W.dtype)
-                inp = input_hidden.to(W.device, W.dtype)
-                if out.size(0) != W.size(0):
-                    out = out[:W.size(0)]
-                if inp.size(0) != W.size(1):
-                    inp = inp[:W.size(1)]
-                update = torch.outer(out, inp)
-                u_norm = update.norm()
-                if u_norm > 0:
-                    update = update / u_norm
-                W.add_(update, alpha=engine.update_scale * importance)
-            engine.total_updates += 1
+        # Use config-defined variants
+        variants = self.benchmark_config.variants
 
-        def v_only_update(engine, layer_idx, key, value, input_hidden, importance):
-            """Only update V projection, not K."""
-            layer = engine.layers[layer_idx]
-            with torch.no_grad():
-                W = layer['v_proj'].weight
-                out = value.to(W.device, W.dtype)
-                inp = input_hidden.to(W.device, W.dtype)
-                if out.size(0) != W.size(0):
-                    out = out[:W.size(0)]
-                if inp.size(0) != W.size(1):
-                    inp = inp[:W.size(1)]
-                update = torch.outer(out, inp)
-                u_norm = update.norm()
-                if u_norm > 0:
-                    update = update / u_norm
-                W.add_(update, alpha=engine.update_scale * importance)
-            engine.total_updates += 1
-
-        def importance_squared_update(engine, layer_idx, key, value, input_hidden, importance):
-            """Weight by importance^2 for stronger effect on high-attention tokens."""
-            layer = engine.layers[layer_idx]
-            with torch.no_grad():
-                for proj, output in [('k_proj', key), ('v_proj', value)]:
-                    W = layer[proj].weight
-                    out = output.to(W.device, W.dtype)
-                    inp = input_hidden.to(W.device, W.dtype)
-                    if out.size(0) != W.size(0):
-                        out = out[:W.size(0)]
-                    if inp.size(0) != W.size(1):
-                        inp = inp[:W.size(1)]
-                    update = torch.outer(out, inp)
-                    u_norm = update.norm()
-                    if u_norm > 0:
-                        update = update / u_norm
-                    # Square the importance for stronger weighting
-                    W.add_(update, alpha=engine.update_scale * (importance ** 2))
-            engine.total_updates += 1
-
-        variants = [
-            ("baseline", 0.0, None),
-            ("standard", 0.01, standard_update),
-            ("k_only", 0.01, k_only_update),
-            ("v_only", 0.01, v_only_update),
-            ("importance_sq", 0.01, importance_squared_update),
-        ]
-
+        all_results = {}
         aggregates = []
 
-        for variant_name, scale, update_fn in variants:
-            logger.info(f"Running variant: {variant_name}")
+        for variant_name, scale in variants:
+            logger.info(f"Running variant: {variant_name} (n={self.n_seeds})")
+            engine.update_scale = scale
 
             trial_results = []
             for seed in range(self.n_seeds):
-                result = self._run_single(
+                result = self._run_trial(
+                    engine=engine,
                     experiment="update_formula",
                     variant=variant_name,
                     seed=seed,
                     prompt=prompt,
                     max_tokens=100,
-                    window_size=32,
-                    update_scale=scale,
-                    update_fn=update_fn,
                 )
                 trial_results.append(result)
                 self.results.append(result)
 
-            perps = [r.final_perplexity for r in trial_results]
-            mean, ci_low, ci_high = compute_confidence_interval(perps)
+                if (seed + 1) % 5 == 0:
+                    logger.info(f"  Completed {seed + 1}/{self.n_seeds} seeds")
 
-            agg = AggregateResult(
+            all_results[variant_name] = trial_results
+            perps = [r.final_perplexity for r in trial_results]
+            mean, std, ci_low, ci_high = compute_stats(perps)
+
+            aggregates.append(AggregateResult(
                 experiment="update_formula",
                 variant=variant_name,
                 n_seeds=self.n_seeds,
                 mean_perplexity=mean,
-                std_perplexity=statistics.stdev(perps) if len(perps) > 1 else 0,
+                std_perplexity=std,
                 ci_lower=ci_low,
                 ci_upper=ci_high,
                 mean_evictions=statistics.mean([r.total_evictions for r in trial_results]),
-                mean_updates=statistics.mean([r.total_updates for r in trial_results]),
-            )
-            aggregates.append(agg)
+                mean_modifications=statistics.mean([r.total_modifications for r in trial_results]),
+            ))
 
-            logger.info(f"  Perplexity: {mean:.3f} [{ci_low:.3f}, {ci_high:.3f}]")
+            logger.info(f"  Mean: {mean:.4f} ± {std:.4f} [{ci_low:.4f}, {ci_high:.4f}]")
+
+        # Compute p-values vs baseline
+        baseline_perps = [r.final_perplexity for r in all_results["baseline"]]
+        for agg in aggregates:
+            if agg.variant != "baseline":
+                variant_perps = [r.final_perplexity for r in all_results[agg.variant]]
+                agg.p_value = compute_p_value(baseline_perps, variant_perps)
+                logger.info(f"  {agg.variant} vs baseline: p={agg.p_value:.4f}")
 
         return aggregates
 
-    def experiment_3_persistent_learning(self) -> list[AggregateResult]:
+    def experiment_1_compounding(self) -> list[AggregateResult]:
         """
-        Experiment 3: Does learning persist?
-
-        Train on a pattern, evict it, then test recall.
+        Experiment 1: Does improvement compound over length?
         """
+        from src.hebbian.functional_engine import FunctionalHebbianEngine
+
         logger.info("=" * 60)
-        logger.info("EXPERIMENT 3: Persistent learning")
+        logger.info("EXPERIMENT 1: Compounding over length")
         logger.info("=" * 60)
 
-        from src.hebbian.minimal_engine import MinimalHebbianEngine
+        prompt = "In the beginning, there was"
+        lengths = [50, 100, 200]
 
-        # Pattern to learn
-        pattern = "ALPHA BETA GAMMA " * 10  # Repeat pattern
-        test_prompt = "The sequence continues: ALPHA"  # Should trigger recall
+        engine = FunctionalHebbianEngine(
+            model=self.model,
+            tokenizer=self.tokenizer,
+            config=HEBBIAN,
+            device=self.device,
+        )
 
-        variants = [
-            ("baseline", 0.0),
-            ("hebbian_low", 0.01),
-            ("hebbian_high", 0.1),
-        ]
-
+        all_results = {}
         aggregates = []
 
-        for variant_name, scale in variants:
-            logger.info(f"Running variant: {variant_name}")
+        for max_tokens in lengths:
+            for variant_name, scale in self.benchmark_config.variants:
+                key = f"{variant_name}_len{max_tokens}"
+                logger.info(f"Running: {key}")
+                engine.update_scale = scale
 
-            trial_results = []
-            for seed in range(self.n_seeds):
-                torch.manual_seed(seed)
+                trial_results = []
+                for seed in range(self.n_seeds):
+                    result = self._run_trial(
+                        engine=engine,
+                        experiment="compounding",
+                        variant=key,
+                        seed=seed,
+                        prompt=prompt,
+                        max_tokens=max_tokens,
+                    )
+                    trial_results.append(result)
+                    self.results.append(result)
 
-                # Fresh model
-                model = load_model(self.model_name, self.device)
+                all_results[key] = trial_results
+                perps = [r.final_perplexity for r in trial_results]
+                mean, std, ci_low, ci_high = compute_stats(perps)
 
-                engine = MinimalHebbianEngine(
-                    model=model,
-                    tokenizer=self.tokenizer,
-                    window_size=24,  # Small window to force eviction
-                    update_scale=scale,
-                    device=self.device,
+                aggregates.append(AggregateResult(
+                    experiment="compounding",
+                    variant=key,
+                    n_seeds=self.n_seeds,
+                    mean_perplexity=mean,
+                    std_perplexity=std,
+                    ci_lower=ci_low,
+                    ci_upper=ci_high,
+                    mean_evictions=statistics.mean([r.total_evictions for r in trial_results]),
+                    mean_modifications=statistics.mean([r.total_modifications for r in trial_results]),
+                ))
+
+        # Compute p-values
+        for length in lengths:
+            baseline_key = f"baseline_len{length}"
+            hebbian_key = f"hebbian_len{length}"
+            if baseline_key in all_results and hebbian_key in all_results:
+                p = compute_p_value(
+                    [r.final_perplexity for r in all_results[baseline_key]],
+                    [r.final_perplexity for r in all_results[hebbian_key]],
                 )
-
-                # Phase 1: Learn the pattern (generates and evicts)
-                learn_result = engine.generate(
-                    prompt=pattern,
-                    max_new_tokens=30,
-                    temperature=0.0,
-                )
-
-                # Phase 2: Test recall with new prompt
-                # Reset context but keep weight updates
-                engine.slots = {}
-                engine.kv_cache = {i: {} for i in range(engine.num_layers)}
-                engine.input_cache = {}
-                engine.next_pos = 0
-                engine.protected = set()
-
-                test_result = engine.generate(
-                    prompt=test_prompt,
-                    max_new_tokens=20,
-                    temperature=0.0,
-                )
-
-                # Check if it continues the pattern
-                generated = test_result['text']
-                # Count pattern matches (BETA, GAMMA after ALPHA)
-                pattern_score = 0
-                if "BETA" in generated:
-                    pattern_score += 1
-                if "GAMMA" in generated:
-                    pattern_score += 1
-                if "ALPHA" in generated:
-                    pattern_score += 1
-
-                result = ExperimentResult(
-                    experiment="persistent_learning",
-                    variant=variant_name,
-                    seed=seed,
-                    perplexity_curve=test_result['perplexity_curve'],
-                    final_perplexity=statistics.mean(test_result['perplexity_curve']) if test_result['perplexity_curve'] else 0,
-                    total_evictions=len(learn_result['evictions']),
-                    total_updates=learn_result['total_updates'],
-                    generated_text=generated,
-                    metadata={"pattern_score": pattern_score},
-                )
-                trial_results.append(result)
-                self.results.append(result)
-
-                del model, engine
-                gc.collect()
-
-            perps = [r.final_perplexity for r in trial_results]
-            scores = [r.metadata.get("pattern_score", 0) for r in trial_results]
-            mean, ci_low, ci_high = compute_confidence_interval(perps)
-
-            agg = AggregateResult(
-                experiment="persistent_learning",
-                variant=variant_name,
-                n_seeds=self.n_seeds,
-                mean_perplexity=mean,
-                std_perplexity=statistics.stdev(perps) if len(perps) > 1 else 0,
-                ci_lower=ci_low,
-                ci_upper=ci_high,
-                mean_evictions=statistics.mean([r.total_evictions for r in trial_results]),
-                mean_updates=statistics.mean([r.total_updates for r in trial_results]),
-            )
-            aggregates.append(agg)
-
-            mean_score = statistics.mean(scores)
-            logger.info(f"  Perplexity: {mean:.3f}, Pattern score: {mean_score:.2f}/3")
+                for agg in aggregates:
+                    if agg.variant == hebbian_key:
+                        agg.p_value = p
+                logger.info(f"  Length {length}: p={p:.4f}")
 
         return aggregates
 
     def run_all(self) -> dict:
-        """Run all experiments and save results."""
+        """Run all experiments."""
         start_time = datetime.now()
-
         all_aggregates = {}
 
-        # Run experiments
-        all_aggregates["compounding"] = self.experiment_1_compounding()
         all_aggregates["update_formula"] = self.experiment_2_update_formulas()
-        all_aggregates["persistent_learning"] = self.experiment_3_persistent_learning()
+        all_aggregates["compounding"] = self.experiment_1_compounding()
 
         # Save results
         timestamp = start_time.strftime("%Y%m%d_%H%M%S")
 
-        # Save raw results
-        raw_path = self.output_dir / f"raw_results_{timestamp}.json"
+        raw_path = self.output_dir / f"raw_{timestamp}.json"
         with open(raw_path, "w") as f:
             json.dump([asdict(r) for r in self.results], f, indent=2)
 
-        # Save aggregates
-        agg_path = self.output_dir / f"aggregates_{timestamp}.json"
-        agg_data = {
-            exp: [asdict(a) for a in aggs]
-            for exp, aggs in all_aggregates.items()
-        }
+        agg_path = self.output_dir / f"agg_{timestamp}.json"
         with open(agg_path, "w") as f:
-            json.dump(agg_data, f, indent=2)
+            json.dump({k: [asdict(a) for a in v] for k, v in all_aggregates.items()}, f, indent=2)
 
-        # Print summary
         duration = datetime.now() - start_time
-        logger.info("=" * 60)
-        logger.info("BENCHMARK COMPLETE")
-        logger.info(f"Duration: {duration}")
-        logger.info(f"Results saved to: {self.output_dir}")
-        logger.info("=" * 60)
+        logger.info(f"Complete in {duration}. Results: {self.output_dir}")
 
         self._print_summary(all_aggregates)
-
         return all_aggregates
 
     def _print_summary(self, aggregates: dict):
-        """Print a human-readable summary."""
+        """Print summary with p-values."""
         print("\n" + "=" * 70)
-        print("SUMMARY")
+        print("RESULTS SUMMARY")
         print("=" * 70)
 
-        # Experiment 1: Compounding
-        print("\n1. COMPOUNDING OVER LENGTH")
-        print("-" * 40)
-        exp1 = aggregates.get("compounding", [])
-        for length in [50, 100, 200, 400]:
-            baseline = next((a for a in exp1 if a.variant == f"baseline_len{length}"), None)
-            hebbian = next((a for a in exp1 if a.variant == f"hebbian_len{length}"), None)
-            if baseline and hebbian:
-                diff = ((hebbian.mean_perplexity - baseline.mean_perplexity) / baseline.mean_perplexity) * 100
-                print(f"  Length {length:3d}: baseline={baseline.mean_perplexity:.3f}, "
-                      f"hebbian={hebbian.mean_perplexity:.3f} ({diff:+.2f}%)")
-
-        # Experiment 2: Update formulas
-        print("\n2. UPDATE FORMULA COMPARISON")
-        print("-" * 40)
+        # Experiment 2
+        print("\nUPDATE FORMULA COMPARISON")
+        print("-" * 50)
         exp2 = aggregates.get("update_formula", [])
         baseline = next((a for a in exp2 if a.variant == "baseline"), None)
-        for agg in exp2:
-            if baseline:
-                diff = ((agg.mean_perplexity - baseline.mean_perplexity) / baseline.mean_perplexity) * 100
-                sig = "*" if abs(agg.mean_perplexity - baseline.mean_perplexity) > agg.std_perplexity else ""
-                print(f"  {agg.variant:15s}: {agg.mean_perplexity:.3f} ± {agg.std_perplexity:.3f} "
-                      f"({diff:+.2f}%) {sig}")
 
-        # Experiment 3: Persistent learning
-        print("\n3. PERSISTENT LEARNING")
-        print("-" * 40)
-        exp3 = aggregates.get("persistent_learning", [])
-        for agg in exp3:
-            print(f"  {agg.variant:15s}: perplexity={agg.mean_perplexity:.3f}, "
-                  f"evictions={agg.mean_evictions:.0f}")
+        for agg in exp2:
+            diff = 0
+            if baseline and baseline.mean_perplexity > 0:
+                diff = ((agg.mean_perplexity - baseline.mean_perplexity) / baseline.mean_perplexity) * 100
+
+            p_str = f"p={agg.p_value:.4f}" if agg.p_value else ""
+            sig = "**" if agg.p_value and agg.p_value < 0.01 else ("*" if agg.p_value and agg.p_value < 0.05 else "")
+
+            print(f"  {agg.variant:12s}: {agg.mean_perplexity:.4f} ± {agg.std_perplexity:.4f} "
+                  f"({diff:+.2f}%) {p_str} {sig}")
+
+        # Experiment 1
+        print("\nCOMPOUNDING OVER LENGTH")
+        print("-" * 50)
+        exp1 = aggregates.get("compounding", [])
+
+        for length in [50, 100, 200]:
+            baseline = next((a for a in exp1 if a.variant == f"baseline_len{length}"), None)
+            hebbian = next((a for a in exp1 if a.variant == f"hebbian_len{length}"), None)
+
+            if baseline and hebbian:
+                diff = ((hebbian.mean_perplexity - baseline.mean_perplexity) / baseline.mean_perplexity) * 100
+                p_str = f"p={hebbian.p_value:.4f}" if hebbian.p_value else ""
+                sig = "**" if hebbian.p_value and hebbian.p_value < 0.01 else ("*" if hebbian.p_value and hebbian.p_value < 0.05 else "")
+
+                print(f"  len={length:3d}: baseline={baseline.mean_perplexity:.4f}, "
+                      f"hebbian={hebbian.mean_perplexity:.4f} ({diff:+.2f}%) {p_str} {sig}")
 
         print("\n" + "=" * 70)
+        print("* p<0.05, ** p<0.01")
+        print("=" * 70)
 
 
 def main():
-    """Run the benchmark."""
     import argparse
-
-    parser = argparse.ArgumentParser(description="Hebbian consolidation benchmark")
-    parser.add_argument("--seeds", type=int, default=3, help="Number of random seeds")
-    parser.add_argument("--experiment", type=str, choices=["all", "1", "2", "3"],
-                        default="all", help="Which experiment to run")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--seeds", type=int, default=10)
+    parser.add_argument("--experiment", choices=["all", "1", "2"], default="all")
     args = parser.parse_args()
 
     benchmark = HebbianBenchmark(n_seeds=args.seeds)
 
     if args.experiment == "all":
         benchmark.run_all()
-    elif args.experiment == "1":
-        results = benchmark.experiment_1_compounding()
-        benchmark._print_summary({"compounding": results})
     elif args.experiment == "2":
         results = benchmark.experiment_2_update_formulas()
         benchmark._print_summary({"update_formula": results})
-    elif args.experiment == "3":
-        results = benchmark.experiment_3_persistent_learning()
-        benchmark._print_summary({"persistent_learning": results})
+    elif args.experiment == "1":
+        results = benchmark.experiment_1_compounding()
+        benchmark._print_summary({"compounding": results})
 
 
 if __name__ == "__main__":

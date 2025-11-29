@@ -1,13 +1,16 @@
 """Hebbian consolidation during inference - weight updates without backprop."""
 
-from .attention_hooks import AttentionHooks, HebbianWeightUpdater
-from .sparse_context import SparseContext, SparseKVCache
-from .sparse_engine import SparseHebbianEngine
+from .config import HebbianConfig, BenchmarkConfig, BASELINE, HEBBIAN
+from .functional_engine import FunctionalHebbianEngine
+from .minimal_engine import MinimalHebbianEngine
 
 __all__ = [
-    'AttentionHooks',
-    'HebbianWeightUpdater',
-    'SparseContext',
-    'SparseKVCache',
-    'SparseHebbianEngine',
+    # Config
+    'HebbianConfig',
+    'BenchmarkConfig',
+    'BASELINE',
+    'HEBBIAN',
+    # Engines
+    'FunctionalHebbianEngine',
+    'MinimalHebbianEngine',
 ]
