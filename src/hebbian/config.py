@@ -20,12 +20,21 @@ class HebbianConfig:
         decay: Importance decay rate per step (0.0-1.0).
         max_mods_per_layer: Maximum modifications to store per layer.
         min_memory_gb: Minimum available memory before skipping modifications.
+        n_sink_tokens: Number of initial tokens to keep as attention sinks.
+                      These tokens are never evicted and serve as anchors.
+                      Critical for models not trained with sliding window attention.
+        update_target: Which projections to modify: "k", "v", or "both".
+                      - "k": Modify key projections (affects what queries match)
+                      - "v": Modify value projections (stores content for retrieval)
+                      - "both": Modify both K and V projections
     """
     update_scale: float = 1e-6
     window_size: int = 32
     decay: float = 0.99
     max_mods_per_layer: int = 100
     min_memory_gb: float = 2.0
+    n_sink_tokens: int = 4  # StreamingLLM default
+    update_target: str = "v"  # "k", "v", or "both" - default to V for content storage
 
     def with_scale(self, scale: float) -> "HebbianConfig":
         """Return new config with different scale."""
@@ -35,6 +44,20 @@ class HebbianConfig:
             decay=self.decay,
             max_mods_per_layer=self.max_mods_per_layer,
             min_memory_gb=self.min_memory_gb,
+            n_sink_tokens=self.n_sink_tokens,
+            update_target=self.update_target,
+        )
+
+    def with_target(self, target: str) -> "HebbianConfig":
+        """Return new config with different update target."""
+        return HebbianConfig(
+            update_scale=self.update_scale,
+            window_size=self.window_size,
+            decay=self.decay,
+            max_mods_per_layer=self.max_mods_per_layer,
+            min_memory_gb=self.min_memory_gb,
+            n_sink_tokens=self.n_sink_tokens,
+            update_target=target,
         )
 
 
@@ -43,11 +66,16 @@ BASELINE = HebbianConfig(update_scale=0.0)
 HEBBIAN = HebbianConfig(update_scale=1e-6)
 
 # For experiments with different window sizes
-def config_for_window(window_size: int, hebbian: bool = True) -> HebbianConfig:
+def config_for_window(
+    window_size: int,
+    hebbian: bool = True,
+    n_sink_tokens: int = 4,
+) -> HebbianConfig:
     """Create config with specified window size."""
     return HebbianConfig(
         update_scale=1e-6 if hebbian else 0.0,
         window_size=window_size,
+        n_sink_tokens=n_sink_tokens,
     )
 
 
