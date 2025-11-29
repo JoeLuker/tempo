@@ -353,31 +353,33 @@ class MinimalHebbianEngine:
         input_hidden: torch.Tensor,
         importance: float,
     ) -> None:
-        """Apply Hebbian weight update."""
+        """Apply Hebbian weight update.
+
+        Only updates K projection - experiments show V updates hurt performance.
+        K controls what inputs match with; V controls output values.
+        Reinforcing K is safe; modifying V corrupts representations.
+        """
         layer = self.layers[layer_idx]
 
         with torch.no_grad():
-            for proj, output in [('k_proj', key), ('v_proj', value)]:
-                W = layer[proj].weight
+            # Only update K projection (not V - updating V hurts)
+            W = layer['k_proj'].weight
 
-                # Ensure shapes match
-                out = output.to(W.device, W.dtype)
-                inp = input_hidden.to(W.device, W.dtype)
+            out = key.to(W.device, W.dtype)
+            inp = input_hidden.to(W.device, W.dtype)
 
-                if out.size(0) != W.size(0):
-                    out = out[:W.size(0)]
-                if inp.size(0) != W.size(1):
-                    inp = inp[:W.size(1)]
+            if out.size(0) != W.size(0):
+                out = out[:W.size(0)]
+            if inp.size(0) != W.size(1):
+                inp = inp[:W.size(1)]
 
-                # Compute update: importance * outer(output, input)
-                update = torch.outer(out, inp)
+            # Hebbian update: outer(output, input), normalized
+            update = torch.outer(out, inp)
+            u_norm = update.norm()
+            if u_norm > 0:
+                update = update / u_norm
 
-                # Normalize to unit norm, then scale by update_scale * importance
-                u_norm = update.norm()
-                if u_norm > 0:
-                    update = update / u_norm  # Unit normalize
-
-                W.add_(update, alpha=self.update_scale * importance)
+            W.add_(update, alpha=self.update_scale * importance)
 
     def generate(
         self,
