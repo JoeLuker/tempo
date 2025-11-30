@@ -203,17 +203,18 @@ class HebbianMLXEngine:
         v_base = layer["self_attn"]["v_proj"](normed)
 
         # Apply Hebbian modifications based on config
+        # Store outer(V, normed), apply to normed - same hidden space
         if self.config.update_scale > 0:
             target = self.config.update_target
 
-            # K modifications
+            # K modifications - when normed matches stored normed, produce K delta
             if target in ("k", "both"):
                 k_delta = self.k_modifications[layer_idx].apply(normed)
                 k = k_base + k_delta
             else:
                 k = k_base
 
-            # V modifications - this stores content for retrieval
+            # V modifications - when normed matches stored normed, retrieve V
             if target in ("v", "both"):
                 v_delta = self.v_modifications[layer_idx].apply(normed)
                 v = v_base + v_delta
@@ -553,16 +554,19 @@ class HebbianMLXEngine:
         target = self.config.update_target
         base_scale = self.config.update_scale * importance
 
-        # Get which positions this token attended to
-        attended_positions = state.attended_positions or []
-        attention_weights = state.attention_weights
+        # Get layer-0's layer norm to compute normed hidden
+        layer0_norm = self._get_layer(0)["input_layernorm"]
+        normed_hidden = layer0_norm(state.hidden[None, None, :])[0, 0]
+        normed_flat = normed_hidden.flatten()
+        normed_norm = mx.linalg.norm(normed_flat)
 
-        # If no attention pattern recorded, fall back to self-association
-        if not attended_positions:
-            attended_positions = [position]
-            attention_weights = mx.array([1.0])
+        if float(normed_norm) < 1e-8:
+            return
+
+        normed_normalized = normed_flat / normed_norm
 
         # Create Hebbian modification for each layer
+        # Store outer(V, normed_hidden) - same space as apply
         for layer_idx, (k, v) in evicted_kv.items():
             k_flat = k.flatten()
             v_flat = v.flatten()
@@ -575,33 +579,13 @@ class HebbianMLXEngine:
             k_normalized = k_flat / k_norm
             v_normalized = v_flat / v_norm
 
-            # For each position this token attended to, create an association
-            for i, attended_pos in enumerate(attended_positions):
-                if attended_pos not in self.all_hidden_states:
-                    continue
+            # K modification: when normed matches, produce this K
+            if target in ("k", "both"):
+                self.k_modifications[layer_idx].add(k_normalized, normed_normalized, base_scale)
 
-                # Get the hidden state of the attended position
-                attended_hidden = self.all_hidden_states[attended_pos]
-                inp_flat = attended_hidden.flatten()
-                inp_norm = mx.linalg.norm(inp_flat)
-
-                if float(inp_norm) < 1e-8:
-                    continue
-
-                inp_normalized = inp_flat / inp_norm
-
-                # Weight by attention: higher attention = stronger association
-                attn_weight = float(attention_weights[i]) if attention_weights is not None else 1.0
-                scale = base_scale * attn_weight
-
-                # K modification: when input matches attended hidden, produce this K
-                if target in ("k", "both"):
-                    self.k_modifications[layer_idx].add(k_normalized, inp_normalized, scale)
-
-                # V modification: when input matches attended hidden, produce this V
-                # This is the key for memory - retrieve A's content when context matches
-                if target in ("v", "both"):
-                    self.v_modifications[layer_idx].add(v_normalized, inp_normalized, scale)
+            # V modification: when normed matches, retrieve this V
+            if target in ("v", "both"):
+                self.v_modifications[layer_idx].add(v_normalized, normed_normalized, base_scale)
 
         # Prune old modifications if we have too many
         for layer_idx in range(self.n_layers):
