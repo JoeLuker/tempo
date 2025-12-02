@@ -21,7 +21,6 @@ from mlx_lm.tokenizer_utils import TokenizerWrapper
 from ..config import HebbianConfig, HEBBIAN
 from .attention import attention_with_weights, create_causal_mask
 from .cache import HebbianKVCache
-from .modifications import HebbianModifications
 
 logger = logging.getLogger(__name__)
 
@@ -31,12 +30,6 @@ class TokenState:
     """State for a single token position."""
     position: int
     token_id: int
-    hidden: mx.array  # Input hidden state for Hebbian update
-    # Attention pattern: which positions this token attended to (averaged across layers/heads)
-    # Shape: (n_attended_positions,) with position indices
-    attended_positions: list[int] = None
-    # Attention weights for those positions (for weighting the associations)
-    attention_weights: mx.array = None
 
 
 class HebbianMLXEngine:
@@ -91,8 +84,8 @@ class HebbianMLXEngine:
         self.k_dim = self.n_kv_heads * self.head_dim
 
         logger.info(
-            f"Hebbian config: scale={config.update_scale}, "
-            f"window={config.window_size}, max_mods={config.max_mods_per_layer}"
+            f"Hebbian config: memory={config.memory_enabled}, "
+            f"window={config.window_size}, max_memory={config.max_memory_per_layer}"
         )
 
     def _init_hebbian_state(self) -> None:
@@ -105,36 +98,57 @@ class HebbianMLXEngine:
             n_sink_tokens=self.config.n_sink_tokens,
         )
 
-        # K-projection modifications
-        self.k_modifications: dict[int, HebbianModifications] = {
-            layer: HebbianModifications(
-                k_dim=self.n_kv_heads * self.head_dim,
-                hidden_dim=self.hidden_dim,
-                max_mods=self.config.max_mods_per_layer,
-            )
-            for layer in range(self.n_layers)
-        }
-
-        # V-projection modifications (same dimensions as K for GQA models)
-        self.v_modifications: dict[int, HebbianModifications] = {
-            layer: HebbianModifications(
-                k_dim=self.n_kv_heads * self.head_dim,  # V has same dim as K
-                hidden_dim=self.hidden_dim,
-                max_mods=self.config.max_mods_per_layer,
-            )
-            for layer in range(self.n_layers)
-        }
-
-        # Alias for backward compatibility
-        self.modifications = self.k_modifications
-
         # Token state tracking
         self.slots: dict[int, TokenState] = {}
         self.next_position: int = 0
 
-        # Store ALL hidden states for attention-based associations
-        # When token A evicts and attended to token B, we need B's hidden state
-        self.all_hidden_states: dict[int, mx.array] = {}
+        # Think block tracking - tokens inside <think>...</think> are not stored
+        self._in_think_block: bool = False
+        self._think_positions: set[int] = set()  # Positions that are inside think blocks
+
+        # Memory bank: store evicted K/V for direct attention access
+        # Use pre-stacked tensors for GPU efficiency instead of Python lists
+        # Shape per layer: (n_entries, n_kv_heads, head_dim)
+        self._mem_k: dict[int, mx.array | None] = {l: None for l in range(self.n_layers)}
+        self._mem_v: dict[int, mx.array | None] = {l: None for l in range(self.n_layers)}
+        self._mem_importance: dict[int, mx.array | None] = {l: None for l in range(self.n_layers)}
+
+    @property
+    def memory_bank(self) -> dict[int, int]:
+        """Legacy interface - returns count per layer."""
+        return {l: self._mem_count(l) for l in range(self.n_layers)}
+
+    def _mem_count(self, layer: int) -> int:
+        """Get number of entries in memory bank for a layer."""
+        if self._mem_k[layer] is None:
+            return 0
+        return self._mem_k[layer].shape[0]
+
+    def _mem_add(self, layer: int, k: mx.array, v: mx.array, importance: float) -> None:
+        """Add entry to memory bank with GPU-efficient concatenation."""
+        k = k[None, :, :]  # (1, n_kv_heads, head_dim)
+        v = v[None, :, :]
+        imp = mx.array([importance])
+
+        if self._mem_k[layer] is None:
+            self._mem_k[layer] = k
+            self._mem_v[layer] = v
+            self._mem_importance[layer] = imp
+        else:
+            self._mem_k[layer] = mx.concatenate([self._mem_k[layer], k], axis=0)
+            self._mem_v[layer] = mx.concatenate([self._mem_v[layer], v], axis=0)
+            self._mem_importance[layer] = mx.concatenate([self._mem_importance[layer], imp], axis=0)
+
+    def _mem_evict_lowest(self, layer: int, keep: int) -> None:
+        """Keep only top-k by importance using vectorized ops."""
+        if self._mem_k[layer] is None or self._mem_k[layer].shape[0] <= keep:
+            return
+
+        # Vectorized top-k selection
+        top_indices = mx.argsort(self._mem_importance[layer])[-keep:]
+        self._mem_k[layer] = self._mem_k[layer][top_indices]
+        self._mem_v[layer] = self._mem_v[layer][top_indices]
+        self._mem_importance[layer] = self._mem_importance[layer][top_indices]
 
     def clear(self) -> None:
         """Clear all state for a new generation."""
@@ -199,30 +213,8 @@ class HebbianMLXEngine:
 
         # Q, K, V projections
         q = layer["self_attn"]["q_proj"](normed)
-        k_base = layer["self_attn"]["k_proj"](normed)
-        v_base = layer["self_attn"]["v_proj"](normed)
-
-        # Apply Hebbian modifications based on config
-        # Store outer(V, normed), apply to normed - same hidden space
-        if self.config.update_scale > 0:
-            target = self.config.update_target
-
-            # K modifications - when normed matches stored normed, produce K delta
-            if target in ("k", "both"):
-                k_delta = self.k_modifications[layer_idx].apply(normed)
-                k = k_base + k_delta
-            else:
-                k = k_base
-
-            # V modifications - when normed matches stored normed, retrieve V
-            if target in ("v", "both"):
-                v_delta = self.v_modifications[layer_idx].apply(normed)
-                v = v_base + v_delta
-            else:
-                v = v_base
-        else:
-            k = k_base
-            v = v_base
+        k = layer["self_attn"]["k_proj"](normed)
+        v = layer["self_attn"]["v_proj"](normed)
 
         # Reshape and transpose to (batch, heads, seq, head_dim)
         # This must be done BEFORE RoPE because RoPE uses axis=-2 as sequence
@@ -262,6 +254,55 @@ class HebbianMLXEngine:
                 repeat_factor = self.n_heads // self.n_kv_heads
                 cached_k = mx.repeat(cached_k, repeat_factor, axis=1)
                 cached_v = mx.repeat(cached_v, repeat_factor, axis=1)
+
+            # Concatenate memory bank K/V if available
+            # Memory bank entries are always attendable (no mask needed)
+            if self._mem_k[layer_idx] is not None:
+                # Already stacked tensors: (n_mem, n_kv_heads, head_dim)
+                mem_k = self._mem_k[layer_idx]
+                mem_v = self._mem_v[layer_idx]
+
+                # Top-k retrieval: select most relevant memories based on query
+                top_k = self.config.memory_top_k
+                if top_k > 0 and mem_k.shape[0] > top_k:
+                    # Use mean query across heads for relevance scoring
+                    # q shape: (1, n_heads, seq, head_dim)
+                    q_mean = mx.mean(q[0], axis=0)  # (seq, head_dim)
+                    q_last = q_mean[-1]  # Use last query token (current position)
+
+                    # mem_k shape: (n_mem, n_kv_heads, head_dim)
+                    # Average across kv_heads for scoring
+                    mem_k_mean = mx.mean(mem_k, axis=1)  # (n_mem, head_dim)
+
+                    # Compute relevance scores via dot product (fully vectorized)
+                    scores = mx.sum(q_last * mem_k_mean, axis=-1)  # (n_mem,)
+
+                    # Get top-k indices
+                    top_indices = mx.argsort(scores)[-top_k:]
+
+                    # Select top-k memories
+                    mem_k = mem_k[top_indices]
+                    mem_v = mem_v[top_indices]
+
+                # Reshape to (1, n_heads, n_mem, head_dim)
+                mem_k = mem_k[None, :, :, :].transpose(0, 2, 1, 3)
+                mem_v = mem_v[None, :, :, :].transpose(0, 2, 1, 3)
+
+                # GQA expansion for memory
+                if self.n_kv_heads < self.n_heads:
+                    mem_k = mx.repeat(mem_k, repeat_factor, axis=1)
+                    mem_v = mx.repeat(mem_v, repeat_factor, axis=1)
+
+                # Concatenate: memory first (always attendable), then cache
+                # Shape: (1, n_heads, n_mem + n_cache, head_dim)
+                cached_k = mx.concatenate([mem_k, cached_k], axis=2)
+                cached_v = mx.concatenate([mem_v, cached_v], axis=2)
+
+                # Extend mask to allow attending to memory (all zeros = attend)
+                n_mem = mem_k.shape[2]  # Use actual count after top-k
+                if mask is not None:
+                    mem_mask = mx.zeros((1, 1, L, n_mem))  # No masking for memory
+                    mask = mx.concatenate([mem_mask, mask], axis=3)
 
             # Custom attention with weights
             attn_output, attn_weights = attention_with_weights(
@@ -362,109 +403,44 @@ class HebbianMLXEngine:
 
         return logits, attn_weights_by_layer
 
-    def _extract_attention_pattern(
-        self,
-        attn_weights_by_layer: dict[int, mx.array],
-        query_position: int,
-    ) -> tuple[list[int], mx.array]:
-        """Extract which positions a token attended to.
-
-        This is the KEY for correct Hebbian consolidation:
-        When token A evicts, we want to store associations with positions
-        A attended TO, not just A's own hidden state.
-
-        Args:
-            attn_weights_by_layer: Attention weights from forward pass
-            query_position: The position we're extracting patterns for
-
-        Returns:
-            attended_positions: List of position indices this token attended to
-            attention_weights: Corresponding attention weights (normalized)
-        """
-        if not attn_weights_by_layer:
-            return [], None
-
-        # Average attention across layers and heads
-        avg_attn = None
-        for layer_idx, attn in attn_weights_by_layer.items():
-            # attn shape: (batch, n_heads, seq_q, seq_k)
-            layer_avg = mx.mean(attn, axis=1)[0]  # (seq_q, seq_k)
-            if avg_attn is None:
-                avg_attn = layer_avg
-            else:
-                avg_attn = avg_attn + layer_avg
-
-        avg_attn = avg_attn / len(attn_weights_by_layer)
-
-        # Get the attention pattern for the last query (current token)
-        # avg_attn shape: (seq_q, seq_k), we want the last row
-        if avg_attn.shape[0] == 0:
-            return [], None
-
-        attn_pattern = avg_attn[-1, :]  # (seq_k,)
-
-        # Get the positions that were attended to
-        cached_positions = sorted(self.kv_cache.active_positions)
-
-        # Only keep positions with significant attention (top-k or above threshold)
-        # Use top-8 most attended positions to avoid storing too many associations
-        n_to_keep = min(8, len(cached_positions))
-
-        if n_to_keep == 0:
-            return [], None
-
-        # Get attention values for cached positions
-        attn_values = []
-        for i, pos in enumerate(cached_positions):
-            if i < attn_pattern.shape[0]:
-                attn_values.append((pos, float(attn_pattern[i])))
-
-        # Sort by attention weight, keep top-k
-        attn_values.sort(key=lambda x: x[1], reverse=True)
-        top_k = attn_values[:n_to_keep]
-
-        attended_positions = [pos for pos, _ in top_k]
-        weights = mx.array([w for _, w in top_k])
-
-        # Normalize weights to sum to 1
-        weights = weights / (mx.sum(weights) + 1e-8)
-
-        return attended_positions, weights
-
     def _update_importance(self, attn_weights_by_layer: dict[int, mx.array]) -> None:
         """Update importance scores from attention weights.
 
         Importance is measured by how much attention each position receives
         from subsequent tokens (averaged across layers and heads).
+
+        Optimized to use vectorized operations instead of Python loops.
         """
         if not attn_weights_by_layer:
             return
 
-        # Average attention weights across layers
-        avg_attn = None
-        for layer_idx, attn in attn_weights_by_layer.items():
-            # attn shape: (batch, n_heads, seq_q, seq_k)
-            # Average across heads
-            layer_avg = mx.mean(attn, axis=1)[0]  # (seq_q, seq_k)
-            if avg_attn is None:
-                avg_attn = layer_avg
-            else:
-                avg_attn = avg_attn + layer_avg
+        # Stack all layers and compute mean in one operation
+        # Each attn: (batch, n_heads, seq_q, seq_k)
+        all_attn = mx.stack(list(attn_weights_by_layer.values()), axis=0)
+        # Mean across layers, batch, and heads -> (seq_q, seq_k)
+        avg_attn = mx.mean(all_attn, axis=(0, 1, 2))
 
-        avg_attn = avg_attn / len(attn_weights_by_layer)
-
-        # Sum attention received by each position (column sum)
+        # Sum attention received by each key position
         importance_per_pos = mx.sum(avg_attn, axis=0)  # (seq_k,)
 
-        # Update importance for cached positions
+        # Force evaluation to get values
+        mx.eval(importance_per_pos)
+
+        # Batch update: convert to numpy once, then update dict
+        importance_vals = importance_per_pos.tolist()
         cached_positions = sorted(self.kv_cache.active_positions)
+        decay = self.config.decay
+        floor = self.config.min_importance
+
         for i, pos in enumerate(cached_positions):
-            if i < importance_per_pos.shape[0]:
-                old_imp = self.kv_cache.get_importance(pos)
-                new_imp = float(importance_per_pos[i])
-                # Exponential moving average
-                updated = old_imp * self.config.decay + new_imp
-                self.kv_cache.update_importance(pos, updated)
+            if i < len(importance_vals):
+                old_imp = self.kv_cache._importance.get(pos, floor)
+                new_imp = importance_vals[i]
+                self.kv_cache._importance[pos] = max(floor, old_imp * decay + new_imp)
+
+    # Qwen3 think block tokens
+    _THINK_OPEN_TOKEN: int = 151667   # <think>
+    _THINK_CLOSE_TOKEN: int = 151668  # </think>
 
     def _process_token(self, token_id: int, logits_in: mx.array = None) -> tuple[mx.array, float]:
         """Process a single token - shared logic for all generation methods.
@@ -486,6 +462,16 @@ class HebbianMLXEngine:
         position = self.next_position
         self.next_position += 1
 
+        # Track think blocks - these tokens won't be stored in memory bank
+        if token_id == self._THINK_OPEN_TOKEN:
+            self._in_think_block = True
+            self._think_positions.add(position)
+        elif token_id == self._THINK_CLOSE_TOKEN:
+            self._in_think_block = False
+            self._think_positions.add(position)
+        elif self._in_think_block:
+            self._think_positions.add(position)
+
         # Forward pass
         logits, attn_weights = self._forward([token_id], [position])
 
@@ -496,23 +482,8 @@ class HebbianMLXEngine:
             log_softmax = last_logits - mx.logsumexp(last_logits)
             log_prob = float(log_softmax[token_id])
 
-        # Store hidden state for attention-based associations
-        hidden = self.model.model.embed_tokens(mx.array([[token_id]]))[0, 0]
-        self.all_hidden_states[position] = hidden
-
-        # Extract attention pattern
-        attended_positions, attention_wts = self._extract_attention_pattern(
-            attn_weights, position
-        )
-
-        # Store token state
-        self.slots[position] = TokenState(
-            position=position,
-            token_id=token_id,
-            hidden=hidden,
-            attended_positions=attended_positions,
-            attention_weights=attention_wts,
-        )
+        # Store token state (minimal - just for eviction tracking)
+        self.slots[position] = TokenState(position=position, token_id=token_id)
 
         # Update importance
         self._update_importance(attn_weights)
@@ -527,14 +498,10 @@ class HebbianMLXEngine:
         return logits, log_prob
 
     def _evict_and_consolidate(self, position: int) -> None:
-        """Evict a position and create Hebbian modifications.
+        """Evict a position and store in memory bank for persistent attention.
 
-        KEY INSIGHT: Store associations based on ATTENTION PATTERNS.
-        When token A evicts and was attending to tokens B, C, D, we store:
-            outer(V_A, hidden_B), outer(V_A, hidden_C), outer(V_A, hidden_D)
-
-        This means: when future tokens have hidden states similar to B, C, D,
-        they will retrieve A's value content. This is TRUE associative memory.
+        The memory bank approach: evicted K/V become permanent attention
+        positions that all future queries can attend to.
 
         Args:
             position: Position to evict
@@ -548,53 +515,30 @@ class HebbianMLXEngine:
         # Evict from KV cache and get the K, V values
         evicted_kv = self.kv_cache.evict(position)
 
-        if self.config.update_scale <= 0:
+        if not self.config.memory_enabled:
             return
 
-        target = self.config.update_target
-        base_scale = self.config.update_scale * importance
-
-        # Get layer-0's layer norm to compute normed hidden
-        layer0_norm = self._get_layer(0)["input_layernorm"]
-        normed_hidden = layer0_norm(state.hidden[None, None, :])[0, 0]
-        normed_flat = normed_hidden.flatten()
-        normed_norm = mx.linalg.norm(normed_flat)
-
-        if float(normed_norm) < 1e-8:
+        # Skip think block tokens - they're ephemeral reasoning, not worth storing
+        if position in self._think_positions:
+            self._think_positions.discard(position)  # Clean up
             return
 
-        normed_normalized = normed_flat / normed_norm
+        # Filter by importance - only store high-importance tokens
+        if importance < self.config.min_importance:
+            return
 
-        # Create Hebbian modification for each layer
-        # Store outer(V, normed_hidden) - same space as apply
+        logger.debug(
+            f"Storing to memory bank: token {state.token_id} at pos {position}, "
+            f"importance={importance:.4f}"
+        )
+
+        # Store K/V in memory bank using GPU-efficient tensor ops
         for layer_idx, (k, v) in evicted_kv.items():
-            k_flat = k.flatten()
-            v_flat = v.flatten()
-            k_norm = mx.linalg.norm(k_flat)
-            v_norm = mx.linalg.norm(v_flat)
+            self._mem_add(layer_idx, k, v, importance)
 
-            if float(k_norm) < 1e-8 or float(v_norm) < 1e-8:
-                continue
-
-            k_normalized = k_flat / k_norm
-            v_normalized = v_flat / v_norm
-
-            # K modification: when normed matches, produce this K
-            if target in ("k", "both"):
-                self.k_modifications[layer_idx].add(k_normalized, normed_normalized, base_scale)
-
-            # V modification: when normed matches, retrieve this V
-            if target in ("v", "both"):
-                self.v_modifications[layer_idx].add(v_normalized, normed_normalized, base_scale)
-
-        # Prune old modifications if we have too many
-        for layer_idx in range(self.n_layers):
-            if target in ("k", "both"):
-                if self.k_modifications[layer_idx].n_active > self.config.max_mods_per_layer:
-                    self.k_modifications[layer_idx].prune_oldest(self.config.max_mods_per_layer)
-            if target in ("v", "both"):
-                if self.v_modifications[layer_idx].n_active > self.config.max_mods_per_layer:
-                    self.v_modifications[layer_idx].prune_oldest(self.config.max_mods_per_layer)
+            # Limit memory bank size - evict LOWEST importance, not oldest
+            max_memory = self.config.max_memory_per_layer
+            self._mem_evict_lowest(layer_idx, max_memory)
 
     def _sample_next_token(self, logits: mx.array, temperature: float) -> int:
         """Sample next token from logits."""
@@ -763,16 +707,12 @@ class HebbianMLXEngine:
 
     def get_stats(self) -> dict:
         """Get current engine statistics."""
-        k_mods = sum(
-            self.k_modifications[layer].n_active for layer in range(self.n_layers)
-        )
-        v_mods = sum(
-            self.v_modifications[layer].n_active for layer in range(self.n_layers)
+        memory_entries = sum(
+            self._mem_count(layer) for layer in range(self.n_layers)
         )
         return {
             "cache_size": self.kv_cache.size,
-            "total_modifications": k_mods + v_mods,
-            "k_modifications": k_mods,
-            "v_modifications": v_mods,
+            "memory_entries": memory_entries,
+            "total_modifications": memory_entries,  # For backward compatibility
             "positions_processed": self.next_position,
         }

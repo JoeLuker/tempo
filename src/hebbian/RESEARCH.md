@@ -1,159 +1,105 @@
 # Hebbian Consolidation: Research Context and Findings
 
-## The Core Hypothesis
+## Current Approach: Memory Bank
 
-**Inference can be learning.** When tokens leave the context window, they leave Hebbian traces in the weights proportional to their importance (measured by attention received).
+After discovering that Hebbian weight modifications don't enable recall (see Historical Context below), we pivoted to a **memory bank** approach:
 
-- Context window = working memory
-- Weight modifications = long-term memory
-- Attention patterns = credit assignment
+When tokens are evicted from the sliding window, their K/V vectors are stored in a memory bank. Future queries can attend to this memory bank directly, enabling recall of information that would otherwise be lost.
 
-## Related Work: Attention Hacking in LLMs
+### How It Works
 
-### 1. StreamingLLM (Xiao et al., 2023)
-**Key insight**: Attention sinks. Initial tokens receive disproportionate attention regardless of content. Keeping 4 "sink tokens" allows infinite context via sliding window without degradation.
+1. **Sliding Window**: Context limited to `window_size` tokens (default: 32)
+2. **Attention Sinks**: First `n_sink_tokens` are never evicted (StreamingLLM pattern)
+3. **Importance Tracking**: Attention received determines token importance
+4. **Eviction**: Oldest non-sink tokens evicted when window full
+5. **Memory Storage**: Evicted K/V stored in memory bank if importance > threshold
+6. **Top-K Retrieval**: Queries retrieve most relevant memories via dot-product similarity
 
-**What we borrowed**: The `n_sink_tokens` parameter. Without it, our sliding window caused degenerate output.
+### Key Parameters
 
-### 2. Linear Attention as RNN (Katharopoulos et al., 2020)
-**Key insight**: Standard attention: `softmax(QK^T)V` can be approximated as `φ(Q)(φ(K)^T V)`. This reformulates as an RNN where state `S = Σ φ(K)^T V` accumulates outer products.
+```python
+HebbianConfig(
+    memory_enabled=True,       # Store evicted K/V in memory bank
+    window_size=32,            # Context window size
+    n_sink_tokens=4,           # Tokens never evicted
+    max_memory_per_layer=500,  # Max K/V pairs per layer
+    min_importance=0.1,        # Importance threshold for storage
+    memory_top_k=64,           # Top-k retrieval (0 = use all)
+)
+```
 
-**Relevance**: This IS Hebbian learning. The state matrix accumulates `outer(K, V)` for each token. Our approach is spiritually similar but modifies projection weights rather than maintaining separate state.
+### Advantages Over Weight Modifications
 
-### 3. Memorizing Transformers (Wu et al., 2022)
-**Key insight**: Add kNN retrieval over past keys. Store all K,V pairs in an external memory, retrieve top-k similar keys for each query.
+1. **Exact Retrieval**: Stored K/V are exact, not compressed approximations
+2. **Selective Storage**: Only high-importance tokens stored
+3. **Query-Adaptive**: Top-k retrieval finds relevant memories per query
+4. **No Interference**: Memories don't interfere with each other like weight updates
 
-**Difference from our approach**: They maintain explicit external memory. We try to compress into weight modifications. Their approach works; ours doesn't yet.
+## Experiments
 
-### 4. RETRO (Borgeaud et al., 2022)
-**Key insight**: Retrieval-augmented generation. Use frozen retrieval over text chunks, inject retrieved context via cross-attention.
+### recall_experiment.py
+Tests recall of information after eviction. Compares baseline (no memory) vs memory bank with different importance thresholds.
 
-**Relevance**: Separates "what to remember" from "how to process". Our unified approach may be too constrained.
+### stress_test.py
+Stress tests memory bank at scale:
+- Many targets (10+ codes to remember)
+- Long context (100+ filler sentences)
+- First vs last item recall
+- Different information types
 
-### 5. Fast Weights (Ba et al., 2016)
-**Key insight**: Two weight matrices - slow weights (learned via backprop) and fast weights (updated via outer products during inference). Fast weights: `A += η * h * h^T`.
+---
 
-**Closest to our approach**: This is exactly what we're trying. Their results showed modest improvements on associative recall tasks with carefully tuned architectures.
+## Historical Context: Why Weight Modifications Failed
 
-### 6. Modern Hopfield Networks (Ramsauer et al., 2020)
-**Key insight**: Transformer attention IS a Hopfield network update rule. The stored patterns are the keys, retrieval is via query matching.
-
-**Implication**: Attention already implements associative memory. The question is whether we can augment it.
-
-## What We've Discovered
-
-### Empirical Results
-
-| Experiment | Result | Statistical Significance |
-|------------|--------|-------------------------|
-| K-projection modifications | No effect on perplexity | n=5, Δ=0.00%, underpowered |
-| V-projection modifications | No effect on perplexity | n=5, Δ=0.00%, underpowered |
-| Recall after eviction (K) | 0% recall | n=21, p=1.0 (Fisher's exact) |
-| Recall after eviction (V) | 0% recall | n=21, p=1.0 (Fisher's exact) |
-| Cross-generation learning | 0% improvement | n=3, severely underpowered |
+The original hypothesis was "inference as learning" - when tokens leave context, they leave Hebbian traces in weights proportional to importance.
 
 ### The Fundamental Issue
 
-We store: `ΔW = outer(V_token, hidden_token)`
+We stored: `DeltaW = outer(V_token, hidden_token)`
 
-When query appears: `V_delta = V_token × (hidden_token · hidden_query)`
+When query appears: `V_delta = V_token * (hidden_token . hidden_query)`
 
 **The dot product is near zero** because:
 - `hidden_token` = embedding when processing "ALPHA7" in original context
 - `hidden_query` = embedding when processing "What is the code?"
 
-These are completely different positions, contexts, hidden states. **They don't match.**
+These are completely different positions, contexts, hidden states. They don't match.
 
-### What This Means
+### Empirical Results (Weight Modifications)
 
-Hebbian outer products store **local correlations** (token with its own hidden state). But associative recall requires **cross-position associations** (question → answer).
+| Experiment | Result | Significance |
+|------------|--------|--------------|
+| K-projection mods | No effect | n=5, underpowered |
+| V-projection mods | No effect | n=5, underpowered |
+| Recall after eviction | 0% recall | n=21, p=1.0 |
 
-We're storing: `("ALPHA7", representation_of_ALPHA7)`
-We need: `("secret code", representation_of_ALPHA7)`
+### What This Taught Us
 
-The attention patterns DURING processing reveal these associations (ALPHA7 attends to "secret code"), but we're not capturing that relationship.
+Hebbian outer products store **local correlations** (token with its own hidden state). But associative recall requires **cross-position associations** (question -> answer).
 
-## Paths Forward
+We stored: `("ALPHA7", representation_of_ALPHA7)`
+We needed: `("secret code", representation_of_ALPHA7)`
 
-### Option 1: Attention-Based Association Storage
-Store associations based on attention patterns, not just evicted token with itself:
+This led to pivoting to the memory bank approach, which stores exact K/V and retrieves via attention similarity rather than weight-based reconstruction.
 
-```python
-# Current (doesn't work):
-ΔW = outer(V_evicted, hidden_evicted)
+## Related Work
 
-# Proposed:
-# For each position that evicted token attended to:
-for attended_pos in high_attention_positions:
-    ΔW += outer(V_evicted, hidden_attended_pos)
-```
+### StreamingLLM (Xiao et al., 2023)
+Attention sinks - keeping initial tokens prevents degradation. We use `n_sink_tokens`.
 
-This stores "when context looks like what ALPHA7 attended to, inject ALPHA7's value."
+### Memorizing Transformers (Wu et al., 2022)
+External K/V memory with kNN retrieval. Our memory bank is a simpler variant of this approach.
 
-### Option 2: Memory Matrix Approach
-Maintain explicit memory matrix (like linear attention state):
+### Linear Attention as RNN (Katharopoulos et al., 2020)
+Reformulates attention as RNN with state `S = sum(outer(K, V))`. Shows the connection between attention and associative memory.
 
-```python
-M = zeros(hidden_dim, hidden_dim)
-# On eviction:
-M += importance * outer(V_evicted, K_evicted)
-# On query:
-memory_contribution = M @ query_hidden
-```
-
-This is closer to Memorizing Transformers but uses learned associations rather than exact matching.
-
-### Option 3: Gradient-Free Learning Signal
-Use model's own predictions as learning signal:
-
-```python
-# Force correct output
-output = "ALPHA7"
-# Backprop attention gradients (without weight updates)
-# Use gradient directions for Hebbian updates
-attention_gradients = compute_attention_gradients(loss)
-# Update based on what attention patterns would have helped
-```
-
-This uses the "coherence drive" as learning signal without full backprop.
-
-### Option 4: Accept Limitations
-Hebbian consolidation may only be useful for:
-- Regularization (prevent attention collapse)
-- Style transfer (accumulate domain patterns)
-- Compression (reduce memory with some degradation)
-
-Not for: associative memory, factual recall, cross-position learning.
-
-## Experimental Requirements
-
-For any path forward, we need statistical rigor:
-
-1. **Power analysis**: For effect size d=0.3, α=0.05, power=0.8 → n≈176 per condition
-2. **Pre-registered hypotheses**: Define success criteria before running
-3. **Multiple comparison correction**: Bonferroni or FDR for multiple metrics
-4. **Effect sizes**: Report Cohen's d, not just p-values
-5. **Reproducibility**: Fixed seeds, documented configs, version control
-
-## Current Codebase State
+## Codebase Structure
 
 ```
 src/hebbian/
-├── __init__.py          # Clean exports
-├── config.py            # HebbianConfig with update_target
-├── mlx/
-│   ├── engine.py        # Main MLX engine with K+V modifications
-│   ├── cache.py         # KV cache with importance tracking
-│   ├── modifications.py # Batched rank-1 updates
-│   └── attention.py     # Custom attention with weight exposure
-└── experiments/
-    ├── framework.py     # Rigorous experiment infrastructure
-    └── metrics.py       # Statistical tools
+  config.py            # HebbianConfig (memory bank settings)
+  mlx/
+    engine.py          # Main engine with memory bank
+    cache.py           # KV cache with importance tracking
+    attention.py       # Custom attention exposing weights
 ```
-
-## Next Steps
-
-1. Implement attention-based association storage (Option 1)
-2. Run properly powered experiment (n≥50 per condition)
-3. If still null result, document and move to Option 4 (accept limitations)
-4. Write up findings regardless of outcome

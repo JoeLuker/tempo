@@ -59,6 +59,7 @@ class HebbianKVCache:
         position: int,
         k: mx.array,
         v: mx.array,
+        base_importance: float = 0.5,
     ) -> None:
         """Add KV pair for a position at a specific layer.
 
@@ -67,9 +68,16 @@ class HebbianKVCache:
             position: Absolute position in sequence
             k: Key tensor of shape (n_kv_heads, head_dim)
             v: Value tensor of shape (n_kv_heads, head_dim)
+            base_importance: Initial importance score for new positions
         """
         self._cache[layer][position] = (k, v)
         self._active_positions.add(position)
+
+        # Set base importance for new positions (only if not already set)
+        # This ensures tokens that get evicted quickly still have a chance
+        # to be stored in memory bank
+        if position not in self._importance:
+            self._importance[position] = base_importance
 
     def evict(self, position: int) -> dict[int, tuple[mx.array, mx.array]]:
         """Remove a position from all layers and return evicted KV pairs.

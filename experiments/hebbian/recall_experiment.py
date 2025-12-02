@@ -68,7 +68,7 @@ class RecallExperiment:
     def create_recall_prompt(self, target: str, filler_tokens: int = 60) -> str:
         """Create a prompt that embeds target info, adds filler, then asks for recall.
 
-        Uses Qwen3 ChatML format.
+        Uses Qwen3 ChatML format with /no_think to disable thinking mode.
         """
         # Filler to push the target out of the sliding window
         filler_sentences = [
@@ -81,17 +81,13 @@ class RecallExperiment:
         ]
         filler = " ".join(filler_sentences[:filler_tokens // 10 + 1])
 
-        # Qwen3 ChatML format
+        # Qwen3 ChatML format - use /no_think to disable thinking mode
         prompt = f"""<|im_start|>system
-You are a helpful assistant. Answer questions directly and concisely.<|im_end|>
+You are a helpful assistant. Answer directly without thinking.<|im_end|>
 <|im_start|>user
-Remember this secret code: {target}
-
-{filler}
-
-What was the secret code I asked you to remember? Reply with just the code.<|im_end|>
+The secret code is {target}. {filler} What was the secret code? /no_think<|im_end|>
 <|im_start|>assistant
-The secret code is: """
+"""
 
         return prompt
 
@@ -119,11 +115,11 @@ The secret code is: """
 
         # Use provided variant name or generate one
         if not variant_name:
-            variant_name = "baseline" if config.update_scale == 0 else f"{config.update_target}_{config.update_scale}"
+            variant_name = "baseline" if not config.memory_enabled else "memory"
 
         return RecallResult(
             variant=variant_name,
-            scale=config.update_scale,
+            scale=config.update_scale,  # Legacy property, returns 1.0 if memory_enabled
             target=target,
             response=response,
             contains_target=contains_target,
@@ -142,25 +138,22 @@ The secret code is: """
 
         # First test: verify recall works with large window (no eviction)
         logger.info("\n=== CONTROL: Large window (no eviction) ===")
-        large_window_config = HebbianConfig(update_scale=0.0, window_size=512, n_sink_tokens=4)
+        large_window_config = HebbianConfig(memory_enabled=False, window_size=512, n_sink_tokens=4)
         for target in targets:
             result = self.run_trial(target, large_window_config)
             status = "✓" if result.contains_target else "✗"
             logger.info(f"  {target}: {status} evictions={result.n_evictions} -> {result.response[:40]}")
 
         # Configurations to test with small window (forces eviction)
-        # Compare K-only, V-only, and both
+        # Memory bank approach: store evicted K/V for direct attention access
         configs = [
-            ("baseline", HebbianConfig(update_scale=0.0, window_size=32, n_sink_tokens=4)),
-            # V-projection updates (stores content)
-            ("V_1e-4", HebbianConfig(update_scale=1e-4, window_size=32, n_sink_tokens=4, update_target="v")),
-            ("V_1e-3", HebbianConfig(update_scale=1e-3, window_size=32, n_sink_tokens=4, update_target="v")),
-            ("V_1e-2", HebbianConfig(update_scale=1e-2, window_size=32, n_sink_tokens=4, update_target="v")),
-            ("V_1e-1", HebbianConfig(update_scale=1e-1, window_size=32, n_sink_tokens=4, update_target="v")),
-            # K-projection updates (affects matching)
-            ("K_1e-3", HebbianConfig(update_scale=1e-3, window_size=32, n_sink_tokens=4, update_target="k")),
-            # Both K and V
-            ("KV_1e-3", HebbianConfig(update_scale=1e-3, window_size=32, n_sink_tokens=4, update_target="both")),
+            ("baseline", HebbianConfig(memory_enabled=False, window_size=32, n_sink_tokens=4)),
+            # Memory bank with different importance thresholds
+            ("memory_0.1", HebbianConfig(memory_enabled=True, window_size=32, n_sink_tokens=4, min_importance=0.1)),
+            ("memory_0.2", HebbianConfig(memory_enabled=True, window_size=32, n_sink_tokens=4, min_importance=0.2)),
+            ("memory_0.3", HebbianConfig(memory_enabled=True, window_size=32, n_sink_tokens=4, min_importance=0.3)),
+            ("memory_0.4", HebbianConfig(memory_enabled=True, window_size=32, n_sink_tokens=4, min_importance=0.4)),
+            ("memory_0.5", HebbianConfig(memory_enabled=True, window_size=32, n_sink_tokens=4, min_importance=0.5)),
         ]
 
         results: list[RecallResult] = []

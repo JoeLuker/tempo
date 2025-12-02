@@ -13,67 +13,49 @@ from typing import Optional
 class HebbianConfig:
     """Configuration for Hebbian consolidation engine.
 
+    The engine uses a memory bank approach: when tokens are evicted from the
+    sliding window, their K/V vectors are stored in a memory bank that all
+    future queries can attend to. This enables recall of information that
+    would otherwise be lost.
+
     Attributes:
-        update_scale: Scale factor for Hebbian weight updates.
-                     Use 0.0 for baseline (no modifications).
+        memory_enabled: Whether to store evicted K/V in memory bank.
+                       When False, acts as standard sliding window attention.
         window_size: Maximum tokens in context before eviction.
         decay: Importance decay rate per step (0.0-1.0).
-        max_mods_per_layer: Maximum modifications to store per layer.
-        min_memory_gb: Minimum available memory before skipping modifications.
+        max_memory_per_layer: Maximum K/V pairs to store per layer.
         n_sink_tokens: Number of initial tokens to keep as attention sinks.
                       These tokens are never evicted and serve as anchors.
-                      Critical for models not trained with sliding window attention.
-        update_target: Which projections to modify: "k", "v", or "both".
-                      - "k": Modify key projections (affects what queries match)
-                      - "v": Modify value projections (stores content for retrieval)
-                      - "both": Modify both K and V projections
+        min_importance: Minimum importance to store in memory bank.
+                       Higher = only store important tokens. Lower = store more.
     """
-    update_scale: float = 1e-6
+    memory_enabled: bool = True
     window_size: int = 32
     decay: float = 0.99
-    max_mods_per_layer: int = 100
-    min_memory_gb: float = 2.0
+    max_memory_per_layer: int = 500  # Higher = better recall, more memory
     n_sink_tokens: int = 4  # StreamingLLM default
-    update_target: str = "v"  # "k", "v", or "both" - default to V for content storage
+    min_importance: float = 0.1  # Store most tokens by default
+    memory_top_k: int = 64  # 0 = use all memory, >0 = retrieve top-k per query
 
-    def with_scale(self, scale: float) -> "HebbianConfig":
-        """Return new config with different scale."""
-        return HebbianConfig(
-            update_scale=scale,
-            window_size=self.window_size,
-            decay=self.decay,
-            max_mods_per_layer=self.max_mods_per_layer,
-            min_memory_gb=self.min_memory_gb,
-            n_sink_tokens=self.n_sink_tokens,
-            update_target=self.update_target,
-        )
-
-    def with_target(self, target: str) -> "HebbianConfig":
-        """Return new config with different update target."""
-        return HebbianConfig(
-            update_scale=self.update_scale,
-            window_size=self.window_size,
-            decay=self.decay,
-            max_mods_per_layer=self.max_mods_per_layer,
-            min_memory_gb=self.min_memory_gb,
-            n_sink_tokens=self.n_sink_tokens,
-            update_target=target,
-        )
+    # Legacy alias for update_scale (for backward compatibility)
+    @property
+    def update_scale(self) -> float:
+        return 1.0 if self.memory_enabled else 0.0
 
 
 # Preset configurations
-BASELINE = HebbianConfig(update_scale=0.0)
-HEBBIAN = HebbianConfig(update_scale=1e-6)
+BASELINE = HebbianConfig(memory_enabled=False)
+HEBBIAN = HebbianConfig(memory_enabled=True)
 
 # For experiments with different window sizes
 def config_for_window(
     window_size: int,
-    hebbian: bool = True,
+    memory_enabled: bool = True,
     n_sink_tokens: int = 4,
 ) -> HebbianConfig:
     """Create config with specified window size."""
     return HebbianConfig(
-        update_scale=1e-6 if hebbian else 0.0,
+        memory_enabled=memory_enabled,
         window_size=window_size,
         n_sink_tokens=n_sink_tokens,
     )
